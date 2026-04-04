@@ -1,0 +1,228 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Iterable, Optional, Sequence
+
+import aiohttp
+
+from .config import config
+
+
+class HDEApiError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class HDEAttachment:
+    filename: str
+    content: bytes
+    content_type: str = "application/octet-stream"
+
+
+@dataclass
+class HDEApiResult:
+    status: int
+    data: Any
+
+
+@dataclass
+class HDETicket:
+    ticket_id: str        # numeric string id
+    unique_id: str        # e.g. "ABC-123"
+    title: str
+    company_name: str     # client name (user_name + user_lastname)
+    owner_id: str
+    sla_date: Optional[str]   # "17.01.2017 16:00" format or None
+    hde_link: str         # staff link
+    link_staff: str       # same as hde_link
+
+
+class HDEApiClient:
+    def __init__(self) -> None:
+        if not config.has_hde_api_credentials():
+            raise HDEApiError("HDE API не настроен")
+        self.base_url = config.hde_api_base_url.rstrip("/")
+        self.auth = aiohttp.BasicAuth(config.hde_api_email, config.hde_api_key)
+
+    async def add_comment(
+        self,
+        ticket_id: str,
+        text: str = "",
+        attachments: Sequence[HDEAttachment] = (),
+    ) -> HDEApiResult:
+        return await self._post(
+            f"/tickets/{ticket_id}/comments/",
+            text=text,
+            attachments=attachments,
+        )
+
+    async def add_post(
+        self,
+        ticket_id: str,
+        text: str = "",
+        attachments: Sequence[HDEAttachment] = (),
+    ) -> HDEApiResult:
+        return await self._post(
+            f"/tickets/{ticket_id}/posts/",
+            text=text,
+            attachments=attachments,
+        )
+
+    async def update_post(self, ticket_id: str, post_id: int, text: str) -> HDEApiResult:
+        return await self._put(f"/tickets/{ticket_id}/posts/{post_id}/", text=text)
+
+    async def delete_post(self, ticket_id: str, post_id: int) -> HDEApiResult:
+        return await self._delete(f"/tickets/{ticket_id}/posts/{post_id}/")
+
+    async def update_comment(self, ticket_id: str, comment_id: int, text: str) -> HDEApiResult:
+        return await self._put(f"/tickets/{ticket_id}/comments/{comment_id}/", text=text)
+
+    async def delete_comment(self, ticket_id: str, comment_id: int) -> HDEApiResult:
+        return await self._delete(f"/tickets/{ticket_id}/comments/{comment_id}/")
+
+    async def get_my_open_tickets(self) -> list[HDETicket]:
+        """Return all open/in-progress tickets assigned to me, paginated."""
+        all_tickets: list[HDETicket] = []
+        page = 1
+        owner_id = config.hde_owner_id
+
+        while True:
+            url = f"{self.base_url}/tickets/"
+            params = {
+                "owner_list": owner_id,
+                "status_list": "open,process",
+                "page": str(page),
+            }
+            async with aiohttp.ClientSession(auth=self.auth) as session:
+                async with session.get(url, params=params) as response:
+                    data = await self._read_response(response)
+                    if response.status >= 400:
+                        message = self._extract_error_message(data) or f"HDE API error {response.status}"
+                        raise HDEApiError(message)
+
+            if not isinstance(data, dict):
+                break
+            tickets_data = data.get("data", {})
+            if not tickets_data:
+                break
+
+            for ticket_raw in tickets_data.values():
+                if not isinstance(ticket_raw, dict):
+                    continue
+                ticket_id = str(ticket_raw.get("id", ""))
+                unique_id = ticket_raw.get("unique_id", ticket_id)
+                title = ticket_raw.get("title", "")
+                user_name = ticket_raw.get("user_name", "")
+                user_lastname = ticket_raw.get("user_lastname", "")
+                company_name = f"{user_name} {user_lastname}".strip() or "—"
+                sla_date = ticket_raw.get("sla_date") or None
+                link_staff = f"{self.base_url.replace('/api/v2', '')}/tickets/{ticket_id}"
+                all_tickets.append(HDETicket(
+                    ticket_id=ticket_id,
+                    unique_id=unique_id,
+                    title=title,
+                    company_name=company_name,
+                    owner_id=str(ticket_raw.get("owner_id", "")),
+                    sla_date=sla_date,
+                    hde_link=link_staff,
+                    link_staff=link_staff,
+                ))
+
+            meta = data.get("meta", {})
+            total_pages = meta.get("total_pages", 1) if isinstance(meta, dict) else 1
+            if page >= total_pages:
+                break
+            page += 1
+
+        return all_tickets
+
+    async def _post(
+        self,
+        path: str,
+        *,
+        text: str = "",
+        attachments: Sequence[HDEAttachment] = (),
+    ) -> HDEApiResult:
+        url = f"{self.base_url}{path}"
+        payload = self._build_payload(text=text, attachments=attachments)
+        async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with session.post(url, data=payload) as response:
+                data = await self._read_response(response)
+                if response.status >= 400:
+                    message = self._extract_error_message(data) or f"HDE API error {response.status}"
+                    raise HDEApiError(message)
+                return HDEApiResult(status=response.status, data=data)
+
+    async def _put(self, path: str, *, text: str = "") -> HDEApiResult:
+        url = f"{self.base_url}{path}"
+        payload = {"text": text.strip()}
+        async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with session.put(url, data=payload) as response:
+                data = await self._read_response(response)
+                if response.status >= 400:
+                    message = self._extract_error_message(data) or f"HDE API error {response.status}"
+                    raise HDEApiError(message)
+                return HDEApiResult(status=response.status, data=data)
+
+    async def _delete(self, path: str) -> HDEApiResult:
+        url = f"{self.base_url}{path}"
+        async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with session.delete(url) as response:
+                data = await self._read_response(response)
+                if response.status >= 400:
+                    message = self._extract_error_message(data) or f"HDE API error {response.status}"
+                    raise HDEApiError(message)
+                return HDEApiResult(status=response.status, data=data)
+
+    def _build_payload(
+        self,
+        *,
+        text: str,
+        attachments: Sequence[HDEAttachment],
+    ) -> aiohttp.FormData | dict[str, str]:
+        clean_text = (text or "").strip()
+        if not attachments:
+            return {"text": clean_text}
+
+        form = aiohttp.FormData()
+        form.add_field("text", clean_text)
+        for attachment in attachments:
+            form.add_field(
+                "files",
+                attachment.content,
+                filename=attachment.filename,
+                content_type=attachment.content_type or "application/octet-stream",
+            )
+        return form
+
+    async def _read_response(self, response: aiohttp.ClientResponse) -> Any:
+        content_type = response.headers.get("Content-Type", "").lower()
+        if "application/json" in content_type:
+            return await response.json()
+        return await response.text()
+
+    def _extract_error_message(self, data: Any) -> str:
+        if isinstance(data, dict):
+            for key in ("detail", "message", "error"):
+                value = data.get(key)
+                if value:
+                    return str(value)
+
+            errors = data.get("errors")
+            if isinstance(errors, list):
+                parts: list[str] = []
+                for item in errors:
+                    if isinstance(item, dict):
+                        part = item.get("details") or item.get("title") or item.get("message")
+                        if part:
+                            parts.append(str(part))
+                    elif item:
+                        parts.append(str(item))
+                if parts:
+                    return "; ".join(parts)
+            if errors:
+                return str(errors)
+
+        if isinstance(data, str):
+            return data.strip()
+        return ""
