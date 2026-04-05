@@ -90,17 +90,23 @@ def _now_storage() -> str:
 
 
 def _calculate_pre_sla_notify_at(payload: dict) -> str:
+    """Schedule pre-SLA alert based on reply SLA (default_reply_sla_minutes from last post).
+    If HDE reports a tighter deadline (sla_remaining_minutes < default_reply_sla_minutes),
+    that deadline wins instead.
+    """
     now = utcnow()
     warning_minutes = max(config.pre_sla_warning_minutes, 0)
-    remaining_minutes = _parse_minutes(payload.get("sla_remaining_minutes"))
-
-    if remaining_minutes is not None:
-        delay_minutes = max(remaining_minutes - warning_minutes, 0)
-        return to_storage(now + timedelta(minutes=delay_minutes))
-
     total_sla_minutes = max(config.default_reply_sla_minutes, 0)
+
     last_post_at = parse_datetime(payload.get("last_post_date")) or now
     notify_at = last_post_at + timedelta(minutes=max(total_sla_minutes - warning_minutes, 0))
+
+    remaining_minutes = _parse_minutes(payload.get("sla_remaining_minutes"))
+    if remaining_minutes is not None and remaining_minutes < total_sla_minutes:
+        hde_notify_at = now + timedelta(minutes=max(remaining_minutes - warning_minutes, 0))
+        if hde_notify_at < notify_at:
+            notify_at = hde_notify_at
+
     if notify_at < now:
         notify_at = now
     return to_storage(notify_at)

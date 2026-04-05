@@ -147,7 +147,7 @@ def test_format_morning_digest_empty_night():
 
 
 def test_format_refresh_result_no_changes():
-    text = format_refresh_result(active_count=3, marked_deleted=[], pending_delete_count=0)
+    text = format_refresh_result(active_count=3, hde_count=3, marked_deleted=[])
     assert "Синхронизация завершена" in text
     assert "Активных топиков:" in text
     assert "<b>3</b>" in text

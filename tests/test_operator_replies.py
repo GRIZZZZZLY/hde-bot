@@ -32,7 +32,7 @@ class DummyBot:
     async def send_message(self, chat_id, text, **kwargs):
         self.sent_messages.append((chat_id, text, kwargs))
 
-    async def close_forum_topic(self, chat_id, message_thread_id, **kwargs):
+    async def delete_forum_topic(self, chat_id, message_thread_id, **kwargs):
         self.closed_topics.append(message_thread_id)
 
 
@@ -591,10 +591,10 @@ async def test_refresh_marks_stale_topic_deleted(initialized_db, monkeypatch):
 
     close_calls = []
 
-    async def fake_close_topic(self, chat_id, message_thread_id):
+    async def fake_delete_topic(self, chat_id, message_thread_id):
         close_calls.append(message_thread_id)
 
-    monkeypatch.setattr("aiogram.Bot.close_forum_topic", fake_close_topic)
+    monkeypatch.setattr("aiogram.Bot.delete_forum_topic", fake_delete_topic)
 
     from bot.refresh import refresh_topics
     result = await refresh_topics(bot=DummyBot())

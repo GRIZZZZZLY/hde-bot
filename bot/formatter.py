@@ -118,9 +118,8 @@ def format_pre_sla_alert(
     link: str,
 ) -> str:
     return (
-        f"⏰ <b>До нарушения SLA осталось {minutes_left} минут</b>\n"
-        f"🎫 <b>#{_escape(display_id)}</b>\n"
-        f"🏢 {_escape(company_name)}\n"
+        f"🔥 <b>Тикет сгорит через {minutes_left} минут</b> 🔥\n"
+        "──────────────\n"
         f"📝 {_escape(ticket_name)}\n"
         f'🔗 <a href="{_escape(link)}">Открыть в HDE</a>'
     )
@@ -269,22 +268,24 @@ def format_morning_digest(
 
 def format_refresh_result(
     active_count: int,
+    hde_count: int,
     marked_deleted: list,
-    pending_delete_count: int,
+    cleaned_pending: int = 0,
 ) -> str:
     lines = [
         "🔄 <b>Синхронизация завершена</b>",
         "",
+        f"📡 Тикетов в HDE: <b>{hde_count}</b>",
         f"✅ Активных топиков: <b>{active_count}</b>",
     ]
     if marked_deleted:
-        lines.append(f"🗑️ Помечено удалёнными: <b>{len(marked_deleted)}</b>")
+        lines.append(f"🗑️ Удалено устаревших: <b>{len(marked_deleted)}</b>")
         for t in marked_deleted:
             name = _escape(getattr(t, "ticket_name", "") or getattr(t, "ticket_id", ""))
             company = _escape(getattr(t, "company_name", ""))
             lines.append(f"  • {name} — {company}")
-    if pending_delete_count:
-        lines.append(f"⏳ Ожидают удаления: <b>{pending_delete_count}</b>")
-    if not marked_deleted:
+    if cleaned_pending:
+        lines.append(f"🧹 Очищено закрытых топиков: <b>{cleaned_pending}</b>")
+    if not marked_deleted and not cleaned_pending:
         lines.append("✨ Всё актуально, расхождений нет")
     return "\n".join(lines)

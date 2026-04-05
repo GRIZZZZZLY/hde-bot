@@ -796,3 +796,15 @@ async def list_active_topics() -> list[TicketTopic]:
         ) as cursor:
             rows = await cursor.fetchall()
     return [_row_to_topic(row) for row in rows]
+
+
+async def list_topics_by_state(state: str) -> list[TicketTopic]:
+    """Return all topics with the given topic_state."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM ticket_topics WHERE topic_state = ? ORDER BY created_at ASC",
+            (state,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [_row_to_topic(row) for row in rows]

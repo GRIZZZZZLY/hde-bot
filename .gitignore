@@ -1,4 +1,6 @@
 .env
+secrets/
+artifacts/
 *.db
 *.sqlite
 *.sqlite3

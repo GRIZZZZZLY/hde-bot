@@ -4,13 +4,14 @@ import logging
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.types import ErrorEvent, Update
 
 from .config import config
 from .db import init_db
 from .handlers.commands import router as commands_router
 from .hde_webhook import hde_webhook_handler
-from .scheduler import run_scheduler
+from .scheduler import run_scheduler, _ALLOWED_UPDATES
+from .tg_session import RetrySession
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,57 +20,73 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-async def on_startup(app: web.Application) -> None:
+def _build_dispatcher(bot: Bot) -> Dispatcher:
+    dp = Dispatcher()
+
+    @dp.update.outer_middleware()
+    async def log_update(handler, event: Update, data: dict):
+        logger.info("⬇ Update id=%s type=%s", event.update_id, event.event_type)
+        result = await handler(event, data)
+        logger.info("✓ Update id=%s done", event.update_id)
+        return result
+
+    @dp.errors()
+    async def global_error_handler(event: ErrorEvent) -> bool:
+        logger.exception(
+            "Unhandled error for update %s: %s",
+            event.update.update_id if event.update else "?",
+            event.exception,
+        )
+        return True
+
+    dp.include_router(commands_router)
+    return dp
+
+
+async def _run_hde_server(stop_event: asyncio.Event) -> None:
+    """aiohttp server — only handles HDE webhooks."""
+    app = web.Application()
+    app.router.add_post(config.webhook_path_hde, hde_webhook_handler)
+    app.router.add_get("/health", lambda r: web.Response(text="ok"))
+
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", config.app_port)
+    await site.start()
+    logger.info("HDE webhook server on port %d", config.app_port)
+    await stop_event.wait()
+    await runner.cleanup()
+
+
+async def _main_async() -> None:
     await init_db()
-    bot: Bot = app["bot"]
-    webhook_url = f"{config.webhook_host}{config.webhook_path_tg}"
-    await bot.set_webhook(webhook_url)
+
+    bot = Bot(token=config.bot_token, session=RetrySession())
+    dp = _build_dispatcher(bot)
+
+    # Remove any leftover webhook so polling works
+    await bot.delete_webhook(drop_pending_updates=False)
+    logger.info("Bot started (polling mode)")
 
     stop_event = asyncio.Event()
-    app["scheduler_stop_event"] = stop_event
-    app["scheduler_task"] = asyncio.create_task(run_scheduler(bot, stop_event))
 
-    logger.info("Webhook set to %s", webhook_url)
-    logger.info("Bot started")
+    scheduler_task = asyncio.create_task(run_scheduler(bot, stop_event))
+    hde_task = asyncio.create_task(_run_hde_server(stop_event))
 
-
-async def on_shutdown(app: web.Application) -> None:
-    stop_event: asyncio.Event = app["scheduler_stop_event"]
-    scheduler_task: asyncio.Task = app["scheduler_task"]
-    stop_event.set()
-    scheduler_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await scheduler_task
-
-    bot: Bot = app["bot"]
-    await bot.delete_webhook()
-    await bot.session.close()
-    logger.info("Bot stopped")
-
-
-def create_app() -> web.Application:
-    bot = Bot(token=config.bot_token)
-    dp = Dispatcher()
-    dp.include_router(commands_router)
-
-    app = web.Application()
-    app["bot"] = bot
-
-    SimpleRequestHandler(dispatcher=dp, bot=bot).register(
-        app, path=config.webhook_path_tg
-    )
-    app.router.add_post(config.webhook_path_hde, hde_webhook_handler)
-
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-
-    setup_application(app, dp, bot=bot)
-    return app
+    try:
+        await dp.start_polling(bot, allowed_updates=_ALLOWED_UPDATES, handle_signals=True)
+    finally:
+        stop_event.set()
+        for task in (scheduler_task, hde_task):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        await bot.session.close()
+        logger.info("Bot stopped")
 
 
 def main() -> None:
-    app = create_app()
-    web.run_app(app, host="0.0.0.0", port=config.app_port)
+    asyncio.run(_main_async())
 
 
 if __name__ == "__main__":

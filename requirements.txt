@@ -3,6 +3,11 @@ aiohttp>=3.9
 aiosqlite>=0.19
 python-dotenv>=1.0
 
+# Reporting: HDE → Google Sheets
+playwright>=1.40
+gspread>=6.0
+google-auth>=2.0
+
 # Dev/test
 pytest>=7.0
 pytest-asyncio>=0.23

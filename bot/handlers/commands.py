@@ -1,6 +1,8 @@
+from datetime import date
+
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import Message
+from aiogram.types import CallbackQuery, Message
 
 from ..db import (
     count_active_topics,
@@ -76,7 +78,9 @@ async def cmd_help(message: Message) -> None:
         "/send текст — отправить публичный ответ клиенту через HDE\n"
         "/send в ответ на сообщение, медиа или альбом — отправить текст, caption и вложения клиенту\n"
         "/delete в ответ на сообщение — удалить его из HDE\n"
-        "/refresh — синхронизировать топики с HDE, убрать устаревшие",
+        "/refresh — синхронизировать топики с HDE, убрать устаревшие\n"
+        "/report — записать отчёт по операторам в Google Sheets (за вчера)\n"
+        "/report YYYY-MM-DD — отчёт за конкретную дату",
         parse_mode="HTML",
     )
 
@@ -135,22 +139,95 @@ async def cmd_delete(message: Message) -> None:
     await _run_operator_command(message, action)
 
 
+@router.message(Command("report"))
+async def cmd_report(message: Message, command: CommandObject) -> None:
+    """
+    /report          — отчёт за вчера
+    /report 2025-04-04  — отчёт за конкретную дату (YYYY-MM-DD)
+    """
+    from ..reporting.runner import is_report_configured, run_report
+
+    if not is_report_configured():
+        await message.answer(
+            "⚠️ Отчёт не настроен.\n\n"
+            "Добавьте в .env:\n"
+            "<code>HDE_REPORT_PASSWORD=...\n"
+            "GOOGLE_SERVICE_ACCOUNT_FILE=path/to/key.json\n"
+            "GOOGLE_SPREADSHEET_ID=...</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    report_date: date | None = None
+    if command.args:
+        try:
+            report_date = date.fromisoformat(command.args.strip())
+        except ValueError:
+            await message.answer(
+                "⚠️ Неверный формат даты. Используйте: <code>/report YYYY-MM-DD</code>",
+                parse_mode="HTML",
+            )
+            return
+
+    wait_msg = await message.answer("⏳ Отчёт генерируется, подождите...")
+    try:
+        result = await run_report(report_date)
+        from ..scheduler import mark_report_done_today
+        mark_report_done_today()
+    except Exception as exc:
+        result = f"❌ <b>Ошибка:</b>\n<code>{exc}</code>"
+    try:
+        await wait_msg.delete()
+    except Exception:
+        pass
+    await message.answer(result, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "report:run_yesterday")
+async def cb_report_yesterday(callback: CallbackQuery) -> None:
+    """Inline button: run yesterday's report from the personal chat prompt."""
+    from ..reporting.runner import run_report
+    from ..scheduler import mark_report_done_today
+
+    await callback.answer()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    wait_msg = await callback.message.answer("⏳ Отчёт генерируется, подождите...")
+    try:
+        result = await run_report()
+        mark_report_done_today()
+    except Exception as exc:
+        result = f"❌ <b>Ошибка:</b>\n<code>{exc}</code>"
+    try:
+        await wait_msg.delete()
+    except Exception:
+        pass
+    await callback.message.answer(result, parse_mode="HTML")
+
+
 @router.message(Command("refresh"))
 async def cmd_refresh(message: Message) -> None:
     wait_msg = await message.answer("🔄 Синхронизирую с HDE...")
+    error_text: str | None = None
+    result_text: str | None = None
     try:
         result = await refresh_topics(bot=message.bot)
+        result_text = format_refresh_result(
+            active_count=result.active_after,
+            hde_count=result.hde_count,
+            marked_deleted=result.marked_deleted,
+            cleaned_pending=result.cleaned_pending,
+        )
     except Exception as exc:
+        error_text = f"⚠️ <b>Ошибка при синхронизации:</b> {exc}"
+    try:
         await wait_msg.delete()
-        await message.answer(f"⚠️ <b>Ошибка при синхронизации:</b> {exc}", parse_mode="HTML")
-        return
-    await wait_msg.delete()
-    text = format_refresh_result(
-        active_count=result.active_after,
-        marked_deleted=result.marked_deleted,
-        pending_delete_count=result.pending_delete_count,
-    )
-    await message.answer(text, parse_mode="HTML")
+    except Exception:
+        pass
+    await message.answer(error_text or result_text, parse_mode="HTML")
 
 
 @router.edited_message(F.message_thread_id.is_not(None))
