@@ -1,22 +1,18 @@
 """
-Playwright automation: login to HDE, request operator report, parse result table.
+Playwright automation for two HDE report pages:
 
-Flow:
-  1. Login to HDE web UI
-  2. Navigate to /ru/review/staff_user_report/
-  3. Set date range (same day, start 00:00 / end 23:59), check "Дата закрытия"
-  4. Click "Запросить"
-  5. Wait ~5 s for report to generate, click "Показать"
-  6. Find operator row in table, extract tickets + avg_time
-  7. Return OperatorReportData
+1. Staff user report  (/ru/review/staff_user_report/)
+   → tickets count + avg completion time for the operator
 
-Selectors are marked # ADJUST: if they may differ in your HDE version.
-Run once with headless=False to verify them visually.
+2. Global report  (/ru/review/)
+   → SLA violations ("Сгорел") count for the operator
+
+Both reports are fetched in a single browser session (one login).
 """
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -27,9 +23,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class OperatorReportData:
-    operator: str       # name as found in the table
-    tickets: str        # "Количество заявок"
-    avg_time: str       # "Среднее время на выполнение заявки"
+    operator: str
+    tickets: str
+    avg_time: str
+    sla_violations: str = "0"
 
 
 async def get_operator_report_data(
@@ -41,183 +38,168 @@ async def get_operator_report_data(
     screenshots_dir: Path,
     headless: bool = True,
 ) -> OperatorReportData:
-    """
-    Log in to HDE, generate the staff user report for *report_date*,
-    find the row for *operator_name* and return its key metrics.
-
-    Raises RuntimeError on any failure (screenshot saved automatically).
-    """
+    """Log in to HDE once, fetch both reports and return combined data."""
     screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless)
+    async with async_playwright() as playwright:
+        try:
+            browser = await playwright.chromium.launch(headless=headless)
+        except Exception as exc:
+            raise RuntimeError(
+                "Playwright Chromium is not installed. "
+                "Run 'python -m playwright install chromium' on this machine."
+            ) from exc
+
         context = await browser.new_context()
         page = await context.new_page()
 
         try:
             await _login(page, base_url, login, password)
-            data = await _request_and_parse_report(page, base_url, report_date, operator_name)
+
+            # 1. Staff report: tickets + avg_time
+            data = await _get_staff_report(page, base_url, report_date, operator_name)
+
+            # 2. Global report: SLA violations
+            sla_violations = await _get_global_report_sla(
+                page, base_url, report_date, operator_name
+            )
+            data.sla_violations = sla_violations
+
             return data
+
         except Exception as exc:
-            shot = screenshots_dir / f"error_{report_date.isoformat()}.png"
-            await page.screenshot(path=str(shot), full_page=True)
-            logger.error("Screenshot saved: %s", shot)
+            screenshot = screenshots_dir / f"error_{report_date.isoformat()}.png"
+            await page.screenshot(path=str(screenshot), full_page=True)
+            logger.error("Saved Playwright error screenshot to %s", screenshot)
             raise RuntimeError(f"HDE report failed: {exc}") from exc
         finally:
             await browser.close()
 
 
+# ── Login ────────────────────────────────────────────────────────────────────
+
 async def _login(page: Page, base_url: str, login: str, password: str) -> None:
     logger.info("Logging in to %s", base_url)
     await page.goto(base_url, wait_until="load", timeout=30_000)
 
-    # Fill email field (placeholder "Э-почта")
     await page.locator('input[type="email"], input[type="text"]').first.fill(login)
-    # Fill password field
     await page.locator('input[type="password"]').fill(password)
-    # Click "Войти" and wait for actual page navigation
+
     async with page.expect_navigation(wait_until="load", timeout=20_000):
         await page.locator('button:has-text("Войти"), button[type="submit"]').click()
 
-    logger.info("After login, URL: %s", page.url)
-
-    # If the login button is still visible — credentials are wrong
     if await page.locator('button:has-text("Войти")').count() > 0:
         raise RuntimeError(
-            "Login failed — still on login page. "
-            "Check HDE_API_EMAIL and HDE_REPORT_PASSWORD in .env"
+            "Login failed: still on the login page. "
+            "Check HDE_API_EMAIL and HDE_REPORT_PASSWORD."
         )
-    logger.info("Login successful")
+
+    logger.info("Login successful, current URL: %s", page.url)
 
 
-async def _request_and_parse_report(
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+async def _set_flatpickr_dates(page: Page, report_date: date) -> None:
+    """Set both flatpickr date inputs: start = 00:00, end = 23:59."""
+    y, m, d = report_date.year, report_date.month, report_date.day
+    await page.evaluate(
+        """([y, m, d]) => {
+            const fpInputs = Array.from(document.querySelectorAll("input"))
+                .filter((input) => !!input._flatpickr);
+            const start = new Date(y, m - 1, d, 0, 0);
+            const end   = new Date(y, m - 1, d, 23, 59);
+            if (fpInputs[0]) fpInputs[0]._flatpickr.setDate(start, true);
+            if (fpInputs[1]) fpInputs[1]._flatpickr.setDate(end,   true);
+        }""",
+        [y, m, d],
+    )
+
+
+async def _check_close_date(page: Page) -> None:
+    """Ensure the 'Дата закрытия' checkbox is checked."""
+    cb = page.locator(
+        'label:has-text("Дата закрытия") input[type="checkbox"], '
+        'input[type="checkbox"][id*="close"], '
+        'input[type="checkbox"][name*="close"]'
+    )
+    if await cb.count():
+        if not await cb.is_checked():
+            await cb.click()
+    else:
+        logger.warning("Could not find the 'Дата закрытия' checkbox")
+
+
+async def _click_request_button(page: Page) -> None:
+    for selector in (
+        'button:has-text("Запросить")',
+        'input[value="Запросить"]',
+        'button[type="submit"]',
+        ".btn-primary",
+    ):
+        if await page.locator(selector).count():
+            await page.locator(selector).first.click()
+            return
+    raise RuntimeError(
+        "Could not find the 'Запросить' button. "
+        "Adjust selectors in bot/reporting/hde_playwright.py."
+    )
+
+
+async def _click_show_first(page: Page) -> None:
+    btn = page.locator('a:has-text("Показать"), button:has-text("Показать")').first
+    await btn.wait_for(state="visible", timeout=30_000)
+    await btn.click()
+
+
+# ── Staff report ──────────────────────────────────────────────────────────────
+
+async def _get_staff_report(
     page: Page,
     base_url: str,
     report_date: date,
     operator_name: str,
 ) -> OperatorReportData:
-    report_url = f"{base_url}/ru/review/staff_user_report/"
-    logger.info("Navigating to %s", report_url)
-    await page.goto(report_url, wait_until="load", timeout=30_000)
+    url = f"{base_url}/ru/review/staff_user_report/"
+    logger.info("Opening staff report: %s", url)
+    await page.goto(url, wait_until="load", timeout=30_000)
 
-    # Set flatpickr date inputs using Date objects (avoids string-format/timezone issues).
-    # We filter only inputs that actually have ._flatpickr attached, then set both to
-    # the same calendar day — matching what a user sees when clicking a single date.
-    y, m, d = report_date.year, report_date.month, report_date.day
-    fp_debug = await page.evaluate(
-        """([y, m, d]) => {
-            // Collect all inputs that have a flatpickr instance attached
-            const allInputs = Array.from(document.querySelectorAll('input'));
-            const fpInputs  = allInputs.filter(inp => !!inp._flatpickr);
+    await _set_flatpickr_dates(page, report_date)
+    await _check_close_date(page)
+    await _click_request_button(page)
+    await _click_show_first(page)
 
-            const info = fpInputs.map((inp, i) => ({
-                i,
-                name:        inp.name        || '',
-                id:          inp.id          || '',
-                placeholder: inp.placeholder || '',
-                valueBefore: inp.value       || '',
-                enableTime:  inp._flatpickr.config.enableTime,
-                dateFormat:  inp._flatpickr.config.dateFormat,
-            }));
-
-            // JS Date: month is 0-indexed
-            const dt = new Date(y, m - 1, d);
-
-            const dtEnd = new Date(y, m - 1, d, 23, 59);
-            if (fpInputs[0]) fpInputs[0]._flatpickr.setDate(dt, true);
-            if (fpInputs[1]) fpInputs[1]._flatpickr.setDate(dtEnd, true);
-
-            return {
-                total: fpInputs.length,
-                info,
-                afterSet: fpInputs.map(inp => inp.value),
-            };
-        }""",
-        [y, m, d],
-    )
-    logger.info("Flatpickr debug → %s", fp_debug)
-
-    # ADJUST: ensure "Дата закрытия" checkbox is checked
-    checkbox = page.locator('input[type="checkbox"]').filter(has_text="")
-    # Try to find by nearby label text
-    close_date_cb = page.locator('label:has-text("Дата закрытия") input[type="checkbox"], '
-                                  'input[type="checkbox"][id*="close"], '
-                                  'input[type="checkbox"][name*="close"]')
-    if await close_date_cb.count():
-        if not await close_date_cb.is_checked():
-            await close_date_cb.click()
-    else:
-        logger.warning("'Дата закрытия' checkbox not found — check selectors")
-
-    # Click "Запросить"
-    # ADJUST: find the primary submit button
-    for sel in [
-        'button:has-text("Запросить")',
-        'input[value="Запросить"]',
-        'button[type="submit"]',
-        '.btn-primary',
-    ]:
-        if await page.locator(sel).count():
-            await page.locator(sel).first.click()
-            break
-    else:
-        raise RuntimeError("'Запросить' button not found — check selectors in hde_playwright.py")
-
-    logger.info("Report requested, waiting for generation…")
-    await page.wait_for_timeout(5_000)  # HDE generates in 1-3 s; 5 s is safe
-
-    # Click "Показать" on the first (newest) report in the list
-    show_btn = page.locator('a:has-text("Показать"), button:has-text("Показать")').first
-    await show_btn.wait_for(state="visible", timeout=15_000)
-    await show_btn.click()
-
-    # Results appear inline via AJAX — wait for the results table (the one with "Сотрудник")
     await page.wait_for_selector('th:has-text("Сотрудник")', timeout=15_000)
+    return await _parse_staff_table(page, operator_name)
 
-    return await _parse_table(page, operator_name)
 
-
-async def _parse_table(page: Page, operator_name: str) -> OperatorReportData:
-    """
-    Find the operator row in the results table.
-    Dynamically resolves column indices from the header row.
-    """
-    # Find the results table — the one that contains "Сотрудник" header
+async def _parse_staff_table(page: Page, operator_name: str) -> OperatorReportData:
     tables = page.locator("table")
     table = None
     headers: list[str] = []
+
     for i in range(await tables.count()):
-        t = tables.nth(i)
-        raw = await t.locator("thead tr th").all_text_contents()
-        stripped = [h.strip() for h in raw]
-        if any("сотрудник" in h.lower() for h in stripped):
-            table = t
-            headers = stripped
+        candidate = tables.nth(i)
+        vals = [h.strip() for h in await candidate.locator("thead tr th").all_text_contents()]
+        if any("сотрудник" in h.lower() for h in vals):
+            table, headers = candidate, vals
             break
 
     if table is None:
-        # Log all tables for debugging
-        all_h = []
-        for i in range(await tables.count()):
-            raw = await tables.nth(i).locator("thead tr th").all_text_contents()
-            all_h.append([h.strip() for h in raw])
-        raise RuntimeError(f"Results table not found. All tables headers: {all_h}")
-
-    logger.debug("Results table headers: %s", headers)
+        all_h = [
+            [h.strip() for h in await tables.nth(i).locator("thead tr th").all_text_contents()]
+            for i in range(await tables.count())
+        ]
+        raise RuntimeError(f"Staff table not found. Seen headers: {all_h}")
 
     def find_col(keywords: list[str]) -> int | None:
         for i, h in enumerate(headers):
-            h_lower = h.lower()
-            if any(kw.lower() in h_lower for kw in keywords):
+            if any(k.lower() in h.lower() for k in keywords):
                 return i
         return None
 
-    # "Сотрудник" column
-    col_name = find_col(["сотрудник", "оператор", "employee"])
-    # "Количество заявок"
+    col_name    = find_col(["сотрудник", "оператор", "employee"])
     col_tickets = find_col(["количество заявок", "кол-во заявок", "tickets"])
-    # "Среднее время на выполнение заявки"
-    col_avg = find_col(["среднее время на выполнение", "avg", "среднее время выполн"])
+    col_avg     = find_col(["среднее время на выполнение", "среднее время выполн", "avg"])
 
     if col_name is None:
         raise RuntimeError(f"Cannot find 'Сотрудник' column. Headers: {headers}")
@@ -226,34 +208,179 @@ async def _parse_table(page: Page, operator_name: str) -> OperatorReportData:
     if col_avg is None:
         raise RuntimeError(f"Cannot find 'Среднее время на выполнение' column. Headers: {headers}")
 
-    # Scan body rows for the operator
     rows = await table.locator("tbody tr").all()
-    name_lower = operator_name.strip().lower()
+    expected = operator_name.strip().lower()
 
     for row in rows:
-        cells = await row.locator("td").all_text_contents()
-        cells = [c.strip() for c in cells]
-        if not cells:
-            continue
+        cells = [c.strip() for c in await row.locator("td").all_text_contents()]
         if len(cells) <= max(col_name, col_tickets, col_avg):
             continue
-        if cells[col_name].lower() == name_lower:
-            logger.info(
-                "Found operator '%s': tickets=%s avg_time=%s",
-                cells[col_name], cells[col_tickets], cells[col_avg],
-            )
+        if cells[col_name].lower() == expected:
+            logger.info("Staff report: operator=%s tickets=%s avg=%s",
+                        cells[col_name], cells[col_tickets], cells[col_avg])
             return OperatorReportData(
                 operator=cells[col_name],
                 tickets=cells[col_tickets],
                 avg_time=cells[col_avg],
             )
 
-    # Collect available names for a helpful error message
-    available = [
-        (await row.locator("td").nth(col_name).text_content() or "").strip()
-        for row in rows
-    ]
+    available = [(await r.locator("td").nth(col_name).text_content() or "").strip() for r in rows]
     raise RuntimeError(
-        f"Operator '{operator_name}' not found in report table. "
-        f"Available: {available}"
+        f"Operator '{operator_name}' not found in staff report. Available: {available}"
     )
+
+
+# ── Global report (SLA violations) ───────────────────────────────────────────
+
+async def _add_param_partial(page: Page, name: str) -> None:
+    """Move a param by partial text match (fallback for exact-match failures)."""
+    result = await page.evaluate(
+        """(name) => {
+            const panels = document.querySelectorAll('div.connectedSortable');
+            if (panels.length < 2) return null;
+            const left = panels[0], right = panels[1];
+            const span = Array.from(left.querySelectorAll('span.sortable-dual-list-element'))
+                .find(s => s.textContent.trim().includes(name));
+            if (span) { right.appendChild(span); return span.textContent.trim(); }
+            return null;
+        }""",
+        name,
+    )
+    if result:
+        logger.info("Added '%s' via partial match: '%s'", name, result)
+    else:
+        logger.warning("Could not find '%s' even by partial match", name)
+
+
+async def _get_global_report_sla(
+    page: Page,
+    base_url: str,
+    report_date: date,
+    operator_name: str,
+) -> str:
+    """
+    Open the HDE global report, ensure 'Исполнитель' + 'Сгорел' are in the
+    right panel, request the report, and return the 'Сгорел' value for the operator.
+    """
+    url = f"{base_url}/ru/review/global_report/"
+    logger.info("Opening global report: %s", url)
+    await page.goto(url, wait_until="load", timeout=30_000)
+
+    # Wait until param items are rendered
+    await page.wait_for_selector("span.sortable-dual-list-element", timeout=15_000)
+
+    await _setup_global_report_params(page)
+    await _set_flatpickr_dates(page, report_date)
+    await _check_close_date(page)
+    await _click_request_button(page)
+    await _click_show_first(page)
+
+    # Wait for result table — column header will match whatever param name HDE uses
+    await page.wait_for_selector(
+        'th:has-text("Исполнитель"), th:has-text("Сгорел"), th:has-text("owner")',
+        timeout=30_000,
+    )
+    return await _parse_global_table(page, operator_name)
+
+
+async def _setup_global_report_params(page: Page) -> None:
+    """
+    Configure right panel: drag defaults back to left, drag required to right.
+
+    DOM structure:
+      Left:  div#ui-sortable-dual-list-1  span.sortable-dual-list-element
+      Right: div#ui-sortable-dual-list-2  span.sortable-dual-list-element
+
+    Uses real Playwright drag_to() so jQuery UI sortable events fire correctly.
+    """
+    RIGHT_ID = "ui-sortable-dual-list-2"
+    LEFT_ID  = "ui-sortable-dual-list-1"
+    REQUIRED = ["Исполнитель", "Сгорел"]
+
+    right_panel = page.locator(f"#{RIGHT_ID}")
+    left_panel  = page.locator(f"#{LEFT_ID}")
+
+    # Step 1: drag all items currently in right panel back to left
+    right_spans = right_panel.locator("span.sortable-dual-list-element")
+    count = await right_spans.count()
+    for i in range(count):
+        span = right_spans.nth(0)  # always take first — list shrinks after each drag
+        await span.drag_to(left_panel)
+        await page.wait_for_timeout(200)
+
+    # Step 2: drag required items from left to right
+    for name in REQUIRED:
+        span = left_panel.locator(f"span.sortable-dual-list-element:has-text('{name}')").first
+        if await span.count():
+            await span.drag_to(right_panel)
+            await page.wait_for_timeout(300)
+            logger.info("Dragged '%s' to right panel", name)
+        else:
+            logger.warning("Could not find '%s' in left panel", name)
+
+    # Verify
+    right_items = await right_panel.locator("span.sortable-dual-list-element").all_text_contents()
+    logger.info("Right panel after setup: %s", [t.strip() for t in right_items])
+
+
+async def _parse_global_table(page: Page, operator_name: str) -> str:
+    """Find operator row in global report table and return 'Сгорел' cell value."""
+    tables = page.locator("table")
+    table = None
+    headers: list[str] = []
+
+    for i in range(await tables.count()):
+        candidate = tables.nth(i)
+        vals = [h.strip() for h in await candidate.locator("thead tr th").all_text_contents()]
+        if any("исполнитель" in h.lower() or "сгорел" in h.lower() for h in vals):
+            table, headers = candidate, vals
+            break
+
+    if table is None:
+        all_h = [
+            [h.strip() for h in await tables.nth(i).locator("thead tr th").all_text_contents()]
+            for i in range(await tables.count())
+        ]
+        logger.warning("Global report table not found. Seen headers: %s — defaulting to 0", all_h)
+        return "0"
+
+    def find_col(keywords: list[str]) -> int | None:
+        for i, h in enumerate(headers):
+            if any(k.lower() in h.lower() for k in keywords):
+                return i
+        return None
+
+    col_name = find_col(["исполнитель", "сотрудник", "operator"])
+    col_sla  = find_col(["сгорел", "sla", "нарушен"])
+
+    if col_name is None or col_sla is None:
+        logger.warning(
+            "Cannot find required columns in global report. Headers: %s — defaulting to 0", headers
+        )
+        return "0"
+
+    rows = await table.locator("tbody tr").all()
+    expected = operator_name.strip().lower()
+
+    for row in rows:
+        cells = [c.strip() for c in await row.locator("td").all_text_contents()]
+        if len(cells) <= max(col_name, col_sla):
+            continue
+        if cells[col_name].lower() != expected:
+            continue
+
+        raw = cells[col_sla]
+        logger.info("Global report: operator=%s sla_cell=%r", cells[col_name], raw)
+
+        if not raw:
+            return "0"
+
+        # Each violation is a separate line (e.g. "19:10:13 31.03.2026 антон")
+        # Count non-empty lines
+        count = sum(1 for line in raw.splitlines() if line.strip())
+        return str(count)
+
+    logger.warning(
+        "Operator '%s' not found in global report — defaulting to 0", operator_name
+    )
+    return "0"

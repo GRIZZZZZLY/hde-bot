@@ -152,7 +152,7 @@ async def cmd_report(message: Message, command: CommandObject) -> None:
             "⚠️ Отчёт не настроен.\n\n"
             "Добавьте в .env:\n"
             "<code>HDE_REPORT_PASSWORD=...\n"
-            "GOOGLE_SERVICE_ACCOUNT_FILE=path/to/key.json\n"
+            "GOOGLE_SERVICE_ACCOUNT_FILE=secrets/google_service_account.json\n"
             "GOOGLE_SPREADSHEET_ID=...</code>",
             parse_mode="HTML",
         )
