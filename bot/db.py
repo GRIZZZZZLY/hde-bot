@@ -211,6 +211,16 @@ async def init_db() -> None:
             ON topic_media_cache(topic_id, media_group_id, message_id)
             """
         )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS unassigned_general_messages (
+                ticket_id   TEXT PRIMARY KEY,
+                message_id  INTEGER NOT NULL,
+                ticket_name TEXT DEFAULT '',
+                created_at  TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
         await db.commit()
 
 
@@ -808,3 +818,38 @@ async def list_topics_by_state(state: str) -> list[TicketTopic]:
         ) as cursor:
             rows = await cursor.fetchall()
     return [_row_to_topic(row) for row in rows]
+
+
+async def save_general_message(ticket_id: str, message_id: int, ticket_name: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO unassigned_general_messages (ticket_id, message_id, ticket_name)
+            VALUES (?, ?, ?)
+            ON CONFLICT(ticket_id) DO UPDATE SET
+                message_id = excluded.message_id,
+                ticket_name = excluded.ticket_name
+            """,
+            (ticket_id, message_id, ticket_name),
+        )
+        await db.commit()
+
+
+async def get_general_message(ticket_id: str) -> Optional[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT ticket_id, message_id, ticket_name, created_at FROM unassigned_general_messages WHERE ticket_id = ?",
+            (ticket_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def delete_general_message(ticket_id: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM unassigned_general_messages WHERE ticket_id = ?",
+            (ticket_id,),
+        )
+        await db.commit()
