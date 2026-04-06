@@ -9,6 +9,7 @@ from aiohttp import web
 from aiogram import Bot
 
 from . import db
+from . import general_channel
 from .client_media import extract_client_attachment_refs
 from .config import config
 from .topic_manager import (
@@ -126,6 +127,19 @@ async def hde_webhook_handler(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.exception("Error handling event '%s': %s", event_type, exc)
         return web.Response(status=500, text="Internal error")
+
+    # General channel hooks — run after main handler, failures are non-fatal
+    try:
+        if event_type == "assigned_on_create":
+            await general_channel.on_assigned_on_create(bot, payload)
+        elif event_type == "owner_changed":
+            await general_channel.on_owner_changed(bot, payload)
+        elif event_type == "ticket_updated":
+            await general_channel.on_ticket_updated(bot, payload)
+        elif event_type == "ticket_closed":
+            await general_channel.on_ticket_closed(bot, payload)
+    except Exception as exc:
+        logger.exception("General channel hook failed for event '%s': %s", event_type, exc)
 
     if should_dedupe:
         await db.save_processed_event(event_key, event_type, payload["ticket_id"])
