@@ -88,9 +88,15 @@ def _display_id(payload: dict) -> str:
 async def on_assigned_on_create(bot: Bot, payload: dict) -> None:
     if config.general_topic_id is None:
         return
+    owner_name = _payload_str(payload, "owner_name")
+    department = _payload_str(payload, "department")
+    logger.info(
+        "general_channel.on_assigned_on_create: ticket=%s owner_name=%r department=%r target_dept=%r",
+        _payload_str(payload, "ticket_id"), owner_name, department, config.unassigned_department,
+    )
     if not _is_unassigned(
-        owner_name=_payload_str(payload, "owner_name"),
-        department=_payload_str(payload, "department"),
+        owner_name=owner_name,
+        department=department,
         target_dept=config.unassigned_department,
     ):
         return
@@ -114,6 +120,11 @@ async def on_owner_changed(bot: Bot, payload: dict) -> None:
         return
     ticket_id = _payload_str(payload, "ticket_id")
     owner_name = _payload_str(payload, "owner_name")
+    department = _payload_str(payload, "department")
+    logger.info(
+        "general_channel.on_owner_changed: ticket=%s owner_name=%r department=%r target_dept=%r",
+        ticket_id, owner_name, department, config.unassigned_department,
+    )
 
     is_now_unassigned = _is_unassigned(
         owner_name=owner_name,
