@@ -1,0 +1,175 @@
+"""
+Notifications for unassigned tickets in the General Telegram topic.
+
+Enabled only when GENERAL_TOPIC_ID is set in config.
+"""
+from __future__ import annotations
+
+import logging
+
+from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
+
+from . import db
+from .config import config
+
+logger = logging.getLogger(__name__)
+
+
+def _is_unassigned(owner_name: str, department: str, target_dept: str) -> bool:
+    """Return True if ticket qualifies for General notification."""
+    has_owner = bool(owner_name.strip()) and "неприсвоенный" not in owner_name.strip().lower()
+    if has_owner:
+        return False
+    if target_dept and department.strip().lower() != target_dept.strip().lower():
+        return False
+    return True
+
+
+def _format_general_message(display_id: str, ticket_name: str, link: str) -> str:
+    parts = [
+        "🆕 <b>Неприсвоенный тикет</b>\n",
+        f"#{display_id} — {ticket_name}",
+    ]
+    if link:
+        parts.append(f'\n<a href="{link}">Открыть в HDE</a>')
+    return "\n".join(parts)
+
+
+async def _send(bot: Bot, text: str) -> int | None:
+    """Send a message to the General topic. Returns message_id or None on failure."""
+    assert config.general_topic_id is not None
+    try:
+        msg = await bot.send_message(
+            chat_id=config.group_chat_id,
+            message_thread_id=config.general_topic_id,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        return msg.message_id
+    except TelegramAPIError as exc:
+        logger.error("Failed to send General notification: %s", exc)
+        return None
+
+
+async def _edit(bot: Bot, message_id: int, text: str) -> None:
+    assert config.general_topic_id is not None
+    try:
+        await bot.edit_message_text(
+            chat_id=config.group_chat_id,
+            message_id=message_id,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except TelegramAPIError as exc:
+        logger.error("Failed to edit General notification %d: %s", message_id, exc)
+
+
+async def _delete(bot: Bot, message_id: int) -> None:
+    try:
+        await bot.delete_message(
+            chat_id=config.group_chat_id,
+            message_id=message_id,
+        )
+    except TelegramAPIError as exc:
+        logger.error("Failed to delete General notification %d: %s", message_id, exc)
+
+
+def _payload_str(payload: dict, key: str) -> str:
+    return str(payload.get(key) or "").strip()
+
+
+def _display_id(payload: dict) -> str:
+    return _payload_str(payload, "unique_id") or _payload_str(payload, "ticket_id")
+
+
+async def on_assigned_on_create(bot: Bot, payload: dict) -> None:
+    if config.general_topic_id is None:
+        return
+    if not _is_unassigned(
+        owner_name=_payload_str(payload, "owner_name"),
+        department=_payload_str(payload, "department"),
+        target_dept=config.unassigned_department,
+    ):
+        return
+    ticket_id = _payload_str(payload, "ticket_id")
+    existing = await db.get_general_message(ticket_id)
+    if existing:
+        return
+    text = _format_general_message(
+        display_id=_display_id(payload),
+        ticket_name=_payload_str(payload, "ticket_name"),
+        link=_payload_str(payload, "link"),
+    )
+    message_id = await _send(bot, text)
+    if message_id:
+        await db.save_general_message(ticket_id, message_id, _payload_str(payload, "ticket_name"))
+        logger.info("Posted General notification for ticket %s (msg_id=%d)", ticket_id, message_id)
+
+
+async def on_owner_changed(bot: Bot, payload: dict) -> None:
+    if config.general_topic_id is None:
+        return
+    ticket_id = _payload_str(payload, "ticket_id")
+    owner_name = _payload_str(payload, "owner_name")
+
+    is_now_unassigned = _is_unassigned(
+        owner_name=owner_name,
+        department=_payload_str(payload, "department"),
+        target_dept=config.unassigned_department,
+    )
+
+    existing = await db.get_general_message(ticket_id)
+
+    if is_now_unassigned:
+        if existing:
+            return  # already posted
+        text = _format_general_message(
+            display_id=_display_id(payload),
+            ticket_name=_payload_str(payload, "ticket_name"),
+            link=_payload_str(payload, "link"),
+        )
+        message_id = await _send(bot, text)
+        if message_id:
+            await db.save_general_message(ticket_id, message_id, _payload_str(payload, "ticket_name"))
+            logger.info("Posted General notification on re-unassign for ticket %s", ticket_id)
+    else:
+        if existing is None:
+            return
+        await _delete(bot, existing["message_id"])
+        await db.delete_general_message(ticket_id)
+        logger.info("Deleted General notification for ticket %s (assigned to %s)", ticket_id, owner_name)
+
+
+async def on_ticket_updated(bot: Bot, payload: dict) -> None:
+    if config.general_topic_id is None:
+        return
+    ticket_id = _payload_str(payload, "ticket_id")
+    existing = await db.get_general_message(ticket_id)
+    if existing is None:
+        return
+    new_name = _payload_str(payload, "ticket_name")
+    if existing["ticket_name"] == new_name:
+        return
+    text = _format_general_message(
+        display_id=_display_id(payload),
+        ticket_name=new_name,
+        link=_payload_str(payload, "link"),
+    )
+    await _edit(bot, existing["message_id"], text)
+    await db.save_general_message(ticket_id, existing["message_id"], new_name)
+    logger.info("Edited General notification for ticket %s", ticket_id)
+
+
+async def on_ticket_closed(bot: Bot, payload: dict) -> None:
+    if config.general_topic_id is None:
+        return
+    ticket_id = _payload_str(payload, "ticket_id")
+    existing = await db.get_general_message(ticket_id)
+    if existing is None:
+        return
+    await _delete(bot, existing["message_id"])
+    await db.delete_general_message(ticket_id)
+    logger.info("Deleted General notification on close for ticket %s", ticket_id)
