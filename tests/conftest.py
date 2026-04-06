@@ -30,6 +30,8 @@ def configure_test_settings(monkeypatch):
     monkeypatch.setattr(cfg, "public_reply_ticket_allowlist", ())
     monkeypatch.setattr(cfg, "digest_send_hour_utc", 5)
     monkeypatch.setattr(cfg, "digest_night_start_hour_utc", 15)
+    monkeypatch.setattr(cfg, "general_topic_id", None)
+    monkeypatch.setattr(cfg, "unassigned_department", "")
     return cfg
 
 

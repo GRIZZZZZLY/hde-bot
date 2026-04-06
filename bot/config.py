@@ -40,6 +40,8 @@ class Config:
     public_reply_ticket_allowlist: tuple[str, ...]
     digest_send_hour_utc: int
     digest_night_start_hour_utc: int
+    general_topic_id: int | None
+    unassigned_department: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -69,6 +71,12 @@ class Config:
             public_reply_ticket_allowlist=_parse_csv(os.getenv("HDE_PUBLIC_REPLY_TICKET_ALLOWLIST")),
             digest_send_hour_utc=int(os.getenv("DIGEST_SEND_HOUR_UTC", "5")),
             digest_night_start_hour_utc=int(os.getenv("DIGEST_NIGHT_START_HOUR_UTC", "15")),
+            general_topic_id=(
+                int(os.getenv("GENERAL_TOPIC_ID"))
+                if os.getenv("GENERAL_TOPIC_ID", "").strip()
+                else None
+            ),
+            unassigned_department=os.getenv("UNASSIGNED_DEPARTMENT", "").strip(),
         )
 
     def matches_owner(self, owner_id: str, owner_name: str) -> bool:
