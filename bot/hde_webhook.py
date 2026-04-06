@@ -69,6 +69,7 @@ def _normalize_payload(payload: dict) -> dict:
             or ""
         ).strip(),
         "link": str(payload.get("link") or payload.get("link_staff") or "").strip(),
+        "department": str(payload.get("department") or "").strip(),
         "date_update": str(payload.get("date_update") or "").strip(),
         "last_post_date": str(payload.get("last_post_date") or "").strip(),
         "sla_remaining_minutes": payload.get("sla_remaining_minutes", payload.get("sla_remaining")),

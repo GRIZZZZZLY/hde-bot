@@ -152,3 +152,20 @@ def test_format_refresh_result_no_changes():
     assert "Активных топиков:" in text
     assert "<b>3</b>" in text
     assert "расхождений нет" in text
+
+
+def test_normalize_payload_extracts_department():
+    payload = _normalize_payload({
+        "event_type": "assigned_on_create",
+        "ticket_id": "TKT-5",
+        "department": "Оборудование",
+    })
+    assert payload["department"] == "Оборудование"
+
+
+def test_normalize_payload_department_defaults_to_empty():
+    payload = _normalize_payload({
+        "event_type": "assigned_on_create",
+        "ticket_id": "TKT-6",
+    })
+    assert payload["department"] == ""
