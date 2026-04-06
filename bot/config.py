@@ -17,6 +17,15 @@ def _parse_csv(value: str | None) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def _parse_optional_int(value: str | None) -> int | None:
+    if not value or not value.strip():
+        return None
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
 @dataclass
 class Config:
     bot_token: str
@@ -71,11 +80,7 @@ class Config:
             public_reply_ticket_allowlist=_parse_csv(os.getenv("HDE_PUBLIC_REPLY_TICKET_ALLOWLIST")),
             digest_send_hour_utc=int(os.getenv("DIGEST_SEND_HOUR_UTC", "5")),
             digest_night_start_hour_utc=int(os.getenv("DIGEST_NIGHT_START_HOUR_UTC", "15")),
-            general_topic_id=(
-                int(os.getenv("GENERAL_TOPIC_ID"))
-                if os.getenv("GENERAL_TOPIC_ID", "").strip()
-                else None
-            ),
+            general_topic_id=_parse_optional_int(os.getenv("GENERAL_TOPIC_ID")),
             unassigned_department=os.getenv("UNASSIGNED_DEPARTMENT", "").strip(),
         )
 
