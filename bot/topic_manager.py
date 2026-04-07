@@ -381,7 +381,7 @@ async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) 
         logger.info("Ticket %s already pending delete; skipping duplicate close", ticket_id)
         return
 
-    delete_after = to_storage(utcnow() + timedelta(hours=8))
+    delete_after = to_storage(utcnow() + timedelta(minutes=10))
     try:
         await _send_topic_message(
             bot,
@@ -521,29 +521,13 @@ async def handle_ticket_closed(bot: Bot, payload: dict) -> None:
         pre_sla_sent_at=None,
     )
 
-    # Close topic but delay deletion — if owner_changed fires soon after,
-    # _ensure_active_topic can reopen the pending_delete topic instead of
-    # creating a new one (prevents the close→reassign race condition)
     try:
         await _send_topic_message(bot, record.topic_id, format_ticket_closed())
     except TelegramAPIError as exc:
         logger.error("Failed to send closed message to topic %d: %s", record.topic_id, exc)
 
-    try:
-        await bot.close_forum_topic(
-            chat_id=config.group_chat_id,
-            message_thread_id=record.topic_id,
-        )
-    except TelegramAPIError as exc:
-        logger.error("Failed to close topic %d for ticket %s: %s", record.topic_id, ticket_id, exc)
-
-    delete_after = to_storage(utcnow() + timedelta(seconds=30))
-    await db.update_topic(
-        ticket_id,
-        topic_state="pending_delete",
-        delete_after_at=delete_after,
-    )
-    logger.info("Ticket %s closed, topic %d pending delete in 30s", ticket_id, record.topic_id)
+    await _delete_topic_now(bot, record)
+    logger.info("Ticket %s completed, topic %d deleted immediately", ticket_id, record.topic_id)
 
 
 async def send_pre_sla_alert(bot: Bot, record: db.TicketTopic) -> None:
