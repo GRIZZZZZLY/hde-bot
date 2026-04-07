@@ -53,13 +53,18 @@ async def _send(bot: Bot, text: str) -> int | None:
     """Send a message to the General topic. Returns message_id or None on failure."""
     assert config.general_topic_id is not None
     try:
-        msg = await bot.send_message(
+        # thread_id=1 is the General topic in forum groups — Telegram may reject it
+        # when the group was created without explicit topics; omit it so the message
+        # falls through to the main (General) thread automatically.
+        kwargs: dict = dict(
             chat_id=config.group_chat_id,
-            message_thread_id=config.general_topic_id,
             text=text,
             parse_mode="HTML",
             disable_web_page_preview=True,
         )
+        if config.general_topic_id != 1:
+            kwargs["message_thread_id"] = config.general_topic_id
+        msg = await bot.send_message(**kwargs)
         return msg.message_id
     except TelegramAPIError as exc:
         logger.error("Failed to send General notification: %s", exc)
