@@ -33,8 +33,11 @@ HANDLERS: dict[str, Callable[[Bot, dict], object]] = {
 }
 
 DEDUPED_EVENT_TYPES = {
+    "assigned_on_create",
     "client_reply",
     "staff_reply",
+    "ticket_closed",
+    "ticket_updated",
 }
 
 REQUIRED_FIELDS = {
@@ -80,7 +83,13 @@ def _normalize_payload(payload: dict) -> dict:
 
 
 def _build_event_key(payload: dict) -> str:
-    source = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
+    # Use stable key based on ticket_id + event_type + date_update so that
+    # HDE retries / duplicate rule triggers for the same update are deduped.
+    date_update = payload.get("date_update", "")
+    if date_update:
+        source = f"{payload['ticket_id']}:{payload['event_type']}:{date_update}"
+    else:
+        source = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 

@@ -15,6 +15,7 @@ from .formatter import (
     format_assignment_message,
     format_client_reply,
     format_pre_sla_alert,
+    format_ticket_closed,
     format_ticket_renamed,
     format_unassigned_message,
     make_topic_name,
@@ -487,6 +488,9 @@ async def handle_ticket_closed(bot: Bot, payload: dict) -> None:
     if record is None or record.is_deleted:
         logger.info("Ignoring ticket_closed for unknown ticket %s", ticket_id)
         return
+    if record.is_pending_delete:
+        logger.info("Ticket %s already pending delete, skipping duplicate ticket_closed", ticket_id)
+        return
 
     await db.update_topic(
         ticket_id,
@@ -502,12 +506,29 @@ async def handle_ticket_closed(bot: Bot, payload: dict) -> None:
         pre_sla_sent_at=None,
     )
 
-    if not await _delete_topic_now(bot, record):
-        await db.update_topic(
-            ticket_id,
-            topic_state="pending_delete",
-            delete_after_at=_now_storage(),
+    # Close topic but delay deletion — if owner_changed fires soon after,
+    # _ensure_active_topic can reopen the pending_delete topic instead of
+    # creating a new one (prevents the close→reassign race condition)
+    try:
+        await _send_topic_message(bot, record.topic_id, format_ticket_closed())
+    except TelegramAPIError as exc:
+        logger.error("Failed to send closed message to topic %d: %s", record.topic_id, exc)
+
+    try:
+        await bot.close_forum_topic(
+            chat_id=config.group_chat_id,
+            message_thread_id=record.topic_id,
         )
+    except TelegramAPIError as exc:
+        logger.error("Failed to close topic %d for ticket %s: %s", record.topic_id, ticket_id, exc)
+
+    delete_after = to_storage(utcnow() + timedelta(minutes=5))
+    await db.update_topic(
+        ticket_id,
+        topic_state="pending_delete",
+        delete_after_at=delete_after,
+    )
+    logger.info("Ticket %s closed, topic %d pending delete in 5 min", ticket_id, record.topic_id)
 
 
 async def send_pre_sla_alert(bot: Bot, record: db.TicketTopic) -> None:
