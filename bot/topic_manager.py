@@ -522,13 +522,13 @@ async def handle_ticket_closed(bot: Bot, payload: dict) -> None:
     except TelegramAPIError as exc:
         logger.error("Failed to close topic %d for ticket %s: %s", record.topic_id, ticket_id, exc)
 
-    delete_after = to_storage(utcnow() + timedelta(minutes=5))
+    delete_after = to_storage(utcnow() + timedelta(seconds=30))
     await db.update_topic(
         ticket_id,
         topic_state="pending_delete",
         delete_after_at=delete_after,
     )
-    logger.info("Ticket %s closed, topic %d pending delete in 5 min", ticket_id, record.topic_id)
+    logger.info("Ticket %s closed, topic %d pending delete in 30s", ticket_id, record.topic_id)
 
 
 async def send_pre_sla_alert(bot: Bot, record: db.TicketTopic) -> None:
