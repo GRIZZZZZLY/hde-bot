@@ -65,12 +65,15 @@ async def send_morning_digest(bot: Bot) -> None:
     except HDEApiError as exc:
         logger.warning("Failed to fetch tickets for digest SLA: %s", exc)
 
+    unassigned_equipment_count = await db.count_general_messages()
+
     text = format_morning_digest(
         night_start_label=_label(night_start),
         night_end_label=_label(night_end),
         assigned_tickets=assigned,
         total_open=total_open,
         open_tickets_with_sla=open_tickets_with_sla,
+        unassigned_equipment_count=unassigned_equipment_count,
     )
 
     try:

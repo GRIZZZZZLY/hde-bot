@@ -853,3 +853,12 @@ async def delete_general_message(ticket_id: str) -> None:
             (ticket_id,),
         )
         await db.commit()
+
+
+async def count_general_messages() -> int:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM unassigned_general_messages"
+        ) as cursor:
+            row = await cursor.fetchone()
+    return row[0] if row else 0

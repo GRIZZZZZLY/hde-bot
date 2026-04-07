@@ -231,6 +231,7 @@ def format_morning_digest(
     assigned_tickets: list,
     total_open: int,
     open_tickets_with_sla: list,
+    unassigned_equipment_count: int = 0,
 ) -> str:
     lines = [
         "📊 <b>Сводка за ночь</b>",
@@ -238,12 +239,13 @@ def format_morning_digest(
         "",
         f"📥 Назначено за ночь: <b>{len(assigned_tickets)}</b>",
         f"🟢 Открытых тикетов сейчас: <b>{total_open}</b>",
+        f"⚠️ Неприсвоенных (Оборудование): <b>{unassigned_equipment_count}</b>",
     ]
 
     if assigned_tickets:
         lines.append("")
         for t in assigned_tickets:
-            ticket_line = f"• {_escape(t.ticket_name)} — {_escape(t.company_name)}"
+            ticket_line = f"• {_escape(t.ticket_name)}"
             if t.hde_link:
                 ticket_line += f' <a href="{_escape(t.hde_link)}">🔗</a>'
             lines.append(ticket_line)

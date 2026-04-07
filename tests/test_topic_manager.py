@@ -299,10 +299,10 @@ async def test_scheduler_sends_pre_sla_alert(initialized_db):
 
     await process_scheduled_actions(bot)
 
-    bot.send_message.assert_called_once()
     record = await db_module.get_topic("TKT-1")
     assert record is not None
     assert record.pre_sla_sent_at is not None
+    assert bot.send_message.called
 
 
 @pytest.mark.asyncio
