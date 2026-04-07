@@ -172,6 +172,21 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
             deleted_at=to_storage(utcnow()),
         )
 
+    # ── Step 4: purge orphaned Telegram topics (DB state=deleted but TG topic may
+    #           still exist — e.g. deletion failed during testing/crashes) ────────
+    deleted_db_topics = await db.list_topics_by_state("deleted")
+    purged_orphans = 0
+    for topic in deleted_db_topics:
+        try:
+            await bot.delete_forum_topic(
+                chat_id=config.group_chat_id,
+                message_thread_id=topic.topic_id,
+            )
+            purged_orphans += 1
+            logger.info("refresh: purged orphaned topic %d (ticket %s)", topic.topic_id, topic.ticket_id)
+        except TelegramAPIError:
+            pass  # already deleted — that's fine
+
     active_after = await db.count_active_topics()
 
     return RefreshResult(
