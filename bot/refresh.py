@@ -9,8 +9,10 @@ from aiogram.exceptions import TelegramAPIError
 
 from . import db
 from .config import config
-from .hde_api import HDEApiClient, HDEApiError
+from .formatter import make_topic_name
+from .hde_api import HDEApiClient, HDEApiError, HDETicket
 from .time_utils import to_storage, utcnow
+from .topic_manager import sync_ticket_topic
 
 logger = logging.getLogger(__name__)
 
@@ -19,16 +21,49 @@ logger = logging.getLogger(__name__)
 class RefreshResult:
     active_before: int
     hde_count: int
-    marked_deleted: list = field(default_factory=list)
+    created: list = field(default_factory=list)
+    renamed: list = field(default_factory=list)
+    deleted: list = field(default_factory=list)
     cleaned_pending: int = 0
     active_after: int = 0
 
 
+def _ticket_to_payload(ticket: HDETicket, existing: db.TicketTopic | None) -> dict:
+    """Build a normalised payload dict from an HDETicket for use in topic_manager."""
+    priority = (existing.priority if existing and existing.priority else None) or "medium"
+    return {
+        "ticket_id": ticket.ticket_id,
+        "unique_id": ticket.unique_id,
+        "ticket_name": ticket.title,
+        "company_name": ticket.company_name,
+        "priority": priority,
+        "status": "open",
+        "owner_id": ticket.owner_id,
+        "owner_name": config.hde_owner_name,
+        "link": ticket.hde_link,
+        "department": "",
+        "date_update": "",
+        "last_post_date": "",
+        "sla_remaining_minutes": None,
+        "attachments": [],
+        "event_key": "",
+        "message": "",
+        "user_name": "",
+    }
+
+
+def _topic_display_name(ticket: HDETicket, existing: db.TicketTopic | None) -> str:
+    priority = (existing.priority if existing and existing.priority else None) or "medium"
+    return make_topic_name(ticket.unique_id, ticket.company_name, ticket.title, priority)
+
+
 async def refresh_topics(bot: Bot) -> RefreshResult:
     """
-    Sync active topics in DB with HDE API.
-    - Active topics not in HDE → mark deleted + delete Telegram topic.
-    - Pending-delete topics → delete Telegram topic + mark deleted.
+    Full sync of Telegram forum topics with HDE open tickets assigned to me:
+    - Create topics for tickets not yet in Telegram.
+    - Rename topics where the ticket title / company changed.
+    - Delete topics for tickets no longer open / assigned to me.
+    - Clean up pending-delete topics.
     """
     active_topics = await db.list_active_topics()
     active_before = len(active_topics)
@@ -37,29 +72,68 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
     hde_tickets = await client.get_my_open_tickets()
     hde_count = len(hde_tickets)
 
-    hde_ticket_ids = {t.ticket_id for t in hde_tickets}
-    hde_unique_ids = {t.unique_id for t in hde_tickets}
+    # Build lookup from HDE (by ticket_id and unique_id)
+    hde_by_ticket_id: dict[str, HDETicket] = {t.ticket_id: t for t in hde_tickets}
+    hde_by_unique_id: dict[str, HDETicket] = {
+        t.unique_id: t for t in hde_tickets if t.unique_id and t.unique_id != t.ticket_id
+    }
+
+    # Build lookup from DB (active + pending_delete)
+    pending_topics = await db.list_topics_by_state("pending_delete")
+    all_db_topics = active_topics + pending_topics
+    db_by_ticket_id: dict[str, db.TicketTopic] = {t.ticket_id: t for t in all_db_topics}
+    db_by_unique_id: dict[str, db.TicketTopic] = {
+        t.unique_id: t for t in all_db_topics if t.unique_id
+    }
 
     logger.info(
-        "refresh: DB active=%d, HDE open=%d | HDE ids=%s",
-        active_before,
-        hde_count,
-        hde_ticket_ids,
+        "refresh: DB active=%d pending=%d, HDE open=%d",
+        active_before, len(pending_topics), hde_count,
     )
 
-    # 1. Mark stale active topics as deleted
-    marked_deleted: list[db.TicketTopic] = []
+    created: list[HDETicket] = []
+    renamed: list[HDETicket] = []
+
+    # ── Step 1: upsert a topic for every open HDE ticket ──────────────────────
+    for ticket in hde_tickets:
+        existing = (
+            db_by_ticket_id.get(ticket.ticket_id)
+            or db_by_unique_id.get(ticket.unique_id)
+            or db_by_ticket_id.get(ticket.unique_id)
+        )
+
+        will_create = existing is None or existing.is_deleted
+        will_rename = False
+        if not will_create and existing:
+            old_name = make_topic_name(
+                existing.unique_id or "",
+                existing.company_name or "",
+                existing.ticket_name or "",
+                existing.priority or "medium",
+            )
+            new_name = _topic_display_name(ticket, existing)
+            will_rename = old_name != new_name
+
+        try:
+            await sync_ticket_topic(bot, _ticket_to_payload(ticket, existing))
+        except Exception as exc:
+            logger.error("refresh: failed to sync ticket %s: %s", ticket.ticket_id, exc)
+            continue
+
+        if will_create:
+            created.append(ticket)
+            logger.info("refresh: created topic for ticket %s (%s)", ticket.ticket_id, ticket.title)
+        elif will_rename:
+            renamed.append(ticket)
+            logger.info("refresh: renamed topic for ticket %s → %s", ticket.ticket_id, ticket.title)
+
+    # ── Step 2: delete active topics whose tickets are gone from HDE ──────────
+    deleted: list[db.TicketTopic] = []
     for topic in active_topics:
         in_hde = (
-            topic.ticket_id in hde_ticket_ids
-            or topic.unique_id in hde_unique_ids
-            or topic.ticket_id in hde_unique_ids
-        )
-        logger.info(
-            "refresh: topic ticket_id=%r unique_id=%r → in_hde=%s",
-            topic.ticket_id,
-            topic.unique_id,
-            in_hde,
+            topic.ticket_id in hde_by_ticket_id
+            or topic.unique_id in hde_by_unique_id
+            or topic.ticket_id in hde_by_unique_id
         )
         if not in_hde:
             await db.update_topic(
@@ -73,15 +147,17 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
                     message_thread_id=topic.topic_id,
                 )
             except TelegramAPIError as exc:
-                logger.warning(
-                    "Could not delete topic %s during refresh: %s", topic.topic_id, exc
-                )
-            marked_deleted.append(topic)
+                logger.warning("refresh: could not delete topic %d: %s", topic.topic_id, exc)
+            deleted.append(topic)
+            logger.info("refresh: deleted stale topic %d for ticket %s", topic.topic_id, topic.ticket_id)
 
-    # 2. Clean up pending-delete topics (already closed in Telegram but not deleted)
-    pending_topics = await db.list_topics_by_state("pending_delete")
+    # ── Step 3: clean up remaining pending-delete topics ─────────────────────
     cleaned_pending = 0
     for topic in pending_topics:
+        # Skip ones that were just reopened in step 1
+        refreshed = await db.get_topic(topic.ticket_id)
+        if refreshed and not refreshed.is_pending_delete:
+            continue
         try:
             await bot.delete_forum_topic(
                 chat_id=config.group_chat_id,
@@ -89,21 +165,21 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
             )
             cleaned_pending += 1
         except TelegramAPIError as exc:
-            logger.warning(
-                "Could not delete pending topic %s during refresh: %s", topic.topic_id, exc
-            )
+            logger.warning("refresh: could not delete pending topic %d: %s", topic.topic_id, exc)
         await db.update_topic(
             topic.ticket_id,
             topic_state="deleted",
             deleted_at=to_storage(utcnow()),
         )
 
-    active_after_list = await db.list_active_topics()
+    active_after = await db.count_active_topics()
 
     return RefreshResult(
         active_before=active_before,
         hde_count=hde_count,
-        marked_deleted=marked_deleted,
+        created=created,
+        renamed=renamed,
+        deleted=deleted,
         cleaned_pending=cleaned_pending,
-        active_after=len(active_after_list),
+        active_after=active_after,
     )

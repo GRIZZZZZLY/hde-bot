@@ -548,3 +548,14 @@ async def send_pre_sla_alert(bot: Bot, record: db.TicketTopic) -> None:
 
 async def delete_pending_topic(bot: Bot, record: db.TicketTopic) -> bool:
     return await _delete_topic_now(bot, record)
+
+
+async def sync_ticket_topic(bot: Bot, payload: dict) -> db.TicketTopic:
+    """Upsert a topic for one ticket without sending an assignment announcement.
+
+    Used by /refresh to bring Telegram topics in sync with HDE state.
+    Serialised per-ticket via _ticket_lock to avoid race conditions.
+    """
+    ticket_id = _payload_value(payload, "ticket_id")
+    async with _ticket_lock(ticket_id):
+        return await _ensure_active_topic(bot, payload, announce_assignment=False)

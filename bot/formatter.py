@@ -271,23 +271,42 @@ def format_morning_digest(
 def format_refresh_result(
     active_count: int,
     hde_count: int,
-    marked_deleted: list,
+    created: list = (),
+    renamed: list = (),
+    deleted: list = (),
     cleaned_pending: int = 0,
+    # legacy alias kept for backwards compat
+    marked_deleted: list = (),
 ) -> str:
+    # support old callers that pass marked_deleted
+    if marked_deleted and not deleted:
+        deleted = marked_deleted
+
     lines = [
         "🔄 <b>Синхронизация завершена</b>",
         "",
         f"📡 Тикетов в HDE: <b>{hde_count}</b>",
         f"✅ Активных топиков: <b>{active_count}</b>",
     ]
-    if marked_deleted:
-        lines.append(f"🗑️ Удалено устаревших: <b>{len(marked_deleted)}</b>")
-        for t in marked_deleted:
+    if created:
+        lines.append(f"➕ Создано топиков: <b>{len(created)}</b>")
+        for t in created:
+            title = _escape(getattr(t, "title", "") or getattr(t, "ticket_name", "") or getattr(t, "ticket_id", ""))
+            company = _escape(getattr(t, "company_name", ""))
+            lines.append(f"  • {title} — {company}")
+    if renamed:
+        lines.append(f"✏️ Переименовано: <b>{len(renamed)}</b>")
+        for t in renamed:
+            title = _escape(getattr(t, "title", "") or getattr(t, "ticket_name", "") or getattr(t, "ticket_id", ""))
+            lines.append(f"  • {title}")
+    if deleted:
+        lines.append(f"🗑️ Удалено устаревших: <b>{len(deleted)}</b>")
+        for t in deleted:
             name = _escape(getattr(t, "ticket_name", "") or getattr(t, "ticket_id", ""))
             company = _escape(getattr(t, "company_name", ""))
             lines.append(f"  • {name} — {company}")
     if cleaned_pending:
         lines.append(f"🧹 Очищено закрытых топиков: <b>{cleaned_pending}</b>")
-    if not marked_deleted and not cleaned_pending:
+    if not created and not renamed and not deleted and not cleaned_pending:
         lines.append("✨ Всё актуально, расхождений нет")
     return "\n".join(lines)

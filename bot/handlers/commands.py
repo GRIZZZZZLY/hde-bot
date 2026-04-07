@@ -231,7 +231,9 @@ async def cmd_refresh(message: Message) -> None:
         result_text = format_refresh_result(
             active_count=result.active_after,
             hde_count=result.hde_count,
-            marked_deleted=result.marked_deleted,
+            created=result.created,
+            renamed=result.renamed,
+            deleted=result.deleted,
             cleaned_pending=result.cleaned_pending,
         )
     except Exception as exc:
