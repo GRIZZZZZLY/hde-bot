@@ -24,7 +24,7 @@ _COL_NAME = 0
 _COL_DATE = 1
 _COL_TICKETS = 3
 _COL_SLA_VIOL = 4
-_COL_AVG_TIME = 9
+_COL_AVG_TIME = 10
 
 
 def append_operator_row(
