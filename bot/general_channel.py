@@ -23,9 +23,15 @@ def _is_our_operator(payload: dict) -> bool:
 logger = logging.getLogger(__name__)
 
 
+_UNASSIGNED_MARKERS = frozenset({
+    "неприсвоенный", "неназначенный", "неназначенно", "unassigned",
+})
+
+
 def _is_unassigned(owner_name: str, department: str, target_dept: str) -> bool:
     """Return True if ticket qualifies for General notification."""
-    has_owner = bool(owner_name.strip()) and "неприсвоенный" not in owner_name.strip().lower()
+    name = owner_name.strip().lower()
+    has_owner = bool(name) and not any(m in name for m in _UNASSIGNED_MARKERS)
     if has_owner:
         return False
     if target_dept and department.strip().lower() != target_dept.strip().lower():
