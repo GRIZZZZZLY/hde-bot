@@ -11,6 +11,7 @@ from ..db import (
     count_total_topics,
     mark_report_sent,
 )
+from ..digest import send_morning_digest
 from ..formatter import format_refresh_result
 from ..refresh import refresh_topics
 from ..operator_replies import (
@@ -213,6 +214,11 @@ async def cb_report_yesterday(callback: CallbackQuery) -> None:
     except Exception:
         pass
     await callback.message.answer(result, parse_mode="HTML")
+
+
+@router.message(Command("digest"))
+async def cmd_digest(message: Message) -> None:
+    await send_morning_digest(message.bot)
 
 
 @router.message(Command("refresh"))
