@@ -27,6 +27,14 @@ def mark_report_done_today() -> None:
     """Mark today's report as done so the auto-run scheduler skips it."""
     global _last_report_date
     _last_report_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    import asyncio as _asyncio
+    from datetime import date as _date
+    try:
+        loop = _asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(db.mark_report_sent(_date.today()))
+    except Exception:
+        pass
 
 
 async def _maybe_send_digest(bot: Bot) -> None:
@@ -54,6 +62,9 @@ async def _maybe_send_report_button(bot: Bot) -> None:
     if now.hour != offer_hour:
         return
     if _report_button_sent == today or _last_report_date == today:
+        return
+    yesterday = now.date() - timedelta(days=1)
+    if await db.is_report_sent(yesterday):
         return
     _report_button_sent = today
     yesterday = (now.date() - timedelta(days=1)).strftime("%d.%m.%Y")
@@ -85,9 +96,14 @@ async def _maybe_auto_run_report(bot: Bot) -> None:
         return
     if _last_report_date == today:
         return
+    yesterday = now.date() - timedelta(days=1)
+    if await db.is_report_sent(yesterday):
+        _last_report_date = today
+        return
     _last_report_date = today
     try:
         result = await run_report()
+        await db.mark_report_sent(yesterday)
         await bot.send_message(config.personal_chat_id, result, parse_mode="HTML")
     except Exception as exc:
         logger.exception("Daily report failed: %s", exc)

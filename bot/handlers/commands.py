@@ -9,6 +9,7 @@ from ..db import (
     count_pending_delete_topics,
     count_pending_pre_sla_topics,
     count_total_topics,
+    mark_report_sent,
 )
 from ..formatter import format_refresh_result
 from ..refresh import refresh_topics
@@ -174,6 +175,9 @@ async def cmd_report(message: Message, command: CommandObject) -> None:
         result = await run_report(report_date)
         from ..scheduler import mark_report_done_today
         mark_report_done_today()
+        from datetime import timedelta
+        actual_date = report_date if report_date else date.today() - timedelta(days=1)
+        await mark_report_sent(actual_date)
     except Exception as exc:
         result = f"❌ <b>Ошибка:</b>\n<code>{exc}</code>"
     try:
@@ -199,6 +203,9 @@ async def cb_report_yesterday(callback: CallbackQuery) -> None:
     try:
         result = await run_report()
         mark_report_done_today()
+        from datetime import timedelta
+        yesterday = date.today() - timedelta(days=1)
+        await mark_report_sent(yesterday)
     except Exception as exc:
         result = f"❌ <b>Ошибка:</b>\n<code>{exc}</code>"
     try:

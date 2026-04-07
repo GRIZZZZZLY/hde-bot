@@ -221,6 +221,14 @@ async def init_db() -> None:
             )
             """
         )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS report_runs (
+                report_date TEXT PRIMARY KEY,
+                ran_at      TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
         await db.commit()
 
 
@@ -862,3 +870,23 @@ async def count_general_messages() -> int:
         ) as cursor:
             row = await cursor.fetchone()
     return row[0] if row else 0
+
+
+async def is_report_sent(report_date: "date") -> bool:
+    """Return True if the daily report was already sent for *report_date*."""
+    key = report_date.strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT 1 FROM report_runs WHERE report_date = ?", (key,)
+        ) as cursor:
+            return await cursor.fetchone() is not None
+
+
+async def mark_report_sent(report_date: "date") -> None:
+    """Record that the daily report was sent for *report_date*."""
+    key = report_date.strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO report_runs (report_date) VALUES (?)", (key,)
+        )
+        await db.commit()
