@@ -1,8 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import timedelta
 from typing import Optional
+
+_ticket_locks: dict[str, asyncio.Lock] = {}
+
+
+def _ticket_lock(ticket_id: str) -> asyncio.Lock:
+    if ticket_id not in _ticket_locks:
+        _ticket_locks[ticket_id] = asyncio.Lock()
+    return _ticket_locks[ticket_id]
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -340,6 +349,11 @@ async def _delete_topic_now(bot: Bot, record: db.TicketTopic) -> bool:
 
 async def handle_owner_changed(bot: Bot, payload: dict) -> None:
     ticket_id = _payload_value(payload, "ticket_id")
+    async with _ticket_lock(ticket_id):
+        await _handle_owner_changed_locked(bot, payload, ticket_id)
+
+
+async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) -> None:
     record = await db.get_topic(ticket_id)
 
     if _effective_owner_match(payload):
@@ -409,7 +423,8 @@ async def handle_assigned_on_create(bot: Bot, payload: dict) -> None:
         logger.info("Ignoring assigned_on_create for ticket %s because owner does not match target user", ticket_id)
         return
 
-    await _ensure_active_topic(bot, payload, announce_assignment=True)
+    async with _ticket_lock(ticket_id):
+        await _ensure_active_topic(bot, payload, announce_assignment=True)
 
 
 async def handle_ticket_updated(bot: Bot, payload: dict) -> None:
