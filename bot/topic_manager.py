@@ -470,7 +470,15 @@ async def handle_client_reply(bot: Bot, payload: dict) -> None:
         logger.error("Failed to send client attachments to topic %d: %s", record.topic_id, exc)
 
     reply_at = parse_datetime(payload.get("last_post_date")) or utcnow()
-    await _schedule_pre_sla(record.ticket_id, payload, to_storage(reply_at))
+    # Only start the SLA timer on the FIRST unanswered client message.
+    # Subsequent client messages don't reset the deadline — only a staff
+    # reply resets it (handle_staff_reply clears pre_sla_notify_at).
+    timer_active = record.pre_sla_notify_at is not None and record.pre_sla_sent_at is None
+    if not timer_active:
+        await _schedule_pre_sla(record.ticket_id, payload, to_storage(reply_at))
+    else:
+        # Still update last_client_reply_at so we track the latest message time
+        await db.update_topic(record.ticket_id, last_client_reply_at=to_storage(reply_at))
 
 
 async def handle_staff_reply(bot: Bot, payload: dict) -> None:
