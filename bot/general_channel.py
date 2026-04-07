@@ -13,6 +13,13 @@ from aiogram.exceptions import TelegramAPIError
 from . import db
 from .config import config
 
+def _is_our_operator(payload: dict) -> bool:
+    """Return True if the current owner in this payload is our operator."""
+    return config.matches_owner(
+        _payload_str(payload, "owner_id"),
+        _payload_str(payload, "owner_name"),
+    )
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,6 +95,9 @@ def _display_id(payload: dict) -> str:
 async def on_assigned_on_create(bot: Bot, payload: dict) -> None:
     if config.general_topic_id is None:
         return
+    # If this ticket is assigned to our operator — they have a personal topic, no General needed
+    if _is_our_operator(payload):
+        return
     owner_name = _payload_str(payload, "owner_name")
     department = _payload_str(payload, "department")
     logger.info(
@@ -126,10 +136,14 @@ async def on_owner_changed(bot: Bot, payload: dict) -> None:
         ticket_id, owner_name, department, config.unassigned_department,
     )
 
-    is_now_unassigned = _is_unassigned(
-        owner_name=owner_name,
-        department=_payload_str(payload, "department"),
-        target_dept=config.unassigned_department,
+    # If ticket is now assigned to our operator — treat as assigned (they get a personal topic)
+    is_now_unassigned = (
+        not _is_our_operator(payload)
+        and _is_unassigned(
+            owner_name=owner_name,
+            department=_payload_str(payload, "department"),
+            target_dept=config.unassigned_department,
+        )
     )
 
     existing = await db.get_general_message(ticket_id)

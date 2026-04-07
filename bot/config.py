@@ -80,7 +80,7 @@ class Config:
             public_reply_ticket_allowlist=_parse_csv(os.getenv("HDE_PUBLIC_REPLY_TICKET_ALLOWLIST")),
             digest_send_hour_utc=int(os.getenv("DIGEST_SEND_HOUR_UTC", "5")),
             digest_night_start_hour_utc=int(os.getenv("DIGEST_NIGHT_START_HOUR_UTC", "15")),
-            general_topic_id=_parse_optional_int(os.getenv("GENERAL_TOPIC_ID", "1")),
+            general_topic_id=_parse_optional_int(os.getenv("GENERAL_TOPIC_ID")),
             unassigned_department=os.getenv("UNASSIGNED_DEPARTMENT", "").strip(),
         )
 
