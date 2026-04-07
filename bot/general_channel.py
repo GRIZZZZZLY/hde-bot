@@ -174,6 +174,18 @@ async def on_owner_changed(bot: Bot, payload: dict) -> None:
     else:
         if existing is None:
             return
+        # Only delete if ticket is confirmed assigned to a real person.
+        # HDE sometimes sends owner_changed with empty department even when
+        # the ticket IS in the target dept — in that case owner_name is also
+        # empty and we cannot confirm the assignment, so keep the notification.
+        name = owner_name.strip().lower()
+        has_real_owner = bool(name) and not any(m in name for m in _UNASSIGNED_MARKERS)
+        if not has_real_owner:
+            logger.info(
+                "Keeping General notification for ticket %s (owner_name empty or unassigned in payload)",
+                ticket_id,
+            )
+            return
         await _delete(bot, existing["message_id"])
         await db.delete_general_message(ticket_id)
         logger.info("Deleted General notification for ticket %s (assigned to %s)", ticket_id, owner_name)
