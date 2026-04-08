@@ -106,6 +106,9 @@ def _display_id(payload: dict) -> str:
 async def on_assigned_on_create(bot: Bot, payload: dict) -> None:
     if config.general_topic_id is None:
         return
+    from .work_schedule import is_work_time
+    if not is_work_time():
+        return
     # If this ticket is assigned to our operator — they have a personal topic, no General needed
     if _is_our_operator(payload):
         return
@@ -138,6 +141,9 @@ async def on_assigned_on_create(bot: Bot, payload: dict) -> None:
 
 async def on_owner_changed(bot: Bot, payload: dict) -> None:
     if config.general_topic_id is None:
+        return
+    from .work_schedule import is_work_time
+    if not is_work_time():
         return
     ticket_id = _payload_str(payload, "ticket_id")
     owner_name = _payload_str(payload, "owner_name")

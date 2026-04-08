@@ -116,6 +116,15 @@ async def _maybe_auto_run_report(bot: Bot) -> None:
 
 
 async def process_scheduled_actions(bot: Bot) -> None:
+    # Digest and report run on their own schedule regardless of work hours
+    await _maybe_send_digest(bot)
+    await _maybe_send_report_button(bot)
+    await _maybe_auto_run_report(bot)
+
+    from .work_schedule import is_work_time
+    if not is_work_time():
+        return
+
     now_value = to_storage(utcnow())
 
     for record in await db.list_due_pre_sla(now_value):
@@ -126,10 +135,6 @@ async def process_scheduled_actions(bot: Bot) -> None:
 
     for record in await db.list_due_deletions(now_value):
         await delete_pending_topic(bot, record)
-
-    await _maybe_send_digest(bot)
-    await _maybe_send_report_button(bot)
-    await _maybe_auto_run_report(bot)
 
 
 async def run_scheduler(bot: Bot, stop_event: asyncio.Event) -> None:

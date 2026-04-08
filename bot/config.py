@@ -51,6 +51,9 @@ class Config:
     digest_night_start_hour_utc: int
     general_topic_id: int | None
     unassigned_department: str
+    work_days: tuple[int, ...]
+    work_hour_start: int
+    work_hour_end: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -82,6 +85,11 @@ class Config:
             digest_night_start_hour_utc=int(os.getenv("DIGEST_NIGHT_START_HOUR_UTC", "15")),
             general_topic_id=_parse_optional_int(os.getenv("GENERAL_TOPIC_ID")),
             unassigned_department=os.getenv("UNASSIGNED_DEPARTMENT", "").strip(),
+            work_days=tuple(
+                int(d) for d in _parse_csv(os.getenv("WORK_DAYS", "0,1,2,3,6"))
+            ),
+            work_hour_start=int(os.getenv("WORK_HOUR_START", "9")),
+            work_hour_end=int(os.getenv("WORK_HOUR_END", "18")),
         )
 
     def matches_owner(self, owner_id: str, owner_name: str) -> bool:

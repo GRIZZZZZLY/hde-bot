@@ -4,7 +4,7 @@ import logging
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
-from aiogram.types import ErrorEvent, Update
+from aiogram.types import BotCommand, ErrorEvent, Update
 
 from .config import config
 from .db import init_db
@@ -66,6 +66,19 @@ async def _main_async() -> None:
 
     # Remove any leftover webhook so polling works
     await bot.delete_webhook(drop_pending_updates=False)
+
+    await bot.set_my_commands([
+        BotCommand(command="status",   description="Активные топики и pre-SLA"),
+        BotCommand(command="refresh",  description="Синхронизировать топики с HDE"),
+        BotCommand(command="digest",   description="Вызвать утреннюю сводку"),
+        BotCommand(command="vacation", description="Режим тишины (напр. /vacation 3d)"),
+        BotCommand(command="workon",   description="Снять режим тишины"),
+        BotCommand(command="note",     description="Внутренний комментарий в HDE"),
+        BotCommand(command="send",     description="Публичный ответ клиенту через HDE"),
+        BotCommand(command="delete",   description="Удалить сообщение из HDE"),
+        BotCommand(command="report",   description="Отчёт в Google Sheets (за вчера)"),
+        BotCommand(command="help",     description="Список всех команд"),
+    ])
     logger.info("Bot started (polling mode)")
 
     stop_event = asyncio.Event()

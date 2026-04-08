@@ -353,11 +353,17 @@ async def handle_owner_changed(bot: Bot, payload: dict) -> None:
         await _handle_owner_changed_locked(bot, payload, ticket_id)
 
 
+def _is_work_time() -> bool:
+    from .work_schedule import is_work_time
+    return is_work_time()
+
+
 async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) -> None:
     record = await db.get_topic(ticket_id)
 
     if _effective_owner_match(payload):
-        await _ensure_active_topic(bot, payload, announce_assignment=True)
+        # Announce assignment only during work hours
+        await _ensure_active_topic(bot, payload, announce_assignment=_is_work_time())
         return
 
     if record is None or record.is_deleted:
@@ -382,14 +388,15 @@ async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) 
         return
 
     delete_after = to_storage(utcnow() + timedelta(minutes=10))
-    try:
-        await _send_topic_message(
-            bot,
-            record.topic_id,
-            format_unassigned_message(record.unique_id, _payload_value(payload, "link")),
-        )
-    except TelegramAPIError as exc:
-        logger.error("Failed to send unassigned message to topic %d: %s", record.topic_id, exc)
+    if _is_work_time():
+        try:
+            await _send_topic_message(
+                bot,
+                record.topic_id,
+                format_unassigned_message(record.unique_id, _payload_value(payload, "link")),
+            )
+        except TelegramAPIError as exc:
+            logger.error("Failed to send unassigned message to topic %d: %s", record.topic_id, exc)
 
     try:
         await bot.close_forum_topic(
@@ -424,7 +431,7 @@ async def handle_assigned_on_create(bot: Bot, payload: dict) -> None:
         return
 
     async with _ticket_lock(ticket_id):
-        await _ensure_active_topic(bot, payload, announce_assignment=True)
+        await _ensure_active_topic(bot, payload, announce_assignment=_is_work_time())
 
 
 async def handle_ticket_updated(bot: Bot, payload: dict) -> None:
@@ -449,6 +456,9 @@ async def handle_ticket_updated(bot: Bot, payload: dict) -> None:
 
 
 async def handle_client_reply(bot: Bot, payload: dict) -> None:
+    if not _is_work_time():
+        return
+
     record = await _ensure_active_topic(bot, payload)
     try:
         await _send_topic_message(
@@ -529,10 +539,11 @@ async def handle_ticket_closed(bot: Bot, payload: dict) -> None:
         pre_sla_sent_at=None,
     )
 
-    try:
-        await _send_topic_message(bot, record.topic_id, format_ticket_closed())
-    except TelegramAPIError as exc:
-        logger.error("Failed to send closed message to topic %d: %s", record.topic_id, exc)
+    if _is_work_time():
+        try:
+            await _send_topic_message(bot, record.topic_id, format_ticket_closed())
+        except TelegramAPIError as exc:
+            logger.error("Failed to send closed message to topic %d: %s", record.topic_id, exc)
 
     await _delete_topic_now(bot, record)
     logger.info("Ticket %s completed, topic %d deleted immediately", ticket_id, record.topic_id)

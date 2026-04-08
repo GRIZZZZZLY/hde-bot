@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
@@ -81,6 +81,11 @@ async def cmd_help(message: Message) -> None:
         "/send в ответ на сообщение, медиа или альбом — отправить текст, caption и вложения клиенту\n"
         "/delete в ответ на сообщение — удалить его из HDE\n"
         "/refresh — синхронизировать топики с HDE, убрать устаревшие\n"
+        "/digest — вручную вызвать утреннюю сводку\n"
+        "/vacation — включить режим тишины до следующего рабочего дня\n"
+        "/vacation 3d — режим тишины на N дней\n"
+        "/vacation YYYY-MM-DD — режим тишины до конкретной даты\n"
+        "/workon — снять режим тишины досрочно\n"
         "/report — записать отчёт по операторам в Google Sheets (за вчера)\n"
         "/report YYYY-MM-DD — отчёт за конкретную дату",
         parse_mode="HTML",
@@ -214,6 +219,63 @@ async def cb_report_yesterday(callback: CallbackQuery) -> None:
     except Exception:
         pass
     await callback.message.answer(result, parse_mode="HTML")
+
+
+@router.message(Command("vacation"))
+async def cmd_vacation(message: Message, command: CommandObject) -> None:
+    """
+    /vacation        — до следующего рабочего дня
+    /vacation 3d     — на N дней
+    /vacation 2026-04-15  — до конкретной даты (МСК полночь)
+    """
+    from ..work_schedule import next_work_start, set_vacation, vacation_until
+    import zoneinfo
+
+    args = (command.args or "").strip()
+    now_utc = datetime.now(timezone.utc)
+    _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
+
+    until: datetime
+    if not args:
+        until = next_work_start()
+    elif args.endswith("d") and args[:-1].isdigit():
+        days = int(args[:-1])
+        until = now_utc + timedelta(days=days)
+    else:
+        try:
+            d = date.fromisoformat(args)
+            # Until the start of that day in MSK
+            until = datetime(d.year, d.month, d.day, 9, 0, tzinfo=_MSK).astimezone(timezone.utc)
+        except ValueError:
+            await message.answer(
+                "⚠️ Неверный формат. Примеры:\n"
+                "/vacation — до следующего рабочего дня\n"
+                "/vacation 3d — на 3 дня\n"
+                "/vacation 2026-04-15 — до 15 апреля",
+                parse_mode="HTML",
+            )
+            return
+
+    set_vacation(until)
+    until_msk = until.astimezone(_MSK)
+    await message.answer(
+        f"🏖 <b>Режим отпуска включён</b>\n"
+        f"Уведомления возобновятся: <b>{until_msk.strftime('%d.%m.%Y %H:%M')} МСК</b>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("workon"))
+async def cmd_workon(message: Message) -> None:
+    """Снять режим отпуска досрочно."""
+    from ..work_schedule import is_on_vacation, set_vacation
+
+    if not is_on_vacation():
+        await message.answer("ℹ️ Режим отпуска не активен.")
+        return
+
+    set_vacation(None)
+    await message.answer("✅ <b>Режим отпуска отключён.</b> Уведомления возобновлены.", parse_mode="HTML")
 
 
 @router.message(Command("digest"))
