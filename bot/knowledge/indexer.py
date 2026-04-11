@@ -11,7 +11,7 @@ from .store import find_similar, save_and_index
 
 logger = logging.getLogger(__name__)
 
-_EMBEDDING_MODEL = "embedding-001"
+_EMBEDDING_MODEL = "gemini-embedding-exp-03-07"
 _EMBEDDING_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{_EMBEDDING_MODEL}:embedContent"
@@ -23,7 +23,8 @@ async def embed_text(text: str) -> np.ndarray | None:
     if not config.gemini_api_key:
         return None
     payload = {
-        "content": {"parts": [{"text": text[:8000]}]},  # model is in the URL, not body
+        "content": {"parts": [{"text": text[:8000]}]},
+        "outputDimensionality": 768,
     }
     try:
         async with aiohttp.ClientSession() as session:
