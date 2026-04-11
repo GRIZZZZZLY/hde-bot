@@ -521,6 +521,7 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
     added = 0
     skipped = 0
     errors = 0
+    last_edit_at = 0.0  # timestamp of last wait_msg edit
 
     for owner_id in owner_ids:
         try:
@@ -599,11 +600,15 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                 )
             added += 1
 
-            if i % 5 == 0:
+            now = asyncio.get_event_loop().time()
+            if now - last_edit_at >= 2.0:
                 try:
                     await wait_msg.edit_text(
-                        f"📥 [{i}/{len(tickets)}] {ticket_title[:50]}...", parse_mode="HTML"
+                        f"📥 <b>[{i}/{len(tickets)}]</b> {ticket_title[:50]}\n"
+                        f"✅ {added} добавлено · ⏭ {skipped} дублей · ❌ {errors} ошибок",
+                        parse_mode="HTML",
                     )
+                    last_edit_at = now
                 except Exception:
                     pass
 
