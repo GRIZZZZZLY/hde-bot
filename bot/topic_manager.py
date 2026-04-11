@@ -272,7 +272,14 @@ async def _post_ticket_history(bot: Bot, ticket_id: str, topic_id: int) -> None:
     messages = format_ticket_history(posts, info)
     for text in messages:
         try:
-            await _send_topic_message(bot, topic_id, text)
+            await bot.send_message(
+                chat_id=config.group_chat_id,
+                message_thread_id=topic_id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                disable_notification=True,
+            )
         except TelegramAPIError as exc:
             logger.warning("Failed to post history message to topic %d: %s", topic_id, exc)
             break
