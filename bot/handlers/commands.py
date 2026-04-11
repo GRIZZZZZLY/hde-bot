@@ -176,6 +176,17 @@ async def cmd_report(message: Message, command: CommandObject) -> None:
             )
             return
 
+    # Check if target date was a work day
+    from ..config import config
+    target = report_date if report_date else date.today() - timedelta(days=1)
+    target_weekday = target.weekday()
+    if target_weekday not in config.work_days:
+        await message.answer(
+            f"🏖 <b>{target.strftime('%d.%m.%Y')} был выходной</b> — данных для отчёта нет.",
+            parse_mode="HTML",
+        )
+        return
+
     wait_msg = await message.answer("⏳ Отчёт генерируется, подождите...")
     try:
         result = await run_report(report_date)
@@ -205,11 +216,19 @@ async def cb_report_yesterday(callback: CallbackQuery) -> None:
     except Exception:
         pass
 
+    from ..work_schedule import was_yesterday_work_day
+    if not was_yesterday_work_day():
+        yesterday = date.today() - timedelta(days=1)
+        await callback.message.answer(
+            f"🏖 <b>Вчера ({yesterday.strftime('%d.%m.%Y')}) был выходной</b> — данных для отчёта нет.",
+            parse_mode="HTML",
+        )
+        return
+
     wait_msg = await callback.message.answer("⏳ Отчёт генерируется, подождите...")
     try:
         result = await run_report()
         mark_report_done_today()
-        from datetime import timedelta
         yesterday = date.today() - timedelta(days=1)
         await mark_report_sent(yesterday)
     except Exception as exc:
