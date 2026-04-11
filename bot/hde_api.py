@@ -194,6 +194,53 @@ class HDEApiClient:
 
         return all_tickets
 
+    async def get_closed_tickets(
+        self,
+        owner_id: str,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Fetch up to `limit` closed tickets for the given owner_id.
+
+        Returns list of raw ticket dicts from HDE API.
+        """
+        tickets: list[dict] = []
+        page = 1
+
+        while len(tickets) < limit:
+            url = f"{self.base_url}/tickets/"
+            params = {
+                "owner_list": owner_id,
+                "status_list": "closed",
+                "page": str(page),
+            }
+            async with aiohttp.ClientSession(auth=self.auth) as session:
+                async with session.get(url, params=params) as response:
+                    data = await self._read_response(response)
+                    if response.status >= 400:
+                        message = (
+                            self._extract_error_message(data)
+                            or f"HDE API error {response.status}"
+                        )
+                        raise HDEApiError(message)
+
+            if not isinstance(data, dict):
+                break
+            tickets_data = data.get("data", {})
+            if not tickets_data:
+                break
+
+            for ticket_raw in tickets_data.values():
+                if isinstance(ticket_raw, dict):
+                    tickets.append(ticket_raw)
+
+            meta = data.get("meta", {})
+            total_pages = meta.get("total_pages", 1) if isinstance(meta, dict) else 1
+            if page >= total_pages:
+                break
+            page += 1
+
+        return tickets[:limit]
+
     async def _post(
         self,
         path: str,
