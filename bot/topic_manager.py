@@ -253,8 +253,16 @@ async def _rename_topic_if_needed(
             logger.error("Failed to announce rename for topic %d: %s", record.topic_id, exc)
 
 
-async def _post_ticket_history(bot: Bot, ticket_id: str, topic_id: int) -> None:
-    """Fetch conversation history from HDE and post it to the topic (oldest→newest)."""
+async def _post_ticket_history(
+    bot: Bot,
+    ticket_id: str,
+    topic_id: int,
+    ticket_title: str = "",
+) -> None:
+    """Fetch conversation history from HDE and post it to the topic (oldest→newest).
+
+    After history messages, generates and posts an AI summary (if GEMINI_API_KEY is set).
+    """
     if not config.has_hde_api_credentials():
         return
     from .hde_api import HDEApiClient, HDEApiError
@@ -270,6 +278,7 @@ async def _post_ticket_history(bot: Bot, ticket_id: str, topic_id: int) -> None:
         return
 
     messages = format_ticket_history(posts, info)
+    posted_all = True
     for text in messages:
         try:
             await bot.send_message(
@@ -282,7 +291,36 @@ async def _post_ticket_history(bot: Bot, ticket_id: str, topic_id: int) -> None:
             )
         except TelegramAPIError as exc:
             logger.warning("Failed to post history message to topic %d: %s", topic_id, exc)
+            posted_all = False
             break
+
+    if not posted_all or not posts:
+        return
+
+    from .ai_summary import generate_ticket_summary, _build_history_text
+    from .handlers.ai_feedback import make_ai_feedback_keyboard, register_feedback_pending
+    summary = await generate_ticket_summary(
+        posts, info, ticket_title=ticket_title, ticket_id=ticket_id
+    )
+    if summary:
+        try:
+            await bot.send_message(
+                chat_id=config.group_chat_id,
+                message_thread_id=topic_id,
+                text=summary,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=make_ai_feedback_keyboard(),
+            )
+            plain_history = _build_history_text(posts, info)
+            await register_feedback_pending(
+                topic_id=topic_id,
+                ticket_id=ticket_id,
+                history=plain_history,
+                title=ticket_title,
+            )
+        except TelegramAPIError as exc:
+            logger.warning("Failed to post AI summary to topic %d: %s", topic_id, exc)
 
 
 async def _ensure_active_topic(
@@ -301,7 +339,10 @@ async def _ensure_active_topic(
         topic_id = await _create_topic(bot, payload)
         await db.upsert_topic(ticket_id, topic_id, topic_state="active", **metadata)
         await db.update_topic(ticket_id, last_assigned_at=to_storage(utcnow()))
-        await _post_ticket_history(bot, ticket_id, topic_id)
+        await _post_ticket_history(
+            bot, ticket_id, topic_id,
+            ticket_title=_payload_value(payload, "ticket_name"),
+        )
         should_announce_assignment = announce_assignment
     elif record.is_pending_delete:
         try:
