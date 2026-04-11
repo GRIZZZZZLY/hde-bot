@@ -11,3 +11,6 @@ google-auth>=2.0
 # Dev/test
 pytest>=7.0
 pytest-asyncio>=0.23
+
+# AI/ML
+numpy>=1.26
