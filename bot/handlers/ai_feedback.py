@@ -51,7 +51,7 @@ async def cb_ai_good(callback: CallbackQuery) -> None:
         return
     topic_id = callback.message.message_thread_id
     pending = await get_ai_feedback_pending(topic_id)
-    await callback.answer()
+    await callback.answer("✅ Сохранено в базу знаний", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception:
