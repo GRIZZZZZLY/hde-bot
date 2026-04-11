@@ -46,6 +46,9 @@ async def register_feedback_pending(
 
 @router.callback_query(F.data == "ai:good")
 async def cb_ai_good(callback: CallbackQuery) -> None:
+    if not callback.message or not hasattr(callback.message, "message_thread_id"):
+        await callback.answer()
+        return
     topic_id = callback.message.message_thread_id
     pending = await get_ai_feedback_pending(topic_id)
     await callback.answer()
@@ -69,6 +72,9 @@ async def cb_ai_good(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "ai:bad")
 async def cb_ai_bad(callback: CallbackQuery) -> None:
+    if not callback.message or not hasattr(callback.message, "message_thread_id"):
+        await callback.answer()
+        return
     topic_id = callback.message.message_thread_id
     await callback.answer()
     try:
@@ -81,6 +87,9 @@ async def cb_ai_bad(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "ai:edit")
 async def cb_ai_edit(callback: CallbackQuery) -> None:
+    if not callback.message or not hasattr(callback.message, "message_thread_id"):
+        await callback.answer()
+        return
     topic_id = callback.message.message_thread_id
     pending = await get_ai_feedback_pending(topic_id)
     await callback.answer()
