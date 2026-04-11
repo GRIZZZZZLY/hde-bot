@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 _EMBEDDING_MODEL = "text-embedding-004"
 _EMBEDDING_URL = (
-    "https://generativelanguage.googleapis.com/v1/models/"
+    "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{_EMBEDDING_MODEL}:embedContent"
 )
 
@@ -23,8 +23,7 @@ async def embed_text(text: str) -> np.ndarray | None:
     if not config.gemini_api_key:
         return None
     payload = {
-        "model": f"models/{_EMBEDDING_MODEL}",
-        "content": {"parts": [{"text": text[:8000]}]},  # API limit
+        "content": {"parts": [{"text": text[:8000]}]},  # model is in the URL, not body
     }
     try:
         async with aiohttp.ClientSession() as session:
