@@ -93,7 +93,8 @@ async def cmd_help(message: Message) -> None:
         "/aiknowledge — статистика базы знаний AI\n"
         "/aistatus — статус AI Knowledge System (RAG, embedding, предупреждения)\n"
         "/aiimport [N] [owner_id] — bulk-импорт закрытых тикетов HDE\n"
-        "/aireindex — переиндексировать записи без embedding\n",
+        "/aireindex — переиндексировать записи без embedding\n"
+        "/aibackfill — дозаполнить организации в базе знаний\n",
         parse_mode="HTML",
     )
 
@@ -638,6 +639,68 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
         f"• Добавлено: <b>{added}</b>\n"
         f"• Пропущено (дубли): <b>{skipped}</b>\n"
         f"• Ошибок: <b>{errors}</b>",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("aibackfill"))
+async def cmd_aibackfill(message: Message) -> None:
+    """Backfill company_id/company_name for HDE tickets imported without org info."""
+    import asyncio
+    from ..db import list_items_without_company, update_knowledge_company
+    from ..hde_api import HDEApiClient, HDEApiError
+
+    items = await list_items_without_company()
+    if not items:
+        await message.answer("✅ У всех записей уже заполнена организация.", parse_mode="HTML")
+        return
+
+    wait_msg = await message.answer(
+        f"🔄 Дозаполняю организацию для {len(items)} записей...", parse_mode="HTML"
+    )
+
+    client = HDEApiClient()
+    org_cache: dict[str, tuple[str, str]] = {}
+    done = 0
+    errors = 0
+    last_edit_at = 0.0
+
+    for item_id, ticket_id in items:
+        try:
+            info = await client.get_ticket_info(ticket_id)
+            user_id_str = str(info.client_id)
+            if user_id_str not in org_cache:
+                org_cache[user_id_str] = await client.get_user_organization(user_id_str)
+            org_id, org_name = org_cache[user_id_str]
+            company_id = org_id or user_id_str
+            company_name = org_name or info.client_name or ""
+            await update_knowledge_company(item_id, company_id, company_name)
+            done += 1
+        except Exception as exc:
+            logger.warning("aibackfill: failed for item_id=%s ticket=%s: %s", item_id, ticket_id, exc)
+            errors += 1
+
+        now = asyncio.get_event_loop().time()
+        if now - last_edit_at >= 2.0:
+            try:
+                await wait_msg.edit_text(
+                    f"🔄 <b>[{done + errors}/{len(items)}]</b> заполнено: {done} · ошибок: {errors}",
+                    parse_mode="HTML",
+                )
+                last_edit_at = now
+            except Exception:
+                pass
+
+        await asyncio.sleep(0.3)
+
+    try:
+        await wait_msg.delete()
+    except Exception:
+        pass
+
+    await message.answer(
+        f"✅ <b>Дозаполнено: {done}</b> записей\n"
+        f"{'⚠️ Ошибок: ' + str(errors) if errors else ''}",
         parse_mode="HTML",
     )
 

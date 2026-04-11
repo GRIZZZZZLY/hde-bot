@@ -1114,3 +1114,25 @@ async def get_last_knowledge_item_date() -> str | None:
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row and row[0] else None
+
+
+async def list_items_without_company() -> list[tuple[int, str]]:
+    """Return (id, ticket_id) for hde_closed items missing company_name."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, ticket_id FROM knowledge_items "
+            "WHERE source = 'hde_closed' "
+            "AND (company_name IS NULL OR company_name = '') "
+            "AND ticket_id IS NOT NULL"
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def update_knowledge_company(item_id: int, company_id: str, company_name: str) -> None:
+    """Set company_id and company_name for an existing knowledge item."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE knowledge_items SET company_id = ?, company_name = ? WHERE id = ?",
+            (company_id or None, company_name or None, item_id),
+        )
+        await db.commit()

@@ -84,6 +84,7 @@ async def _main_async() -> None:
         BotCommand(command="aistatus",   description="Статус AI Knowledge System"),
         BotCommand(command="aiimport",   description="Импорт закрытых тикетов HDE"),
         BotCommand(command="aireindex",  description="Переиндексировать embeddings"),
+        BotCommand(command="aibackfill", description="Дозаполнить организации в базе знаний"),
         BotCommand(command="help",      description="Список всех команд"),
     ])
     logger.info("Bot started (polling mode)")
