@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import numpy as np
 import pytest
 
@@ -23,9 +25,6 @@ def test_embedding_roundtrip():
     np.testing.assert_array_almost_equal(original, restored)
 
 
-from unittest.mock import AsyncMock, patch
-
-
 @pytest.mark.asyncio
 async def test_embed_text_returns_ndarray():
     mock_response = {
@@ -44,7 +43,6 @@ async def test_embed_text_returns_ndarray():
         mock_get.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_get.__aexit__ = AsyncMock(return_value=False)
 
-        from unittest.mock import MagicMock
         mock_session = AsyncMock()
         mock_session.post = MagicMock(return_value=mock_get)
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
