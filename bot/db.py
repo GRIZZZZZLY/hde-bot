@@ -229,6 +229,41 @@ async def init_db() -> None:
             )
             """
         )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bot_settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_items (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                source       TEXT NOT NULL,
+                ticket_id    TEXT,
+                title        TEXT,
+                content      TEXT NOT NULL,
+                embedding    BLOB,
+                quality      TEXT NOT NULL DEFAULT 'good',
+                url          TEXT,
+                content_hash TEXT,
+                created_at   TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ai_feedback_pending (
+                topic_id   INTEGER PRIMARY KEY,
+                ticket_id  TEXT NOT NULL,
+                history    TEXT NOT NULL,
+                title      TEXT NOT NULL DEFAULT '',
+                expires_at TEXT NOT NULL
+            )
+            """
+        )
         await db.commit()
 
 
@@ -888,5 +923,154 @@ async def mark_report_sent(report_date: "date") -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             "INSERT OR IGNORE INTO report_runs (report_date) VALUES (?)", (key,)
+        )
+        await db.commit()
+
+
+async def get_setting(key: str, default: str = "") -> str:
+    """Return a value from bot_settings, or *default* if not set."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT value FROM bot_settings WHERE key = ?", (key,)
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else default
+
+
+async def set_setting(key: str, value: str) -> None:
+    """Persist a key-value pair in bot_settings."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR REPLACE INTO bot_settings(key, value) VALUES (?, ?)",
+            (key, value),
+        )
+        await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Knowledge items
+# ---------------------------------------------------------------------------
+
+@dataclass
+class KnowledgeItem:
+    id: int
+    source: str
+    ticket_id: Optional[str]
+    title: Optional[str]
+    content: str
+    quality: str
+
+
+async def save_knowledge_item(
+    source: str,
+    content: str,
+    *,
+    ticket_id: str = "",
+    title: str = "",
+    embedding: bytes | None = None,
+    quality: str = "good",
+    url: str = "",
+    content_hash: str = "",
+) -> int:
+    """Insert a new knowledge item. Returns the new row id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO knowledge_items
+                (source, ticket_id, title, content, embedding, quality, url, content_hash)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (source, ticket_id or None, title or None, content,
+             embedding, quality, url or None, content_hash or None),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def update_knowledge_embedding(item_id: int, embedding: bytes) -> None:
+    """Store the embedding blob for an existing knowledge item."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE knowledge_items SET embedding = ? WHERE id = ?",
+            (embedding, item_id),
+        )
+        await db.commit()
+
+
+async def list_knowledge_items_without_embedding() -> list[tuple[int, str]]:
+    """Return (id, content) for rows missing an embedding."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, content FROM knowledge_items WHERE embedding IS NULL AND quality != 'bad'"
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def list_all_knowledge_embeddings() -> list[tuple[int, str, bytes]]:
+    """Return (id, content, embedding) for all indexed items."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id, content, embedding FROM knowledge_items "
+            "WHERE embedding IS NOT NULL AND quality != 'bad'"
+        ) as cur:
+            return await cur.fetchall()
+
+
+async def count_knowledge_by_source() -> dict[str, int]:
+    """Return {source: count} statistics."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT source, COUNT(*) FROM knowledge_items GROUP BY source"
+        ) as cur:
+            rows = await cur.fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+# ---------------------------------------------------------------------------
+# AI feedback pending (awaiting ✏️ correction)
+# ---------------------------------------------------------------------------
+
+async def save_ai_feedback_pending(
+    topic_id: int,
+    ticket_id: str,
+    history: str,
+    title: str,
+    expires_at: str,
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO ai_feedback_pending
+                (topic_id, ticket_id, history, title, expires_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (topic_id, ticket_id, history, title, expires_at),
+        )
+        await db.commit()
+
+
+async def get_ai_feedback_pending(topic_id: int) -> Optional[dict]:
+    """Return pending correction state or None if expired/missing."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT ticket_id, history, title, expires_at "
+            "FROM ai_feedback_pending WHERE topic_id = ?",
+            (topic_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    if row is None:
+        return None
+    from datetime import datetime, timezone
+    expires = datetime.fromisoformat(row[3])
+    if datetime.now(timezone.utc) > expires:
+        await delete_ai_feedback_pending(topic_id)
+        return None
+    return {"ticket_id": row[0], "history": row[1], "title": row[2]}
+
+
+async def delete_ai_feedback_pending(topic_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "DELETE FROM ai_feedback_pending WHERE topic_id = ?", (topic_id,)
         )
         await db.commit()
