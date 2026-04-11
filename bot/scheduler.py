@@ -72,7 +72,11 @@ async def _maybe_send_report_button(bot: Bot) -> None:
         InlineKeyboardButton(
             text=f"📊 Сформировать отчёт за {yesterday}",
             callback_data="report:run_yesterday",
-        )
+        ),
+        InlineKeyboardButton(
+            text="❌ Отмена",
+            callback_data="report:cancel",
+        ),
     ]])
     await bot.send_message(
         config.personal_chat_id,

@@ -204,6 +204,16 @@ async def cmd_report(message: Message, command: CommandObject) -> None:
     await message.answer(result, parse_mode="HTML")
 
 
+@router.callback_query(F.data == "report:cancel")
+async def cb_report_cancel(callback: CallbackQuery) -> None:
+    """Inline button: dismiss the report reminder without running the report."""
+    await callback.answer("Отменено")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
 @router.callback_query(F.data == "report:run_yesterday")
 async def cb_report_yesterday(callback: CallbackQuery) -> None:
     """Inline button: run yesterday's report from the personal chat prompt."""
