@@ -14,3 +14,4 @@ pytest-asyncio>=0.23
 
 # AI/ML
 numpy>=1.26
+sentence-transformers>=3.0

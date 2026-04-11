@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -27,31 +27,18 @@ def test_embedding_roundtrip():
 
 @pytest.mark.asyncio
 async def test_embed_text_returns_ndarray():
-    mock_response = {
-        "embedding": {"values": [0.1] * 768}
-    }
-    with patch("bot.knowledge.indexer.config") as mock_config, \
-         patch("bot.knowledge.indexer.aiohttp.ClientSession") as mock_session_cls:
-        mock_config.gemini_api_key = "test-key"
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.json = AsyncMock(return_value=mock_response)
-        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_resp.__aexit__ = AsyncMock(return_value=False)
+    """embed_text returns a float32 ndarray of shape (EMBEDDING_DIM,)."""
+    from unittest.mock import MagicMock, patch
 
-        mock_get = AsyncMock()
-        mock_get.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_get.__aexit__ = AsyncMock(return_value=False)
+    fake_embedding = np.ones(1024, dtype=np.float32)
+    mock_model = MagicMock()
+    mock_model.encode.return_value = fake_embedding
 
-        mock_session = AsyncMock()
-        mock_session.post = MagicMock(return_value=mock_get)
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=False)
-        mock_session_cls.return_value = mock_session
-
-        from bot.knowledge.indexer import embed_text
+    with patch("bot.knowledge.indexer._load_model", return_value=mock_model), \
+         patch("bot.knowledge.indexer._model", mock_model):
+        from bot.knowledge.indexer import embed_text, EMBEDDING_DIM
         result = await embed_text("тестовый текст")
 
     assert result is not None
-    assert result.shape == (768,)
+    assert result.shape == (EMBEDDING_DIM,)
     assert result.dtype == np.float32

@@ -1,52 +1,70 @@
-"""Embed text via Gemini text-embedding-004 and index into knowledge store."""
+"""Embed text via local sentence-transformers and index into knowledge store."""
 from __future__ import annotations
 
+import asyncio
 import logging
+from typing import TYPE_CHECKING
 
-import aiohttp
 import numpy as np
 
-from ..config import config
 from .store import find_similar, save_and_index
+
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
-_EMBEDDING_MODEL = "gemini-embedding-exp-03-07"
-_EMBEDDING_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{_EMBEDDING_MODEL}:embedContent"
-)
+_MODEL_NAME = "intfloat/multilingual-e5-large"
+EMBEDDING_DIM = 1024  # output dimension of multilingual-e5-large
+
+_model: "SentenceTransformer | None" = None
+_model_lock = asyncio.Lock()
 
 
-async def embed_text(text: str) -> np.ndarray | None:
-    """Return 768-dim float32 embedding or None on failure."""
-    if not config.gemini_api_key:
-        return None
-    payload = {
-        "content": {"parts": [{"text": text[:8000]}]},
-        "outputDimensionality": 768,
-    }
+def _load_model() -> "SentenceTransformer":
+    """Load the model synchronously (called in executor on first use)."""
+    from sentence_transformers import SentenceTransformer  # noqa: PLC0415
+    global _model
+    if _model is None:
+        logger.info("Loading embedding model %s (first use, may take a moment)...", _MODEL_NAME)
+        _model = SentenceTransformer(_MODEL_NAME)
+        logger.info("Embedding model loaded.")
+    return _model
+
+
+async def _get_model() -> "SentenceTransformer":
+    """Return (lazily loaded) sentence-transformers model."""
+    global _model
+    if _model is not None:
+        return _model
+    async with _model_lock:
+        if _model is None:
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _load_model)
+    return _model  # type: ignore[return-value]
+
+
+async def embed_text(text: str, *, task_type: str = "passage") -> np.ndarray | None:
+    """Return EMBEDDING_DIM-dim float32 embedding or None on failure.
+
+    Args:
+        text: Text to embed.
+        task_type: "passage" for content being indexed, "query" for search queries.
+                   multilingual-e5-large requires these prefixes for best quality.
+    """
+    prefix = "query: " if task_type == "query" else "passage: "
+    input_text = f"{prefix}{text[:8000]}"
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                _EMBEDDING_URL,
-                json=payload,
-                params={"key": config.gemini_api_key},
-                timeout=aiohttp.ClientTimeout(total=15),
-            ) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    logger.warning("Embedding API error %s: %s", resp.status, body[:200])
-                    return None
-                data = await resp.json()
+        model = await _get_model()
+        loop = asyncio.get_event_loop()
+        embedding: np.ndarray = await loop.run_in_executor(
+            None,
+            lambda: model.encode(input_text, normalize_embeddings=True),
+        )
+        return embedding.astype(np.float32)
     except Exception as exc:
         logger.warning("embed_text failed: %s", exc)
         return None
-
-    values = data.get("embedding", {}).get("values", [])
-    if not values:
-        return None
-    return np.array(values, dtype=np.float32)
 
 
 async def index_knowledge_item(
@@ -59,7 +77,7 @@ async def index_knowledge_item(
     url: str = "",
 ) -> int | None:
     """Embed content and save to knowledge store. Returns item id or None."""
-    embedding = await embed_text(content)
+    embedding = await embed_text(content, task_type="passage")
     if embedding is None:
         logger.warning("Could not embed knowledge item (source=%s), skipping", source)
         return None
@@ -84,7 +102,7 @@ async def get_rag_context(
 ) -> list[str]:
     """Return list of content strings for top-N similar knowledge items."""
     query = f"{ticket_title}\n{history_tail[-600:]}"
-    embedding = await embed_text(query)
+    embedding = await embed_text(query, task_type="query")
     if embedding is None:
         return []
     similar = await find_similar(embedding, limit=limit)
