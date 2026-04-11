@@ -230,6 +230,10 @@ class HDEApiClient:
 
             if not isinstance(data, dict):
                 break
+            logger.info(
+                "get_closed_tickets page=%d response keys=%s",
+                page, list(data.keys()),
+            )
             tickets_data = data.get("data", {})
             if not tickets_data:
                 break
