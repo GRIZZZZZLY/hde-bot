@@ -1,7 +1,11 @@
+import re
 import zoneinfo
 from datetime import datetime as _dt, timezone as _tz, timedelta as _td
-from html import escape
-from typing import Optional
+from html import escape, unescape
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .hde_api import HDEPost, HDETicketInfo
 
 
 PRIORITY_EMOJI = {
@@ -266,6 +270,61 @@ def format_morning_digest(
         lines.extend(sla_lines)
 
     return "\n".join(lines)
+
+
+def _strip_html(text: str) -> str:
+    """Remove HTML tags and unescape entities."""
+    text = re.sub(r"<[^>]+>", "", text)
+    return unescape(text).strip()
+
+
+def _parse_hde_post_date(date_str: str) -> str:
+    """Convert 'HH:MM:SS DD.MM.YYYY' → 'DD.MM HH:MM'."""
+    try:
+        dt = _dt.strptime(date_str.strip(), "%H:%M:%S %d.%m.%Y")
+        return dt.strftime("%d.%m %H:%M")
+    except ValueError:
+        return date_str[:16]
+
+
+def format_ticket_history(
+    posts: "list[HDEPost]",
+    info: "HDETicketInfo",
+    max_messages: int = 10,
+) -> list[str]:
+    """Return a list of formatted strings — one per post — to send as separate messages.
+
+    Client posts: 👤  Staff posts: 🧑‍💼
+    Body rendered in <blockquote> so Telegram shows the left-bar indent.
+    """
+    if not posts:
+        return []
+
+    shown = posts[-max_messages:] if len(posts) > max_messages else posts
+    skipped = len(posts) - len(shown)
+
+    result: list[str] = []
+
+    if skipped:
+        result.append(f"<i>· · · {skipped} более ранних сообщений · · ·</i>")
+
+    for post in shown:
+        is_client = post.user_id == info.client_id
+        icon = "👤" if is_client else "🧑‍💼"
+        name = escape(info.client_name if is_client else info.owner_name)
+        date = _parse_hde_post_date(post.date_created)
+        body = _strip_html(post.text)
+        if not body:
+            continue
+        # Truncate very long messages
+        if len(body) > 800:
+            body = body[:800] + "…"
+        result.append(
+            f"{icon} <b>{name}</b> · {date}\n"
+            f"<blockquote>{escape(body)}</blockquote>"
+        )
+
+    return result
 
 
 def format_refresh_result(

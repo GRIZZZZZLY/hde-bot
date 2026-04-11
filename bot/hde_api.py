@@ -20,6 +20,23 @@ class HDEAttachment:
 
 
 @dataclass
+class HDEPost:
+    post_id: int
+    user_id: int
+    text: str            # raw HTML from HDE
+    date_created: str    # "HH:MM:SS DD.MM.YYYY"
+    is_comment: bool = False  # True = internal comment, False = public post
+
+
+@dataclass
+class HDETicketInfo:
+    client_id: int
+    client_name: str     # user_name + user_lastname
+    owner_id: int
+    owner_name: str      # owner_name + owner_lastname
+
+
+@dataclass
 class HDEApiResult:
     status: int
     data: Any
@@ -79,6 +96,47 @@ class HDEApiClient:
 
     async def delete_comment(self, ticket_id: str, comment_id: int) -> HDEApiResult:
         return await self._delete(f"/tickets/{ticket_id}/comments/{comment_id}/")
+
+    async def get_ticket_info(self, ticket_id: str) -> HDETicketInfo:
+        """Return client and owner identities for a ticket."""
+        url = f"{self.base_url}/tickets/{ticket_id}/"
+        async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with session.get(url) as response:
+                data = await self._read_response(response)
+                if response.status >= 400:
+                    raise HDEApiError(self._extract_error_message(data) or f"HDE API error {response.status}")
+        raw = data.get("data", data) if isinstance(data, dict) else {}
+        client_name = f"{raw.get('user_name', '')} {raw.get('user_lastname', '')}".strip() or "Клиент"
+        owner_name = f"{raw.get('owner_name', '')} {raw.get('owner_lastname', '')}".strip() or "Сотрудник"
+        return HDETicketInfo(
+            client_id=int(raw.get("user_id", 0)),
+            client_name=client_name,
+            owner_id=int(raw.get("owner_id", 0)),
+            owner_name=owner_name,
+        )
+
+    async def get_ticket_posts(self, ticket_id: str, limit: int = 20) -> list[HDEPost]:
+        """Return up to *limit* posts (newest first from API, returned oldest-first)."""
+        url = f"{self.base_url}/tickets/{ticket_id}/posts/"
+        params = {"limit": str(limit)}
+        async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with session.get(url, params=params) as response:
+                data = await self._read_response(response)
+                if response.status >= 400:
+                    raise HDEApiError(self._extract_error_message(data) or f"HDE API error {response.status}")
+        items = data.get("data", []) if isinstance(data, dict) else []
+        posts = [
+            HDEPost(
+                post_id=int(item.get("id", 0)),
+                user_id=int(item.get("user_id", 0)),
+                text=item.get("text", ""),
+                date_created=item.get("date_created", ""),
+            )
+            for item in items
+            if isinstance(item, dict)
+        ]
+        posts.reverse()  # oldest first for display
+        return posts
 
     async def get_my_open_tickets(self) -> list[HDETicket]:
         """Return all open/in-progress tickets assigned to me, paginated."""

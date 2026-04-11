@@ -25,6 +25,7 @@ from .formatter import (
     format_client_reply,
     format_pre_sla_alert,
     format_ticket_closed,
+    format_ticket_history,
     format_ticket_renamed,
     format_unassigned_message,
     make_topic_name,
@@ -252,6 +253,31 @@ async def _rename_topic_if_needed(
             logger.error("Failed to announce rename for topic %d: %s", record.topic_id, exc)
 
 
+async def _post_ticket_history(bot: Bot, ticket_id: str, topic_id: int) -> None:
+    """Fetch conversation history from HDE and post it to the topic (oldest→newest)."""
+    if not config.has_hde_api_credentials():
+        return
+    from .hde_api import HDEApiClient, HDEApiError
+    try:
+        client = HDEApiClient()
+        info = await client.get_ticket_info(ticket_id)
+        posts = await client.get_ticket_posts(ticket_id)
+    except HDEApiError as exc:
+        logger.warning("Could not fetch history for ticket %s: %s", ticket_id, exc)
+        return
+    except Exception as exc:
+        logger.error("Unexpected error fetching history for ticket %s: %s", ticket_id, exc)
+        return
+
+    messages = format_ticket_history(posts, info)
+    for text in messages:
+        try:
+            await _send_topic_message(bot, topic_id, text)
+        except TelegramAPIError as exc:
+            logger.warning("Failed to post history message to topic %d: %s", topic_id, exc)
+            break
+
+
 async def _ensure_active_topic(
     bot: Bot,
     payload: dict,
@@ -268,6 +294,7 @@ async def _ensure_active_topic(
         topic_id = await _create_topic(bot, payload)
         await db.upsert_topic(ticket_id, topic_id, topic_state="active", **metadata)
         await db.update_topic(ticket_id, last_assigned_at=to_storage(utcnow()))
+        await _post_ticket_history(bot, ticket_id, topic_id)
         should_announce_assignment = announce_assignment
     elif record.is_pending_delete:
         try:
