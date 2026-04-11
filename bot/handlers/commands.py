@@ -464,6 +464,164 @@ async def cmd_aistatus(message: Message) -> None:
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
+@router.message(Command("aiimport"))
+async def cmd_aiimport(message: Message, command: CommandObject) -> None:
+    """Bulk-import closed tickets from HDE into the knowledge base.
+
+    Usage:
+        /aiimport          — 50 own tickets
+        /aiimport 100      — 100 own tickets
+        /aiimport 50 456   — tickets of operator 456
+        /aiimport 50 456,789 — tickets of two operators
+    """
+    import asyncio
+    import hashlib
+    import aiosqlite
+    from ..config import config
+    from ..db import DB_PATH, save_knowledge_item, set_setting
+    from ..hde_api import HDEApiClient, HDEApiError
+    from ..ai_summary import _build_history_text
+    from ..knowledge.indexer import index_knowledge_item
+    from datetime import datetime, timezone
+
+    # Parse args
+    raw = (command.args or "").strip().split()
+    limit = 50
+    owner_ids: list[str] = [config.hde_owner_id] if config.hde_owner_id else []
+
+    if raw:
+        if raw[0].isdigit():
+            limit = int(raw[0])
+            if len(raw) > 1:
+                owner_ids = [x.strip() for x in raw[1].split(",") if x.strip()]
+        else:
+            owner_ids = [x.strip() for x in raw[0].split(",") if x.strip()]
+
+    if not owner_ids:
+        await message.answer(
+            "⚠️ HDE_OWNER_ID не настроен и owner_id не указан.\n"
+            "Использование: /aiimport [N] [owner_id,owner_id2]",
+            parse_mode="HTML",
+        )
+        return
+
+    if not config.has_hde_api_credentials():
+        await message.answer("⚠️ HDE API не настроен (HDE_API_EMAIL / HDE_API_KEY).", parse_mode="HTML")
+        return
+
+    wait_msg = await message.answer(
+        f"📥 Импортирую закрытые тикеты (до {limit} на оператора, операторов: {len(owner_ids)})...",
+        parse_mode="HTML",
+    )
+
+    client = HDEApiClient()
+    added = 0
+    skipped = 0
+    errors = 0
+
+    for owner_id in owner_ids:
+        try:
+            tickets = await client.get_closed_tickets(owner_id, limit=limit)
+        except HDEApiError as exc:
+            errors += 1
+            try:
+                await wait_msg.edit_text(
+                    f"❌ Ошибка HDE API для оператора {owner_id}: {exc}", parse_mode="HTML"
+                )
+            except Exception:
+                pass
+            continue
+
+        for i, ticket_raw in enumerate(tickets, 1):
+            ticket_id = str(ticket_raw.get("id") or "")
+            ticket_title = str(ticket_raw.get("title") or "")
+
+            if not ticket_id:
+                errors += 1
+                continue
+
+            # Deduplication
+            content_hash = hashlib.sha256(f"hde:{ticket_id}".encode()).hexdigest()
+            async with aiosqlite.connect(DB_PATH) as db:
+                async with db.execute(
+                    "SELECT id FROM knowledge_items WHERE content_hash = ?", (content_hash,)
+                ) as cur:
+                    exists = await cur.fetchone()
+            if exists:
+                skipped += 1
+                continue
+
+            # Fetch full conversation
+            try:
+                info = await client.get_ticket_info(ticket_id)
+                posts = await client.get_ticket_posts(ticket_id)
+            except Exception as exc:
+                logger.warning("Failed to fetch ticket %s: %s", ticket_id, exc)
+                errors += 1
+                await asyncio.sleep(0.5)
+                continue
+
+            history = _build_history_text(posts, info)
+            if not history.strip():
+                skipped += 1
+                continue
+
+            content = f"Тема: {ticket_title}\n\n{history}"
+
+            # Index (embed + save)
+            item_id = await index_knowledge_item(
+                source="hde_closed",
+                content=content,
+                ticket_id=ticket_id,
+                title=ticket_title,
+                quality="good",
+            )
+            if item_id is not None:
+                # Save content_hash for deduplication
+                async with aiosqlite.connect(DB_PATH) as db:
+                    await db.execute(
+                        "UPDATE knowledge_items SET content_hash = ? WHERE id = ?",
+                        (content_hash, item_id),
+                    )
+                    await db.commit()
+            else:
+                # No Gemini key — save text only, index later with /aireindex
+                item_id = await save_knowledge_item(
+                    source="hde_closed",
+                    content=content,
+                    ticket_id=ticket_id,
+                    title=ticket_title,
+                    quality="good",
+                    content_hash=content_hash,
+                )
+            added += 1
+
+            if i % 5 == 0:
+                try:
+                    await wait_msg.edit_text(
+                        f"📥 [{i}/{len(tickets)}] {ticket_title[:50]}...", parse_mode="HTML"
+                    )
+                except Exception:
+                    pass
+
+            await asyncio.sleep(0.5)
+
+    await set_setting("last_bulk_import_at", datetime.now(timezone.utc).isoformat())
+
+    try:
+        await wait_msg.delete()
+    except Exception:
+        pass
+
+    await message.answer(
+        f"✅ <b>Импорт завершён</b>\n\n"
+        f"• Добавлено: <b>{added}</b>\n"
+        f"• Пропущено (дубли): <b>{skipped}</b>\n"
+        f"• Ошибок: <b>{errors}</b>",
+        parse_mode="HTML",
+    )
+
+
 @router.message(Command("digest"))
 async def cmd_digest(message: Message) -> None:
     await send_morning_digest(message.bot)
