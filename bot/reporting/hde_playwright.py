@@ -123,15 +123,19 @@ async def _set_flatpickr_dates(page: Page, report_date: date) -> None:
         return {from: fromInput && fromInput.value, to: toInput && toInput.value};
     }"""
 
+    def _ok(val: str | None) -> bool:
+        # value may include time: "10.04.2026 00:00" — check prefix only
+        return bool(val and val.startswith(expected))
+
     result = await page.evaluate(js, [y, m, d])
-    if result.get("from") != expected or result.get("to") != expected:
+    if not _ok(result.get("from")) or not _ok(result.get("to")):
         logger.warning(
             "Flatpickr dates did not stick (from=%s to=%s, expected %s) — retrying",
             result.get("from"), result.get("to"), expected,
         )
         await page.wait_for_timeout(400)
         result = await page.evaluate(js, [y, m, d])
-        if result.get("from") != expected or result.get("to") != expected:
+        if not _ok(result.get("from")) or not _ok(result.get("to")):
             raise RuntimeError(
                 f"Failed to set flatpickr dates: got from={result.get('from')} "
                 f"to={result.get('to')}, expected {expected}"
