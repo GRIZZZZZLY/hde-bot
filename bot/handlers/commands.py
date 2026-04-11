@@ -522,6 +522,7 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
     skipped = 0
     errors = 0
     last_edit_at = 0.0  # timestamp of last wait_msg edit
+    org_cache: dict[str, tuple[str, str]] = {}  # user_id → (org_id, org_name)
 
     for owner_id in owner_ids:
         try:
@@ -570,8 +571,13 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                 skipped += 1
                 continue
 
-            company_id = str(info.client_id) if info.client_id else ""
-            company_name = info.client_name or ""
+            # Fetch organization (cached per user to avoid duplicate API calls)
+            user_id_str = str(info.client_id)
+            if user_id_str not in org_cache:
+                org_cache[user_id_str] = await client.get_user_organization(user_id_str)
+            org_id, org_name = org_cache[user_id_str]
+            company_id = org_id or user_id_str
+            company_name = org_name or info.client_name or ""
             content = f"Тема: {ticket_title}\n\n{history}"
 
             # Index (embed + save)

@@ -100,6 +100,20 @@ class HDEApiClient:
     async def delete_comment(self, ticket_id: str, comment_id: int) -> HDEApiResult:
         return await self._delete(f"/tickets/{ticket_id}/comments/{comment_id}/")
 
+    async def get_user_organization(self, user_id: str) -> tuple[str, str]:
+        """Return (org_id, org_name) for a HDE user. Returns ('', '') if no org."""
+        url = f"{self.base_url}/users/{user_id}/"
+        async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with session.get(url) as response:
+                if response.status >= 400:
+                    return ("", "")
+                data = await self._read_response(response)
+        raw = data.get("data", data) if isinstance(data, dict) else {}
+        org = raw.get("organization", "")
+        if isinstance(org, dict):
+            return (str(org.get("id", "") or ""), str(org.get("name", "") or ""))
+        return ("", "")
+
     async def get_ticket_info(self, ticket_id: str) -> HDETicketInfo:
         """Return client and owner identities for a ticket."""
         url = f"{self.base_url}/tickets/{ticket_id}/"
