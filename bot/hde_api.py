@@ -244,11 +244,11 @@ class HDEApiClient:
                     if len(tickets) >= limit:
                         return tickets
 
-            meta = data.get("meta", {})
-            total_pages = meta.get("total_pages", 1) if isinstance(meta, dict) else 1
+            pagination = data.get("pagination", {})
+            total_pages = pagination.get("total_pages", 1) if isinstance(pagination, dict) else 1
             logger.info(
-                "get_closed_tickets page=%d total_pages=%d fetched_so_far=%d meta=%s",
-                page, total_pages, len(tickets), meta,
+                "get_closed_tickets page=%d total_pages=%d fetched_so_far=%d pagination=%s",
+                page, total_pages, len(tickets), pagination,
             )
             if page >= total_pages:
                 break
