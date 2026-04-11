@@ -74,6 +74,8 @@ async def save_and_index(
     title: str = "",
     quality: str = "good",
     url: str = "",
+    company_id: str = "",
+    company_name: str = "",
 ) -> int:
     """Save content + embedding in one call. Returns new item id."""
     emb_bytes = embedding_to_bytes(embedding)
@@ -85,5 +87,7 @@ async def save_and_index(
         embedding=emb_bytes,
         quality=quality,
         url=url,
+        company_id=company_id,
+        company_name=company_name,
     )
     return item_id

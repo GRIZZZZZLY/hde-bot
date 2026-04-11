@@ -570,6 +570,8 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                 skipped += 1
                 continue
 
+            company_id = str(info.client_id) if info.client_id else ""
+            company_name = info.client_name or ""
             content = f"Тема: {ticket_title}\n\n{history}"
 
             # Index (embed + save)
@@ -579,6 +581,8 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                 ticket_id=ticket_id,
                 title=ticket_title,
                 quality="good",
+                company_id=company_id,
+                company_name=company_name,
             )
             if item_id is not None:
                 # Save content_hash for deduplication
@@ -589,7 +593,7 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                     )
                     await db.commit()
             else:
-                # No Gemini key — save text only, index later with /aireindex
+                # No embedding yet — save text only, index later with /aireindex
                 item_id = await save_knowledge_item(
                     source="hde_closed",
                     content=content,
@@ -597,6 +601,8 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                     title=ticket_title,
                     quality="good",
                     content_hash=content_hash,
+                    company_id=company_id,
+                    company_name=company_name,
                 )
             added += 1
 

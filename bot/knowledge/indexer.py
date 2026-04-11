@@ -75,6 +75,8 @@ async def index_knowledge_item(
     title: str = "",
     quality: str = "good",
     url: str = "",
+    company_id: str = "",
+    company_name: str = "",
 ) -> int | None:
     """Embed content and save to knowledge store. Returns item id or None."""
     embedding = await embed_text(content, task_type="passage")
@@ -89,6 +91,8 @@ async def index_knowledge_item(
         title=title,
         quality=quality,
         url=url,
+        company_id=company_id,
+        company_name=company_name,
     )
     logger.info("Indexed knowledge item id=%d source=%s", item_id, source)
     return item_id

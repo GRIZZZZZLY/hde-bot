@@ -249,10 +249,19 @@ async def init_db() -> None:
                 quality      TEXT NOT NULL DEFAULT 'good',
                 url          TEXT,
                 content_hash TEXT,
+                company_id   TEXT,
+                company_name TEXT,
                 created_at   TEXT DEFAULT (datetime('now'))
             )
             """
         )
+        # Migrations: add columns that may be missing in existing DBs
+        for col, col_type in [("company_id", "TEXT"), ("company_name", "TEXT")]:
+            try:
+                await db.execute(f"ALTER TABLE knowledge_items ADD COLUMN {col} {col_type}")
+            except Exception:
+                pass  # column already exists
+
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS ai_feedback_pending (
@@ -971,17 +980,21 @@ async def save_knowledge_item(
     quality: str = "good",
     url: str = "",
     content_hash: str = "",
+    company_id: str = "",
+    company_name: str = "",
 ) -> int:
     """Insert a new knowledge item. Returns the new row id."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """
             INSERT INTO knowledge_items
-                (source, ticket_id, title, content, embedding, quality, url, content_hash)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (source, ticket_id, title, content, embedding, quality, url,
+                 content_hash, company_id, company_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (source, ticket_id or None, title or None, content,
-             embedding, quality, url or None, content_hash or None),
+             embedding, quality, url or None, content_hash or None,
+             company_id or None, company_name or None),
         )
         await db.commit()
         row_id = cursor.lastrowid
