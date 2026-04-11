@@ -1076,3 +1076,28 @@ async def delete_ai_feedback_pending(topic_id: int) -> None:
             "DELETE FROM ai_feedback_pending WHERE topic_id = ?", (topic_id,)
         )
         await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# AI status helpers
+# ---------------------------------------------------------------------------
+
+async def count_items_without_embedding() -> int:
+    """Count knowledge_items that have no embedding blob (failed or pending)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM knowledge_items "
+            "WHERE embedding IS NULL AND quality != 'bad'"
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else 0
+
+
+async def get_last_knowledge_item_date() -> str | None:
+    """Return ISO timestamp of the most recently created knowledge_item, or None."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT MAX(created_at) FROM knowledge_items"
+        ) as cur:
+            row = await cur.fetchone()
+            return row[0] if row and row[0] else None
