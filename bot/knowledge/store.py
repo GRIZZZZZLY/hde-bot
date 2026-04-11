@@ -40,11 +40,12 @@ async def find_similar(
     if not rows:
         return []
 
-    scored: list[tuple[float, tuple]] = []
+    scored: list[tuple[float, tuple[int, str]]] = []
     for row_id, content, emb_bytes in rows:
         try:
             emb = bytes_to_embedding(emb_bytes)
         except Exception:
+            logger.warning("Skipping corrupted embedding row_id=%s", row_id, exc_info=True)
             continue
         score = cosine_similarity(query_embedding, emb)
         scored.append((score, (row_id, content)))
