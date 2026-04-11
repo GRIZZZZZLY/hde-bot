@@ -24,25 +24,34 @@ _vacation_until: datetime | None = None  # timezone-aware UTC
 
 # ── public API ────────────────────────────────────────────────────────────────
 
-def is_work_time() -> bool:
-    """Return True when the bot should send notifications."""
+def is_work_day() -> bool:
+    """Return True if today is a scheduled work day (ignores the hour)."""
     from .config import config
 
     now_utc = datetime.now(_UTC)
-
-    # Vacation / day-off override
     if _vacation_until is not None and now_utc < _vacation_until:
         return False
 
-    now_msk = now_utc.astimezone(_MSK)
+    return now_utc.astimezone(_MSK).weekday() in config.work_days
 
-    if now_msk.weekday() not in config.work_days:
+
+def was_yesterday_work_day() -> bool:
+    """Return True if yesterday (MSK) was a scheduled work day."""
+    from .config import config
+
+    yesterday_msk = (datetime.now(_UTC).astimezone(_MSK) - timedelta(days=1))
+    return yesterday_msk.weekday() in config.work_days
+
+
+def is_work_time() -> bool:
+    """Return True when the bot should send real-time notifications (day AND hour)."""
+    from .config import config
+
+    if not is_work_day():
         return False
 
-    if not (config.work_hour_start <= now_msk.hour < config.work_hour_end):
-        return False
-
-    return True
+    now_msk = datetime.now(_UTC).astimezone(_MSK)
+    return config.work_hour_start <= now_msk.hour < config.work_hour_end
 
 
 def set_vacation(until: datetime | None) -> None:

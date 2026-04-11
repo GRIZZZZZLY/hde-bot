@@ -100,19 +100,43 @@ async def _login(page: Page, base_url: str, login: str, password: str) -> None:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def _set_flatpickr_dates(page: Page, report_date: date) -> None:
-    """Set both flatpickr date inputs: start = 00:00, end = 23:59."""
+    """Set both flatpickr date inputs: start = 00:00, end = 23:59.
+
+    Addresses inputs by name (from_date / to_date) with positional fallback.
+    Sets end date FIRST so flatpickr's minDate constraint on the 'from'
+    picker doesn't reject start > current end. Verifies values after setting
+    and retries once if they didn't stick (seen on slower VPS).
+    """
     y, m, d = report_date.year, report_date.month, report_date.day
-    await page.evaluate(
-        """([y, m, d]) => {
-            const fpInputs = Array.from(document.querySelectorAll("input"))
-                .filter((input) => !!input._flatpickr);
-            const start = new Date(y, m - 1, d, 0, 0);
-            const end   = new Date(y, m - 1, d, 23, 59);
-            if (fpInputs[0]) fpInputs[0]._flatpickr.setDate(start, true);
-            if (fpInputs[1]) fpInputs[1]._flatpickr.setDate(end,   true);
-        }""",
-        [y, m, d],
-    )
+    expected = f"{d:02d}.{m:02d}.{y}"
+
+    js = """([y, m, d]) => {
+        const all = Array.from(document.querySelectorAll("input"))
+            .filter((input) => !!input._flatpickr);
+        const byName = (name) => all.find(i => i.name === name);
+        const fromInput = byName("from_date") || all[0];
+        const toInput   = byName("to_date")   || all[1];
+        const start = new Date(y, m - 1, d, 0, 0);
+        const end   = new Date(y, m - 1, d, 23, 59);
+        if (toInput)   toInput._flatpickr.setDate(end, true);
+        if (fromInput) fromInput._flatpickr.setDate(start, true);
+        return {from: fromInput && fromInput.value, to: toInput && toInput.value};
+    }"""
+
+    result = await page.evaluate(js, [y, m, d])
+    if result.get("from") != expected or result.get("to") != expected:
+        logger.warning(
+            "Flatpickr dates did not stick (from=%s to=%s, expected %s) — retrying",
+            result.get("from"), result.get("to"), expected,
+        )
+        await page.wait_for_timeout(400)
+        result = await page.evaluate(js, [y, m, d])
+        if result.get("from") != expected or result.get("to") != expected:
+            raise RuntimeError(
+                f"Failed to set flatpickr dates: got from={result.get('from')} "
+                f"to={result.get('to')}, expected {expected}"
+            )
+    logger.info("Flatpickr dates set: from=%s to=%s", result["from"], result["to"])
 
 
 async def _check_close_date(page: Page) -> None:

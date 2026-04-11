@@ -116,12 +116,19 @@ async def _maybe_auto_run_report(bot: Bot) -> None:
 
 
 async def process_scheduled_actions(bot: Bot) -> None:
-    # Digest and report run on their own schedule regardless of work hours
-    await _maybe_send_digest(bot)
-    await _maybe_send_report_button(bot)
-    await _maybe_auto_run_report(bot)
+    from .work_schedule import is_work_day, is_work_time, was_yesterday_work_day
 
-    from .work_schedule import is_work_time
+    # Digest fires on any work day (morning briefing)
+    if is_work_day():
+        await _maybe_send_digest(bot)
+
+    # Report only makes sense if yesterday was a work day — otherwise
+    # the operator had no activity and HDE won't list them at all.
+    if was_yesterday_work_day():
+        await _maybe_send_report_button(bot)
+        await _maybe_auto_run_report(bot)
+
+    # Pre-SLA and pending deletions require both work day AND work hours
     if not is_work_time():
         return
 
