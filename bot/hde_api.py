@@ -205,13 +205,15 @@ class HDEApiClient:
         """
         tickets: list[dict] = []
         page = 1
+        per_page = 100  # request max per page to minimise round-trips
 
-        while len(tickets) < limit:
+        while True:
             url = f"{self.base_url}/tickets/"
             params = {
                 "owner_list": owner_id,
                 "status_list": "closed",
                 "page": str(page),
+                "per_page": str(per_page),
             }
             async with aiohttp.ClientSession(auth=self.auth) as session:
                 async with session.get(url, params=params) as response:
@@ -232,6 +234,8 @@ class HDEApiClient:
             for ticket_raw in tickets_data.values():
                 if isinstance(ticket_raw, dict):
                     tickets.append(ticket_raw)
+                    if len(tickets) >= limit:
+                        return tickets
 
             meta = data.get("meta", {})
             total_pages = meta.get("total_pages", 1) if isinstance(meta, dict) else 1
@@ -239,7 +243,7 @@ class HDEApiClient:
                 break
             page += 1
 
-        return tickets[:limit]
+        return tickets
 
     async def _post(
         self,
