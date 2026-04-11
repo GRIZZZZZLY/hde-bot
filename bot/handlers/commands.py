@@ -622,6 +622,46 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
     )
 
 
+@router.message(Command("aireindex"))
+async def cmd_aireindex(message: Message) -> None:
+    """Regenerate embeddings for knowledge items that are missing them.
+
+    Use after /aiimport when Gemini key was not configured,
+    or after switching LLM providers.
+    """
+    from ..db import list_knowledge_items_without_embedding, update_knowledge_embedding
+    from ..knowledge.indexer import embed_text
+    from ..knowledge.store import embedding_to_bytes
+
+    items = await list_knowledge_items_without_embedding()
+    if not items:
+        await message.answer("✅ Все записи уже проиндексированы.", parse_mode="HTML")
+        return
+
+    wait_msg = await message.answer(
+        f"🔄 Переиндексирую {len(items)} записей...", parse_mode="HTML"
+    )
+    done = 0
+    errors = 0
+    for item_id, content in items:
+        emb = await embed_text(content)
+        if emb is None:
+            errors += 1
+            continue
+        await update_knowledge_embedding(item_id, embedding_to_bytes(emb))
+        done += 1
+
+    try:
+        await wait_msg.delete()
+    except Exception:
+        pass
+
+    result = f"✅ <b>Переиндексировано: {done}</b> записей"
+    if errors:
+        result += f"\n⚠️ Ошибок: {errors} (нет Gemini key или API недоступен)"
+    await message.answer(result, parse_mode="HTML")
+
+
 @router.message(Command("digest"))
 async def cmd_digest(message: Message) -> None:
     await send_morning_digest(message.bot)
