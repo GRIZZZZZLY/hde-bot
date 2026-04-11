@@ -90,7 +90,10 @@ async def cmd_help(message: Message) -> None:
         "/report YYYY-MM-DD — отчёт за конкретную дату\n"
         "/aisummary — статус AI саммари\n"
         "/aisummary on/off — включить/выключить AI саммари\n"
-        "/aiknowledge — статистика базы знаний AI\n",
+        "/aiknowledge — статистика базы знаний AI\n"
+        "/aistatus — статус AI Knowledge System (RAG, embedding, предупреждения)\n"
+        "/aiimport [N] [owner_id] — bulk-импорт закрытых тикетов HDE\n"
+        "/aireindex — переиндексировать записи без embedding\n",
         parse_mode="HTML",
     )
 

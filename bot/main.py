@@ -81,6 +81,9 @@ async def _main_async() -> None:
         BotCommand(command="report",     description="Отчёт в Google Sheets (за вчера)"),
         BotCommand(command="aisummary", description="Вкл/выкл AI саммари тикета"),
         BotCommand(command="aiknowledge", description="Статистика базы знаний AI"),
+        BotCommand(command="aistatus",   description="Статус AI Knowledge System"),
+        BotCommand(command="aiimport",   description="Импорт закрытых тикетов HDE"),
+        BotCommand(command="aireindex",  description="Переиндексировать embeddings"),
         BotCommand(command="help",      description="Список всех команд"),
     ])
     logger.info("Bot started (polling mode)")
