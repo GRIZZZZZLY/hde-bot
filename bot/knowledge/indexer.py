@@ -11,7 +11,7 @@ from .store import find_similar, save_and_index
 
 logger = logging.getLogger(__name__)
 
-_EMBEDDING_MODEL = "text-embedding-004"
+_EMBEDDING_MODEL = "embedding-001"
 _EMBEDDING_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{_EMBEDDING_MODEL}:embedContent"
