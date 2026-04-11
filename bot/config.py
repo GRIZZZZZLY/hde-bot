@@ -54,6 +54,7 @@ class Config:
     work_days: tuple[int, ...]
     work_hour_start: int
     work_hour_end: int
+    gemini_api_key: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -90,6 +91,7 @@ class Config:
             ),
             work_hour_start=int(os.getenv("WORK_HOUR_START", "9")),
             work_hour_end=int(os.getenv("WORK_HOUR_END", "18")),
+            gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
         )
 
     def matches_owner(self, owner_id: str, owner_name: str) -> bool:
