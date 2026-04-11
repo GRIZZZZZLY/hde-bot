@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional, Sequence
 
 import aiohttp
 
 from .config import config
+
+logger = logging.getLogger(__name__)
 
 
 class HDEApiError(RuntimeError):
@@ -239,6 +242,10 @@ class HDEApiClient:
 
             meta = data.get("meta", {})
             total_pages = meta.get("total_pages", 1) if isinstance(meta, dict) else 1
+            logger.info(
+                "get_closed_tickets page=%d total_pages=%d fetched_so_far=%d meta=%s",
+                page, total_pages, len(tickets), meta,
+            )
             if page >= total_pages:
                 break
             page += 1
