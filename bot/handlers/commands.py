@@ -87,7 +87,10 @@ async def cmd_help(message: Message) -> None:
         "/vacation YYYY-MM-DD — режим тишины до конкретной даты\n"
         "/workon — снять режим тишины досрочно\n"
         "/report — записать отчёт по операторам в Google Sheets (за вчера)\n"
-        "/report YYYY-MM-DD — отчёт за конкретную дату",
+        "/report YYYY-MM-DD — отчёт за конкретную дату\n"
+        "/aisummary — статус AI саммари\n"
+        "/aisummary on/off — включить/выключить AI саммари\n"
+        "/aiknowledge — статистика базы знаний AI\n",
         parse_mode="HTML",
     )
 
@@ -305,6 +308,69 @@ async def cmd_workon(message: Message) -> None:
 
     set_vacation(None)
     await message.answer("✅ <b>Режим отпуска отключён.</b> Уведомления возобновлены.", parse_mode="HTML")
+
+
+@router.message(Command("aisummary"))
+async def cmd_aisummary(message: Message, command: CommandObject) -> None:
+    """
+    /aisummary       — текущий статус
+    /aisummary on    — включить AI саммари
+    /aisummary off   — выключить AI саммари
+    """
+    from ..db import get_setting, set_setting
+
+    args = (command.args or "").strip().lower()
+    current = await get_setting("ai_summary_enabled", "1")
+
+    if not args:
+        status = "включено ✅" if current == "1" else "выключено ❌"
+        await message.answer(
+            f"🧠 <b>AI Саммари</b>: {status}\n\n"
+            "Команды:\n"
+            "/aisummary on — включить\n"
+            "/aisummary off — выключить",
+            parse_mode="HTML",
+        )
+        return
+
+    if args == "on":
+        await set_setting("ai_summary_enabled", "1")
+        await message.answer("🧠 <b>AI Саммари включён</b> ✅", parse_mode="HTML")
+    elif args == "off":
+        await set_setting("ai_summary_enabled", "0")
+        await message.answer("🧠 <b>AI Саммари выключен</b> ❌", parse_mode="HTML")
+    else:
+        await message.answer(
+            "⚠️ Используйте: /aisummary on или /aisummary off",
+            parse_mode="HTML",
+        )
+
+
+@router.message(Command("aiknowledge"))
+async def cmd_aiknowledge(message: Message) -> None:
+    """Show knowledge base statistics."""
+    from ..db import count_knowledge_by_source
+    counts = await count_knowledge_by_source()
+    if not counts:
+        await message.answer(
+            "📚 <b>База знаний пуста</b>\n\nОценивай саммари кнопками 👍/✏️ чтобы накапливать примеры.",
+            parse_mode="HTML",
+        )
+        return
+    source_labels = {
+        "feedback": "👍 Оценённые ответы",
+        "corrected": "✏️ Исправленные ответы",
+        "teamly": "🏢 Teamly KB",
+        "doc": "📄 Внешние статьи",
+        "transcription": "🎙️ Транскрипции звонков",
+        "macro": "🔧 Макросы HDE",
+    }
+    total = sum(counts.values())
+    lines = [f"📚 <b>База знаний: {total} записей</b>", ""]
+    for source, count in sorted(counts.items(), key=lambda x: -x[1]):
+        label = source_labels.get(source, source)
+        lines.append(f"• {label}: <b>{count}</b>")
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 @router.message(Command("digest"))

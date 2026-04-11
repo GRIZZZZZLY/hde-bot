@@ -9,6 +9,7 @@ from aiogram.types import BotCommand, ErrorEvent, Update
 from .config import config
 from .db import init_db
 from .handlers.commands import router as commands_router
+from .handlers.ai_feedback import router as ai_feedback_router
 from .hde_webhook import hde_webhook_handler
 from .scheduler import run_scheduler, _ALLOWED_UPDATES
 from .tg_session import RetrySession
@@ -39,6 +40,7 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
         )
         return True
 
+    dp.include_router(ai_feedback_router)
     dp.include_router(commands_router)
     return dp
 
@@ -76,8 +78,10 @@ async def _main_async() -> None:
         BotCommand(command="note",     description="Внутренний комментарий в HDE"),
         BotCommand(command="send",     description="Публичный ответ клиенту через HDE"),
         BotCommand(command="delete",   description="Удалить сообщение из HDE"),
-        BotCommand(command="report",   description="Отчёт в Google Sheets (за вчера)"),
-        BotCommand(command="help",     description="Список всех команд"),
+        BotCommand(command="report",     description="Отчёт в Google Sheets (за вчера)"),
+        BotCommand(command="aisummary", description="Вкл/выкл AI саммари тикета"),
+        BotCommand(command="aiknowledge", description="Статистика базы знаний AI"),
+        BotCommand(command="help",      description="Список всех команд"),
     ])
     logger.info("Bot started (polling mode)")
 
