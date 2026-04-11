@@ -373,6 +373,97 @@ async def cmd_aiknowledge(message: Message) -> None:
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
+@router.message(Command("aistatus"))
+async def cmd_aistatus(message: Message) -> None:
+    """AI Knowledge System health overview."""
+    from ..db import (
+        count_knowledge_by_source,
+        count_items_without_embedding,
+        get_last_knowledge_item_date,
+        get_setting,
+    )
+    from ..config import config
+    from datetime import datetime, timezone
+
+    counts = await count_knowledge_by_source()
+    without_emb = await count_items_without_embedding()
+    last_item_at = await get_last_knowledge_item_date()
+    last_import_at = await get_setting("last_bulk_import_at", "")
+
+    total = sum(counts.values())
+    rag_status = "активен ✅" if config.gemini_api_key else "недоступен ❌ (нет Gemini key)"
+
+    source_labels = {
+        "feedback": "👍 feedback",
+        "corrected": "✏️ corrected",
+        "hde_closed": "📥 HDE import",
+        "teamly": "🏢 Teamly",
+        "doc": "📄 Внешние статьи",
+        "macro": "🔧 Макросы HDE",
+        "transcription": "🎙️ Транскрипции",
+    }
+
+    lines: list[str] = ["🧠 <b>AI Knowledge Status</b>", ""]
+    lines.append(f"📚 База знаний: <b>{total} записей</b>")
+    if without_emb:
+        lines.append(f"   ⚠️ Без embedding: {without_emb} — /aireindex чтобы исправить")
+
+    if counts:
+        lines.append("")
+        lines.append("По источникам:")
+        for source, cnt in sorted(counts.items(), key=lambda x: -x[1]):
+            label = source_labels.get(source, source)
+            lines.append(f"• {label}: <b>{cnt}</b>")
+
+    lines.append("")
+    lines.append(f"🔍 RAG: {rag_status}")
+
+    if last_item_at:
+        try:
+            dt = datetime.fromisoformat(last_item_at)
+            delta = datetime.now(timezone.utc) - dt.replace(tzinfo=timezone.utc)
+            hours = int(delta.total_seconds() // 3600)
+            if hours < 1:
+                age = "менее часа назад"
+            elif hours < 24:
+                age = f"{hours} ч. назад"
+            else:
+                age = f"{delta.days} дн. назад"
+            lines.append(f"🕐 Последнее пополнение: {age}")
+        except Exception:
+            pass
+
+    if last_import_at:
+        try:
+            dt = datetime.fromisoformat(last_import_at)
+            delta = datetime.now(timezone.utc) - dt.replace(tzinfo=timezone.utc)
+            lines.append(f"📥 Последний bulk-импорт: {delta.days} дн. назад")
+        except Exception:
+            pass
+
+    warnings: list[str] = []
+    if not config.gemini_api_key:
+        warnings.append("Gemini API key не настроен — RAG и embeddings недоступны")
+    if without_emb:
+        warnings.append(f"{without_emb} записей без embedding — /aireindex")
+    if last_item_at:
+        try:
+            dt = datetime.fromisoformat(last_item_at)
+            delta = datetime.now(timezone.utc) - dt.replace(tzinfo=timezone.utc)
+            if delta.days >= 7:
+                warnings.append("База не пополнялась 7+ дней")
+        except Exception:
+            pass
+
+    if warnings:
+        lines.append("")
+        lines.append("⚠️ <b>Предупреждения:</b>")
+        for w in warnings:
+            lines.append(f"• {w}")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
 @router.message(Command("digest"))
 async def cmd_digest(message: Message) -> None:
     await send_morning_digest(message.bot)
