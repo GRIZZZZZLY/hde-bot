@@ -984,7 +984,9 @@ async def save_knowledge_item(
              embedding, quality, url or None, content_hash or None),
         )
         await db.commit()
-        return cursor.lastrowid
+        row_id = cursor.lastrowid
+        assert row_id is not None, "INSERT into knowledge_items returned no lastrowid"
+        return row_id
 
 
 async def update_knowledge_embedding(item_id: int, embedding: bytes) -> None:
