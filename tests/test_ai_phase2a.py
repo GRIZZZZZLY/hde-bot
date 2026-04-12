@@ -61,13 +61,13 @@ async def test_get_closed_tickets_pagination():
             "1": {"id": "101", "title": "Тикет 1", "owner_id": "42"},
             "2": {"id": "102", "title": "Тикет 2", "owner_id": "42"},
         },
-        "meta": {"total_pages": 2},
+        "pagination": {"total_pages": 2},
     }
     page2 = {
         "data": {
             "3": {"id": "103", "title": "Тикет 3", "owner_id": "42"},
         },
-        "meta": {"total_pages": 2},
+        "pagination": {"total_pages": 2},
     }
 
     call_count = 0

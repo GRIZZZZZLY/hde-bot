@@ -57,7 +57,8 @@ def make_bot():
 
 
 @pytest.mark.asyncio
-async def test_assigned_on_create_creates_topic(initialized_db):
+async def test_assigned_on_create_creates_topic(initialized_db, monkeypatch):
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
     bot = make_bot()
 
     await handle_assigned_on_create(bot, make_payload())
@@ -71,7 +72,8 @@ async def test_assigned_on_create_creates_topic(initialized_db):
 
 
 @pytest.mark.asyncio
-async def test_owner_changed_creates_topic(initialized_db):
+async def test_owner_changed_creates_topic(initialized_db, monkeypatch):
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
     bot = make_bot()
 
     await handle_owner_changed(bot, make_payload())
@@ -165,7 +167,8 @@ async def test_ticket_updated_renames_topic(initialized_db):
 
 
 @pytest.mark.asyncio
-async def test_client_reply_creates_topic_and_schedules_pre_sla(initialized_db):
+async def test_client_reply_creates_topic_and_schedules_pre_sla(initialized_db, monkeypatch):
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
     bot = make_bot()
 
     await handle_client_reply(bot, make_payload())
@@ -182,6 +185,7 @@ async def test_client_reply_creates_topic_and_schedules_pre_sla(initialized_db):
 
 @pytest.mark.asyncio
 async def test_client_reply_sends_photo_attachment(initialized_db, monkeypatch):
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
     bot = make_bot()
 
     async def fake_download(ref):
@@ -207,6 +211,7 @@ async def test_client_reply_sends_photo_attachment(initialized_db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_client_reply_sends_voice_attachment(initialized_db, monkeypatch):
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
     bot = make_bot()
 
     async def fake_download(ref):
@@ -281,7 +286,11 @@ async def test_ticket_closed_deletes_topic(initialized_db):
 
 
 @pytest.mark.asyncio
-async def test_scheduler_sends_pre_sla_alert(initialized_db):
+async def test_scheduler_sends_pre_sla_alert(initialized_db, monkeypatch):
+    import bot.work_schedule as work_schedule
+    monkeypatch.setattr(work_schedule, "is_work_time", lambda: True)
+    monkeypatch.setattr(work_schedule, "is_work_day", lambda: True)
+    monkeypatch.setattr(work_schedule, "was_yesterday_work_day", lambda: False)
     await db_module.upsert_topic(
         "TKT-1",
         999,
@@ -306,7 +315,11 @@ async def test_scheduler_sends_pre_sla_alert(initialized_db):
 
 
 @pytest.mark.asyncio
-async def test_scheduler_deletes_pending_topics(initialized_db):
+async def test_scheduler_deletes_pending_topics(initialized_db, monkeypatch):
+    import bot.work_schedule as work_schedule
+    monkeypatch.setattr(work_schedule, "is_work_time", lambda: True)
+    monkeypatch.setattr(work_schedule, "is_work_day", lambda: True)
+    monkeypatch.setattr(work_schedule, "was_yesterday_work_day", lambda: False)
     await db_module.upsert_topic(
         "TKT-1",
         999,

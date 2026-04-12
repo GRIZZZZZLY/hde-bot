@@ -599,8 +599,8 @@ async def test_refresh_marks_stale_topic_deleted(initialized_db, monkeypatch):
     from bot.refresh import refresh_topics
     result = await refresh_topics(bot=DummyBot())
 
-    assert len(result.marked_deleted) == 1
-    assert result.marked_deleted[0].ticket_id == "TKT-300"
+    assert len(result.deleted) == 1
+    assert result.deleted[0].ticket_id == "TKT-300"
     assert result.active_after == 0
 
     topic = await db_module.get_topic("TKT-300")

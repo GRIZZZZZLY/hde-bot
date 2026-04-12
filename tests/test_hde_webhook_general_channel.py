@@ -21,6 +21,13 @@ def mock_request(mock_bot):
     return request
 
 
+@pytest.fixture(autouse=True)
+async def setup_db():
+    """Initialize DB tables before each test (processed_events table is required)."""
+    import bot.db as db_module
+    await db_module.init_db()
+
+
 @pytest.mark.asyncio
 async def test_webhook_calls_general_channel_hook_on_assigned_on_create(mock_request, mock_bot):
     """Test that assigned_on_create event triggers general_channel.on_assigned_on_create."""
