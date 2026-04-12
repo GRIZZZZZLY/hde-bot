@@ -20,7 +20,10 @@ logger = logging.getLogger(__name__)
 _last_digest_date: Optional[str] = None   # "YYYY-MM-DD" UTC date
 _last_report_date: Optional[str] = None   # "YYYY-MM-DD" UTC date — set when report runs
 _report_button_sent: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when button is sent
+_last_knowledge_expiry_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when weekly expiry runs
 _ALLOWED_UPDATES = ["message", "callback_query"]
+
+KNOWLEDGE_EXPIRY_DAYS = 180
 
 
 def mark_report_done_today() -> None:
@@ -131,6 +134,20 @@ async def process_scheduled_actions(bot: Bot) -> None:
     if was_yesterday_work_day():
         await _maybe_send_report_button(bot)
         await _maybe_auto_run_report(bot)
+
+    # Weekly knowledge expiry (Sunday 00:xx UTC)
+    global _last_knowledge_expiry_date
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    if now.weekday() == 6 and now.hour == 0:
+        if _last_knowledge_expiry_date != today:
+            _last_knowledge_expiry_date = today
+            try:
+                marked = await db.expire_stale_knowledge(KNOWLEDGE_EXPIRY_DAYS)
+                if marked:
+                    logger.info("Weekly expiry: marked %d stale knowledge items as expired", marked)
+            except Exception as exc:
+                logger.warning("Weekly knowledge expiry failed: %s", exc)
 
     # Pre-SLA and pending deletions require both work day AND work hours
     if not is_work_time():
