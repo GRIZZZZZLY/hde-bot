@@ -301,16 +301,25 @@ async def _post_ticket_history(
     from .ai_summary import generate_ticket_summary, _build_history_text
     from .handlers.ai_feedback import suit_feedback_kb, answer_feedback_kb, register_feedback_pending
     result = await generate_ticket_summary(
-        posts, info, ticket_title=ticket_title, ticket_id=ticket_id
+        posts, info,
+        ticket_title=ticket_title,
+        ticket_id=ticket_id,
+        company_id=_payload_value(payload, "company_id"),
     )
     if result:
-        suit_line, answer_line = result
+        suit_line, answer_line, confidence_pct = result
         try:
             # Message 1 — Суть
+            suit_label = (
+                f"🧠 <b>Суть ({confidence_pct}%):</b>"
+                if confidence_pct >= 40
+                else "🧠 <b>Суть:</b>"
+            )
+            suit_text = f"{suit_label} {_html_escape(suit_line)}"
             await bot.send_message(
                 chat_id=config.group_chat_id,
                 message_thread_id=topic_id,
-                text=f"🧠 <b>Суть:</b> {_html_escape(suit_line)}",
+                text=suit_text,
                 parse_mode="HTML",
                 disable_web_page_preview=True,
                 reply_markup=suit_feedback_kb(),
