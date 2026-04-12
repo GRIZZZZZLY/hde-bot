@@ -264,8 +264,9 @@ async def generate_ticket_summary(
     info: "HDETicketInfo",
     ticket_title: str = "",
     ticket_id: str = "",
-) -> tuple[str, str] | None:
-    """Return (suit_line, answer_line) tuple or None if disabled/failed."""
+    company_id: str = "",
+) -> tuple[str, str, int] | None:
+    """Return (suit_line, answer_line, confidence_pct) or None if disabled/failed."""
     if not config.gemini_api_key:
         logger.info("AI summary skipped: GEMINI_API_KEY not set")
         return None
@@ -285,13 +286,31 @@ async def generate_ticket_summary(
         logger.info("AI summary skipped: empty history for ticket %s", ticket_id)
         return None
 
+    # Equipment detection
+    equipment = _detect_equipment(ticket_title, history)
+
     # RAG: find similar examples from knowledge base
     rag_examples: list[str] = []
+    confidence_pct: int = 0
     try:
         from .knowledge.indexer import get_rag_context
-        rag_examples = await get_rag_context(ticket_title, history)
+        rag_examples, confidence_pct = await get_rag_context(
+            ticket_title, history, company_id=company_id
+        )
     except Exception as exc:
         logger.warning("RAG context retrieval failed: %s", exc)
+
+    # Solution pattern lookup
+    solution_steps: str | None = None
+    try:
+        from . import db as _db2
+        pattern = await _db2.find_solution_pattern(equipment, ticket_title)
+        if pattern:
+            solution_steps = pattern["steps"]
+            await _db2.increment_pattern_use(pattern["id"])
+            logger.debug("Pattern hit for ticket %s: %r", ticket_id, solution_steps[:60])
+    except Exception as exc:
+        logger.warning("Solution pattern lookup failed: %s", exc)
 
     # Wiki: find relevant article for this topic
     wiki_ctx: str | None = None
@@ -303,7 +322,13 @@ async def generate_ticket_summary(
     except Exception as exc:
         logger.warning("Wiki context retrieval failed: %s", exc)
 
-    system_text = _build_system_prompt(ticket_title, rag_examples or None, wiki_ctx)
+    system_text = _build_system_prompt(
+        ticket_title,
+        rag_examples or None,
+        wiki_ctx,
+        equipment=equipment,
+        solution_steps=solution_steps,
+    )
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -393,4 +418,4 @@ async def generate_ticket_summary(
         logger.warning("Could not parse Суть/Ответ from Gemini response for ticket %s", ticket_id)
         return None
 
-    return (suit_line, answer_line)
+    return (suit_line, answer_line, confidence_pct)
