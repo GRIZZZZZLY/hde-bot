@@ -1,3 +1,4 @@
+import logging
 from datetime import date, datetime, timedelta, timezone
 
 from aiogram import F, Router
@@ -25,6 +26,7 @@ from ..operator_replies import (
     send_public_reply,
 )
 
+logger = logging.getLogger(__name__)
 router = Router()
 
 
@@ -624,6 +626,16 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                         company_name=company_name,
                     )
                 added += 1
+                # Update wiki article (non-fatal)
+                try:
+                    from ..wiki.builder import build_or_update_wiki_article
+                    await build_or_update_wiki_article(
+                        title=ticket_title,
+                        content=content,
+                        ticket_id=ticket_id,
+                    )
+                except Exception as exc:
+                    logger.warning("Wiki update failed for ticket %s: %s", ticket_id, exc)
 
                 now = asyncio.get_event_loop().time()
                 if now - last_edit_at >= 2.0:
