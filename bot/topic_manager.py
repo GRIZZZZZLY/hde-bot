@@ -389,6 +389,9 @@ async def _ensure_active_topic(
             deleted_at=None,
         )
         await db.update_topic(ticket_id, last_assigned_at=to_storage(utcnow()))
+        # On reassignment, announce even for existing topics
+        should_announce_assignment = announce_assignment
+        reassignment = True
 
     record = await db.get_topic(ticket_id)
     if record is None:
@@ -407,7 +410,28 @@ async def _ensure_active_topic(
         try:
             await _send_topic_message(bot, record.topic_id, text)
         except TelegramAPIError as exc:
-            logger.error("Failed to send assignment message to topic %d: %s", record.topic_id, exc)
+            err = str(exc).lower()
+            if "thread not found" in err or "topic_deleted" in err or "not found" in err:
+                # Topic was manually deleted in Telegram — recreate it
+                logger.warning(
+                    "Topic %d for ticket %s not found in Telegram, recreating",
+                    record.topic_id, ticket_id,
+                )
+                await db.mark_topic_deleted(ticket_id)
+                new_topic_id = await _create_topic(bot, payload)
+                await db.upsert_topic(ticket_id, new_topic_id, topic_state="active", **metadata)
+                await db.update_topic(ticket_id, last_assigned_at=to_storage(utcnow()))
+                try:
+                    await _send_topic_message(bot, new_topic_id, text)
+                except TelegramAPIError as exc2:
+                    logger.error("Failed to send to recreated topic %d: %s", new_topic_id, exc2)
+                await _post_ticket_history(
+                    bot, ticket_id, new_topic_id,
+                    ticket_title=record.ticket_name,
+                )
+                record = await db.get_topic(ticket_id)
+            else:
+                logger.error("Failed to send assignment message to topic %d: %s", record.topic_id, exc)
 
     return record
 
