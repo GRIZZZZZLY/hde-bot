@@ -297,27 +297,44 @@ async def _post_ticket_history(
             break
 
     # Post AI summary LAST
+    from html import escape as _html_escape
     from .ai_summary import generate_ticket_summary, _build_history_text
-    from .handlers.ai_feedback import make_ai_feedback_keyboard, register_feedback_pending
-    summary = await generate_ticket_summary(
+    from .handlers.ai_feedback import suit_feedback_kb, answer_feedback_kb, register_feedback_pending
+    result = await generate_ticket_summary(
         posts, info, ticket_title=ticket_title, ticket_id=ticket_id
     )
-    if summary:
+    if result:
+        suit_line, answer_line = result
         try:
+            # Message 1 — Суть
             await bot.send_message(
                 chat_id=config.group_chat_id,
                 message_thread_id=topic_id,
-                text=summary,
+                text=f"🧠 <b>Суть:</b> {_html_escape(suit_line)}",
                 parse_mode="HTML",
                 disable_web_page_preview=True,
-                reply_markup=make_ai_feedback_keyboard(),
+                reply_markup=suit_feedback_kb(),
             )
+            # Message 2 — Предложенный ответ
+            if answer_line:
+                await bot.send_message(
+                    chat_id=config.group_chat_id,
+                    message_thread_id=topic_id,
+                    text=(
+                        f"💡 <b>Предложенный ответ:</b>\n"
+                        f"<i>«{_html_escape(answer_line)}»</i>"
+                    ),
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                    reply_markup=answer_feedback_kb(),
+                )
             plain_history = _build_history_text(posts, info)
             await register_feedback_pending(
                 topic_id=topic_id,
                 ticket_id=ticket_id,
                 history=plain_history,
                 title=ticket_title,
+                answer_text=answer_line,
             )
         except TelegramAPIError as exc:
             logger.warning("Failed to post AI summary to topic %d: %s", topic_id, exc)

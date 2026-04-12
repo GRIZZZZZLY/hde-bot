@@ -96,8 +96,8 @@ async def generate_ticket_summary(
     info: "HDETicketInfo",
     ticket_title: str = "",
     ticket_id: str = "",
-) -> str | None:
-    """Return formatted summary string or None if disabled/failed."""
+) -> tuple[str, str] | None:
+    """Return (suit_line, answer_line) tuple or None if disabled/failed."""
     if not config.gemini_api_key:
         logger.info("AI summary skipped: GEMINI_API_KEY not set")
         return None
@@ -190,14 +190,7 @@ async def generate_ticket_summary(
             current_key = None  # blank line resets context
 
     if not suit_line and not answer_line:
-        # Fallback: show raw text
-        return f"🧠 <b>AI Саммари</b>\n\n{text}"
+        logger.warning("Could not parse Суть/Ответ from Gemini response for ticket %s", ticket_id)
+        return None
 
-    from html import escape
-    parts = ["🧠 <b>AI Саммари</b>"]
-    if suit_line:
-        parts.append(f"\n<b>Суть:</b> {escape(suit_line)}")
-    if answer_line:
-        parts.append(f"\n💡 <b>Предложенный ответ:</b>\n<i>«{escape(answer_line)}»</i>")
-
-    return "\n".join(parts)
+    return (suit_line, answer_line)

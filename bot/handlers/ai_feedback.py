@@ -22,6 +22,7 @@ _TTL_HOURS = 24
 
 
 def make_ai_feedback_keyboard() -> InlineKeyboardMarkup:
+    """Legacy keyboard — kept for backwards compatibility."""
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="👍", callback_data="ai:good"),
         InlineKeyboardButton(text="✏️ Исправить", callback_data="ai:edit"),
@@ -29,17 +30,41 @@ def make_ai_feedback_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
+def suit_feedback_kb() -> InlineKeyboardMarkup:
+    """Keyboard for the Суть message."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="👍 Верно", callback_data="suit:good"),
+        InlineKeyboardButton(text="👎 Неверно", callback_data="suit:bad"),
+    ]])
+
+
+def answer_feedback_kb() -> InlineKeyboardMarkup:
+    """Keyboard for the Предложенный ответ message."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="👍", callback_data="ai:good"),
+            InlineKeyboardButton(text="✏️", callback_data="ai:edit"),
+            InlineKeyboardButton(text="👎", callback_data="ai:bad"),
+        ],
+        [
+            InlineKeyboardButton(text="📤 Ответить клиенту", callback_data="ai:send_post"),
+            InlineKeyboardButton(text="💬 Комментарий", callback_data="ai:send_comment"),
+        ],
+    ])
+
+
 async def register_feedback_pending(
     topic_id: int,
     ticket_id: str,
     history: str,
     title: str,
+    answer_text: str = "",
 ) -> None:
     """Store pending feedback state so correction handler can pick it up."""
     expires_at = (
         datetime.now(timezone.utc) + timedelta(hours=_TTL_HOURS)
     ).isoformat()
-    await save_ai_feedback_pending(topic_id, ticket_id, history, title, expires_at)
+    await save_ai_feedback_pending(topic_id, ticket_id, history, title, expires_at, answer_text)
 
 
 # ── Callbacks ────────────────────────────────────────────────────────────────
@@ -116,6 +141,71 @@ class _HasPendingCorrection(BaseFilter):
             return False
         pending = await get_ai_feedback_pending(message.message_thread_id)
         return pending is not None
+
+
+@router.callback_query(F.data == "suit:good")
+async def cb_suit_good(callback: CallbackQuery) -> None:
+    await callback.answer("👍 Диагноз отмечен верным", show_alert=False)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "suit:bad")
+async def cb_suit_bad(callback: CallbackQuery) -> None:
+    await callback.answer("👎 Отмечено", show_alert=False)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.in_({"ai:send_post", "ai:send_comment"}))
+async def cb_send_to_hde(callback: CallbackQuery) -> None:
+    from ..hde_api import HDEApiClient, HDEApiError
+
+    if not callback.message or not hasattr(callback.message, "message_thread_id"):
+        await callback.answer("⚠️ Не удалось определить топик", show_alert=True)
+        return
+
+    topic_id = callback.message.message_thread_id
+    pending = await get_ai_feedback_pending(topic_id)
+    if not pending:
+        await callback.answer("⚠️ Данные устарели (24ч TTL)", show_alert=True)
+        return
+
+    answer_text = pending.get("answer_text", "")
+    if not answer_text:
+        await callback.answer("⚠️ Текст ответа не найден", show_alert=True)
+        return
+
+    try:
+        client = HDEApiClient()
+        if callback.data == "ai:send_post":
+            await client.add_post(pending["ticket_id"], answer_text)
+            label = "клиенту"
+        else:
+            await client.add_comment(pending["ticket_id"], answer_text)
+            label = "как комментарий"
+    except HDEApiError as exc:
+        await callback.answer(f"❌ Ошибка HDE: {exc}", show_alert=True)
+        return
+
+    await callback.answer(f"✅ Отправлено {label}", show_alert=False)
+    try:
+        original = callback.message.html_text or callback.message.text or ""
+        await callback.message.edit_text(
+            original + f"\n\n<i>✅ Отправлено {label}</i>",
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+    except Exception:
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+    logger.info("Sent AI answer to HDE ticket %s (%s)", pending["ticket_id"], label)
 
 
 @router.message(_HasPendingCorrection(), F.text.is_not(None))
