@@ -96,17 +96,22 @@ async def generate_ticket_summary(
 ) -> str | None:
     """Return formatted summary string or None if disabled/failed."""
     if not config.gemini_api_key:
+        logger.info("AI summary skipped: GEMINI_API_KEY not set")
         return None
     if not posts:
+        logger.info("AI summary skipped: no posts for ticket %s", ticket_id)
         return None
 
     # Check persistent toggle
     from . import db as _db
-    if await _db.get_setting("ai_summary_enabled", "1") != "1":
+    enabled = await _db.get_setting("ai_summary_enabled", "1")
+    if enabled != "1":
+        logger.info("AI summary skipped: disabled (ai_summary_enabled=%s)", enabled)
         return None
 
     history = _build_history_text(posts, info)
     if not history.strip():
+        logger.info("AI summary skipped: empty history for ticket %s", ticket_id)
         return None
 
     # RAG: find similar examples from knowledge base

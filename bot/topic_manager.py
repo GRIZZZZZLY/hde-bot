@@ -294,7 +294,7 @@ async def _post_ticket_history(
             posted_all = False
             break
 
-    if not posted_all or not posts:
+    if not posts:
         return
 
     from .ai_summary import generate_ticket_summary, _build_history_text
