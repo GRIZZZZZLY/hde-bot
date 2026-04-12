@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import difflib
+import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
 import aiosqlite
+
+logger = logging.getLogger(__name__)
 
 from .time_utils import to_storage, utcnow
 
@@ -271,6 +275,13 @@ async def init_db() -> None:
                 await db.execute(f"ALTER TABLE knowledge_items ADD COLUMN {col} {col_type}")
             except Exception:
                 pass  # column already exists
+        # Migration: add last_used_at to knowledge_items if missing
+        try:
+            await db.execute(
+                "ALTER TABLE knowledge_items ADD COLUMN last_used_at TEXT"
+            )
+        except Exception:
+            pass  # column already exists
 
         # Populate FTS index for existing items (first-time migration, idempotent)
         try:
@@ -278,7 +289,7 @@ async def init_db() -> None:
                 """
                 INSERT INTO knowledge_fts(rowid, content)
                 SELECT id, content FROM knowledge_items
-                WHERE quality != 'bad'
+                WHERE quality NOT IN ('bad', 'expired')
                   AND id NOT IN (SELECT rowid FROM knowledge_fts)
                 """
             )
@@ -1074,7 +1085,7 @@ async def list_knowledge_items_without_embedding() -> list[tuple[int, str]]:
     """Return (id, content) for rows missing an embedding."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT id, content FROM knowledge_items WHERE embedding IS NULL AND quality != 'bad'"
+            "SELECT id, content FROM knowledge_items WHERE embedding IS NULL AND quality NOT IN ('bad', 'expired')"
         ) as cur:
             return await cur.fetchall()
 
@@ -1084,7 +1095,7 @@ async def list_all_knowledge_embeddings() -> list[tuple[int, str, bytes, str]]:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT id, content, embedding, COALESCE(company_id, '') FROM knowledge_items "
-            "WHERE embedding IS NOT NULL AND quality != 'bad'"
+            "WHERE embedding IS NOT NULL AND quality NOT IN ('bad', 'expired')"
         ) as cur:
             return await cur.fetchall()
 
@@ -1159,7 +1170,7 @@ async def count_items_without_embedding() -> int:
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT COUNT(*) FROM knowledge_items "
-            "WHERE embedding IS NULL AND quality != 'bad'"
+            "WHERE embedding IS NULL AND quality NOT IN ('bad', 'expired')"
         ) as cur:
             row = await cur.fetchone()
             return row[0] if row else 0
@@ -1314,3 +1325,210 @@ async def count_solution_patterns_by_equipment() -> dict[str, int]:
             "FROM solution_patterns GROUP BY equipment ORDER BY COUNT(*) DESC"
         ) as cur:
             return dict(await cur.fetchall())
+
+
+# ---------------------------------------------------------------------------
+# Knowledge management — upsert, dedup, expiry, metrics
+# ---------------------------------------------------------------------------
+
+async def upsert_knowledge_item(
+    source: str,
+    content: str,
+    *,
+    ticket_id: str = "",
+    title: str = "",
+    quality: str = "good",
+    url: str = "",
+    company_id: str = "",
+    company_name: str = "",
+) -> tuple[int, bool]:
+    """Insert or update knowledge item by ticket_id+source. Returns (id, was_created).
+
+    If ticket_id is provided and a row with same (ticket_id, source) exists:
+    -> UPDATE content, title, reset embedding=NULL (triggers re-embedding), update FTS.
+    Otherwise -> INSERT new row.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        if ticket_id:
+            async with db.execute(
+                "SELECT id FROM knowledge_items WHERE ticket_id = ? AND source = ?",
+                (ticket_id, source),
+            ) as cur:
+                row = await cur.fetchone()
+            if row:
+                item_id = row[0]
+                await db.execute(
+                    "UPDATE knowledge_items "
+                    "SET content=?, title=?, quality=?, url=?, "
+                    "company_id=?, company_name=?, embedding=NULL, "
+                    "created_at=datetime('now') "
+                    "WHERE id=?",
+                    (content, title or None, quality, url or None,
+                     company_id or None, company_name or None, item_id),
+                )
+                # Обновить FTS
+                await db.execute(
+                    "DELETE FROM knowledge_fts WHERE rowid=?", (item_id,)
+                )
+                await db.execute(
+                    "INSERT INTO knowledge_fts(rowid, content) VALUES (?, ?)",
+                    (item_id, content),
+                )
+                await db.commit()
+                return item_id, False
+        # INSERT
+        cursor = await db.execute(
+            "INSERT INTO knowledge_items "
+            "(source, ticket_id, title, content, quality, url, company_id, company_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (source, ticket_id or None, title or None, content, quality,
+             url or None, company_id or None, company_name or None),
+        )
+        item_id = cursor.lastrowid
+        assert item_id is not None
+        try:
+            await db.execute(
+                "INSERT OR IGNORE INTO knowledge_fts(rowid, content) VALUES (?, ?)",
+                (item_id, content),
+            )
+        except Exception as exc:
+            logger.warning("FTS insert failed for item %s: %s", item_id, exc)
+        await db.commit()
+        return item_id, True
+
+
+async def delete_knowledge_item_by_ticket(ticket_id: str, source: str) -> int:
+    """Delete knowledge items by ticket_id and source. Also cleans FTS. Returns count deleted."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT id FROM knowledge_items WHERE ticket_id = ? AND source = ?",
+            (ticket_id, source),
+        ) as cur:
+            rows = await cur.fetchall()
+        ids = [r[0] for r in rows]
+        if ids:
+            placeholders = ",".join("?" * len(ids))
+            await db.execute(
+                f"DELETE FROM knowledge_fts WHERE rowid IN ({placeholders})", ids
+            )
+            await db.execute(
+                f"DELETE FROM knowledge_items WHERE id IN ({placeholders})", ids
+            )
+            await db.commit()
+        return len(ids)
+
+
+async def dedup_knowledge_items() -> int:
+    """Mark duplicate items (same ticket_id+source, keep newest id) as quality='bad'.
+    Returns count of newly marked duplicates."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            """
+            SELECT id FROM knowledge_items
+            WHERE ticket_id IS NOT NULL
+              AND ticket_id != ''
+              AND quality NOT IN ('bad', 'expired')
+              AND id NOT IN (
+                  SELECT MAX(id)
+                  FROM knowledge_items
+                  WHERE ticket_id IS NOT NULL AND ticket_id != ''
+                  GROUP BY ticket_id, source
+              )
+            """
+        ) as cur:
+            rows = await cur.fetchall()
+        if not rows:
+            return 0
+        ids = [r[0] for r in rows]
+        placeholders = ",".join("?" * len(ids))
+        await db.execute(
+            f"UPDATE knowledge_items SET quality='bad' WHERE id IN ({placeholders})", ids
+        )
+        await db.commit()
+        return len(ids)
+
+
+async def expire_stale_knowledge(expiry_days: int = 180) -> int:
+    """Mark old unused hde_closed items as quality='expired'. Returns count marked."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=expiry_days)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            """
+            UPDATE knowledge_items
+            SET quality = 'expired'
+            WHERE source = 'hde_closed'
+              AND quality = 'good'
+              AND created_at < ?
+              AND (last_used_at IS NULL OR last_used_at < ?)
+            """,
+            (cutoff, cutoff),
+        )
+        await db.commit()
+        return cur.rowcount
+
+
+async def update_knowledge_last_used(item_ids: list[int]) -> None:
+    """Update last_used_at for items where it's NULL or older than 24 hours (throttled)."""
+    if not item_ids:
+        return
+    cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    placeholders = ",".join("?" * len(item_ids))
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            f"UPDATE knowledge_items SET last_used_at = datetime('now') "
+            f"WHERE id IN ({placeholders}) "
+            f"AND (last_used_at IS NULL OR last_used_at < ?)",
+            (*item_ids, cutoff_24h),
+        )
+        await db.commit()
+
+
+async def get_knowledge_metrics() -> dict:
+    """Return metrics for /aimetrics command."""
+    cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        # by_source (только active)
+        async with db.execute(
+            "SELECT source, COUNT(*) FROM knowledge_items "
+            "WHERE quality NOT IN ('bad', 'expired') GROUP BY source"
+        ) as cur:
+            by_source = dict(await cur.fetchall())
+        # expired count
+        async with db.execute(
+            "SELECT COUNT(*) FROM knowledge_items WHERE quality = 'expired'"
+        ) as cur:
+            expired_count = (await cur.fetchone())[0]
+        # without embedding
+        async with db.execute(
+            "SELECT COUNT(*) FROM knowledge_items "
+            "WHERE quality NOT IN ('bad', 'expired') AND embedding IS NULL"
+        ) as cur:
+            no_embedding_count = (await cur.fetchone())[0]
+        # top 5 solution_patterns by use_count
+        async with db.execute(
+            "SELECT equipment, problem_type, use_count "
+            "FROM solution_patterns ORDER BY use_count DESC LIMIT 5"
+        ) as cur:
+            top_patterns = [
+                {"equipment": r[0], "problem_type": r[1], "use_count": r[2]}
+                for r in await cur.fetchall()
+            ]
+        # top 5 "dead" items: good, never used, older than 30 days
+        async with db.execute(
+            "SELECT id, title, created_at, source FROM knowledge_items "
+            "WHERE quality = 'good' AND last_used_at IS NULL AND created_at < ? "
+            "ORDER BY created_at ASC LIMIT 5",
+            (cutoff_30d,),
+        ) as cur:
+            dead_items = [
+                {"id": r[0], "title": r[1], "created_at": r[2], "source": r[3]}
+                for r in await cur.fetchall()
+            ]
+    return {
+        "by_source": by_source,
+        "total": sum(by_source.values()),
+        "expired_count": expired_count,
+        "no_embedding_count": no_embedding_count,
+        "top_patterns": top_patterns,
+        "dead_items": dead_items,
+    }
