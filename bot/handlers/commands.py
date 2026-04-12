@@ -771,6 +771,133 @@ async def cmd_aireindex(message: Message) -> None:
     await message.answer(result, parse_mode="HTML")
 
 
+@router.message(Command("aianalyze"))
+async def cmd_aianalyze(message: Message) -> None:
+    """Analyze knowledge_items and populate solution_patterns table."""
+    import aiohttp
+    import aiosqlite
+    from ..db import (
+        save_solution_pattern,
+        pattern_exists_similar,
+        count_solution_patterns_by_equipment,
+        DB_PATH,
+    )
+    from ..config import config as _config
+    import json as _json
+    import time as _time
+    import re as _re
+
+    if not _config.gemini_api_key:
+        await message.answer("❌ GEMINI_API_KEY не настроен")
+        return
+
+    # Load all suitable knowledge items
+    async with aiosqlite.connect(DB_PATH) as conn:
+        async with conn.execute(
+            "SELECT title, content FROM knowledge_items "
+            "WHERE source IN ('hde_closed', 'feedback', 'implicit_good') "
+            "AND quality != 'bad' AND content != '' "
+            "ORDER BY created_at DESC LIMIT 2000"
+        ) as cur:
+            items = await cur.fetchall()
+
+    if not items:
+        await message.answer("ℹ️ Нет тикетов для анализа. Сначала запусти /aiimport")
+        return
+
+    status_msg = await message.answer(f"⏳ Начинаю анализ {len(items)} тикетов...")
+    t_start = _time.monotonic()
+    batch_size = 15
+    created = 0
+    skipped = 0
+
+    _ANALYZE_PROMPT = (
+        "Ты анализируешь решённые тикеты технической поддержки кассового оборудования.\n"
+        "Из каждого тикета извлеки:\n"
+        "- equipment: бренд оборудования (АТОЛ/Эвотор/Штрих-М/Viki/Эквайринг Сбер/ВТБ/Тинькофф/ПТК) "
+        "или null если не определён\n"
+        "- problem_type: краткое описание типа проблемы (5-10 слов)\n"
+        "- steps: конкретные шаги решения через → (если шагов нет — пропусти тикет)\n\n"
+        "Верни JSON-массив: [{\"equipment\": ..., \"problem_type\": ..., \"steps\": ...}, ...]\n"
+        "Включай только тикеты с явными шагами решения. Пропускай общие вопросы без решения.\n"
+        "Только JSON, без markdown.\n\nТикеты:\n"
+    )
+
+    async with aiohttp.ClientSession() as session:
+        for i in range(0, len(items), batch_size):
+            batch = items[i : i + batch_size]
+            batch_text = ""
+            for idx, (title, content) in enumerate(batch, 1):
+                batch_text += f"\n[{idx}] {title}\n{content[:400]}\n"
+
+            payload = {
+                "contents": [{"parts": [{"text": _ANALYZE_PROMPT + batch_text}]}],
+                "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2000},
+            }
+            try:
+                async with session.post(
+                    (
+                        "https://generativelanguage.googleapis.com/v1beta/models/"
+                        "gemini-2.5-flash:generateContent"
+                    ),
+                    json=payload,
+                    params={"key": _config.gemini_api_key},
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    if resp.status != 200:
+                        skipped += len(batch)
+                        continue
+                    data = await resp.json()
+                    raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    raw = _re.sub(r"^```[^\n]*\n?", "", raw).rstrip("`").strip()
+                    patterns = _json.loads(raw)
+            except Exception as exc:
+                logger.warning("aianalyze batch %d failed: %s", i, exc)
+                skipped += len(batch)
+                continue
+
+            for p in patterns:
+                eq = p.get("equipment") or None
+                pt = (p.get("problem_type") or "").strip()
+                st = (p.get("steps") or "").strip()
+                if not pt or not st:
+                    continue
+                if await pattern_exists_similar(eq, pt):
+                    skipped += 1
+                    continue
+                await save_solution_pattern(
+                    problem_type=pt, steps=st, source="analyze", equipment=eq
+                )
+                created += 1
+
+            # Update progress every 50 items
+            processed = min(i + batch_size, len(items))
+            if processed % 50 == 0 or processed == len(items):
+                try:
+                    await status_msg.edit_text(
+                        f"⏳ Обработано {processed}/{len(items)} тикетов... "
+                        f"Создано паттернов: {created}"
+                    )
+                except Exception:
+                    pass
+
+    elapsed = int(_time.monotonic() - t_start)
+    counts = await count_solution_patterns_by_equipment()
+    lines = [f"• {eq} — {cnt} паттернов" for eq, cnt in counts.items()]
+    report = (
+        f"✅ Анализ завершён за {elapsed} сек.\n"
+        f"Обработано тикетов: {len(items)}\n"
+        f"Создано паттернов: {created}\n"
+        f"Пропущено (дубли/ошибки): {skipped}\n\n"
+        "По оборудованию:\n" + "\n".join(lines) + "\n\n"
+        "Запусти /aianalyze снова чтобы обновить."
+    )
+    try:
+        await status_msg.edit_text(report)
+    except Exception:
+        await message.answer(report)
+
+
 @router.message(Command("digest"))
 async def cmd_digest(message: Message) -> None:
     await send_morning_digest(message.bot)
