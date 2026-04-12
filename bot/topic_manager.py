@@ -373,7 +373,28 @@ async def _ensure_active_topic(
         should_announce_assignment = announce_assignment
         reassignment = True
     else:
-        await _rename_topic_if_needed(bot, record, payload)
+        # On reassignment: verify the topic still exists in Telegram.
+        # Users can manually delete topics — Telegram doesn't notify the bot,
+        # so DB stays "active". We probe via edit_forum_topic which throws
+        # "thread not found" if the topic no longer exists.
+        if announce_assignment:
+            try:
+                await bot.edit_forum_topic(
+                    chat_id=config.group_chat_id,
+                    message_thread_id=record.topic_id,
+                    name=_build_topic_name(payload),
+                )
+            except TelegramAPIError as exc:
+                if any(k in str(exc).lower() for k in ("thread not found", "not found", "deleted")):
+                    logger.warning(
+                        "Topic %d for ticket %s no longer exists in Telegram, recreating",
+                        record.topic_id, ticket_id,
+                    )
+                    await db.mark_topic_deleted(ticket_id)
+                    return await _ensure_active_topic(bot, payload, announce_assignment=announce_assignment)
+                logger.error("Failed to verify topic %d: %s", record.topic_id, exc)
+        else:
+            await _rename_topic_if_needed(bot, record, payload)
         await db.update_topic(
             ticket_id,
             unique_id=metadata["unique_id"],
@@ -389,9 +410,8 @@ async def _ensure_active_topic(
             deleted_at=None,
         )
         await db.update_topic(ticket_id, last_assigned_at=to_storage(utcnow()))
-        # On reassignment, announce even for existing topics
-        should_announce_assignment = announce_assignment
-        reassignment = True
+        # No should_announce_assignment here — avoids duplicates when HDE
+        # fires the same owner_changed webhook twice
 
     record = await db.get_topic(ticket_id)
     if record is None:
