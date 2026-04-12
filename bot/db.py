@@ -1385,7 +1385,8 @@ async def upsert_knowledge_item(
              url or None, company_id or None, company_name or None),
         )
         item_id = cursor.lastrowid
-        assert item_id is not None
+        if item_id is None:
+            raise RuntimeError("INSERT into knowledge_items returned no lastrowid")
         try:
             await db.execute(
                 "INSERT OR IGNORE INTO knowledge_fts(rowid, content) VALUES (?, ?)",
@@ -1432,6 +1433,7 @@ async def dedup_knowledge_items() -> int:
                   SELECT MAX(id)
                   FROM knowledge_items
                   WHERE ticket_id IS NOT NULL AND ticket_id != ''
+                    AND quality NOT IN ('bad', 'expired')
                   GROUP BY ticket_id, source
               )
             """
@@ -1505,14 +1507,17 @@ async def get_knowledge_metrics() -> dict:
         ) as cur:
             no_embedding_count = (await cur.fetchone())[0]
         # top 5 solution_patterns by use_count
-        async with db.execute(
-            "SELECT equipment, problem_type, use_count "
-            "FROM solution_patterns ORDER BY use_count DESC LIMIT 5"
-        ) as cur:
-            top_patterns = [
-                {"equipment": r[0], "problem_type": r[1], "use_count": r[2]}
-                for r in await cur.fetchall()
-            ]
+        try:
+            async with db.execute(
+                "SELECT equipment, problem_type, use_count "
+                "FROM solution_patterns ORDER BY use_count DESC LIMIT 5"
+            ) as cur:
+                top_patterns = [
+                    {"equipment": r[0], "problem_type": r[1], "use_count": r[2]}
+                    for r in await cur.fetchall()
+                ]
+        except Exception:
+            top_patterns = []
         # top 5 "dead" items: good, never used, older than 30 days
         async with db.execute(
             "SELECT id, title, created_at, source FROM knowledge_items "
