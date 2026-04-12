@@ -669,6 +669,78 @@ async def handle_client_reply(bot: Bot, payload: dict) -> None:
         await db.update_topic(record.ticket_id, last_client_reply_at=to_storage(reply_at))
 
 
+async def _maybe_update_pattern(title: str, staff_text: str, ticket_id: str) -> None:
+    """Strengthen existing pattern or create new one from high-quality operator reply."""
+    from .ai_summary import _detect_equipment
+    from . import db as _db3
+    import difflib
+
+    equipment = _detect_equipment(title, staff_text)
+
+    # Check if similar pattern exists → increment use_count
+    patterns = await _db3.list_solution_patterns(limit=100)
+    for p in patterns:
+        if p["equipment"] != equipment:
+            continue
+        ratio = difflib.SequenceMatcher(
+            None, p["problem_type"].lower(), title.lower()
+        ).ratio()
+        if ratio >= 0.7:
+            await _db3.increment_pattern_use(p["id"])
+            logger.debug(
+                "Pattern %d reinforced for ticket %s (ratio=%.2f)",
+                p["id"], ticket_id, ratio,
+            )
+            return
+
+    # No existing pattern — extract new one via Gemini (non-fatal)
+    import aiohttp as _aiohttp
+    from .config import config as _cfg
+    if not _cfg.gemini_api_key:
+        return
+
+    prompt = (
+        "Из ответа технического специалиста извлеки:\n"
+        "- problem_type: тип проблемы (5-10 слов)\n"
+        "- steps: шаги решения через →\n"
+        "Верни JSON: {\"problem_type\": ..., \"steps\": ...}\n"
+        "Только JSON. Если шагов нет — верни {}.\n\n"
+        f"Тема: {title}\nОтвет специалиста: {staff_text[:600]}"
+    )
+    try:
+        async with _aiohttp.ClientSession() as session:
+            async with session.post(
+                (
+                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                    "gemini-2.5-flash:generateContent"
+                ),
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.1, "maxOutputTokens": 300},
+                },
+                params={"key": _cfg.gemini_api_key},
+                timeout=_aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    return
+                data = await resp.json()
+                raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        import re as _re, json as _json
+        raw = _re.sub(r"^```[^\n]*\n?", "", raw).rstrip("`").strip()
+        parsed = _json.loads(raw)
+        pt = (parsed.get("problem_type") or "").strip()
+        st = (parsed.get("steps") or "").strip()
+        if pt and st and not await _db3.pattern_exists_similar(equipment, pt):
+            await _db3.save_solution_pattern(
+                problem_type=pt, steps=st, source="implicit", equipment=equipment
+            )
+            logger.info(
+                "New implicit pattern created for ticket %s: %r", ticket_id, pt
+            )
+    except Exception as exc:
+        logger.warning("_maybe_update_pattern Gemini call failed: %s", exc)
+
+
 async def _implicit_feedback(record: "db.TicketTopic", staff_text: str) -> None:
     """Auto-learn from diff between AI suggestion and operator's actual reply."""
     import difflib
@@ -706,6 +778,12 @@ async def _implicit_feedback(record: "db.TicketTopic", staff_text: str) -> None:
         logger.info(
             "Implicit 👍 for ticket %s (ratio=%.2f)", pending["ticket_id"], ratio
         )
+        # Reinforce or create solution pattern (only for high-confidence matches)
+        if ratio >= 0.85:
+            try:
+                await _maybe_update_pattern(pending["title"], clean_staff, pending["ticket_id"])
+            except Exception as exc:
+                logger.warning("Pattern update failed: %s", exc)
     elif ratio <= 0.35:
         # Operator wrote something significantly different — save as correction
         await db.delete_ai_feedback_pending(record.topic_id)
