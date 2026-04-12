@@ -1079,11 +1079,11 @@ async def list_knowledge_items_without_embedding() -> list[tuple[int, str]]:
             return await cur.fetchall()
 
 
-async def list_all_knowledge_embeddings() -> list[tuple[int, str, bytes]]:
-    """Return (id, content, embedding) for all indexed items."""
+async def list_all_knowledge_embeddings() -> list[tuple[int, str, bytes, str]]:
+    """Return (id, content, embedding, company_id) for all indexed items."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT id, content, embedding FROM knowledge_items "
+            "SELECT id, content, embedding, COALESCE(company_id, '') FROM knowledge_items "
             "WHERE embedding IS NOT NULL AND quality != 'bad'"
         ) as cur:
             return await cur.fetchall()

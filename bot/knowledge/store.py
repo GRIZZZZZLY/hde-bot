@@ -36,57 +36,63 @@ async def find_similar(
     *,
     limit: int = 3,
     query_text: str = "",
-) -> list[KnowledgeItem]:
-    """Return top-N knowledge items most similar to query_embedding.
+    company_id: str = "",
+) -> list[tuple[KnowledgeItem, float]]:
+    """Return top-N (item, cosine_score) tuples.
 
-    When query_text is provided, merges cosine similarity with BM25 (FTS5)
-    via Reciprocal Rank Fusion — exact terms like product codes stay retrievable.
+    When query_text provided: merges cosine + BM25 via RRF.
+    When company_id provided: same-company items get an extra RRF boost.
     """
     rows = await list_all_knowledge_embeddings()
     if not rows:
         return []
 
     # Cosine scoring
-    cosine_scored: list[tuple[float, int, str]] = []
-    for row_id, content, emb_bytes in rows:
+    cosine_scored: list[tuple[float, int, str, str]] = []
+    for row_id, content, emb_bytes, item_company_id in rows:
         try:
             emb = bytes_to_embedding(emb_bytes)
         except Exception:
             logger.warning("Skipping corrupted embedding row_id=%s", row_id, exc_info=True)
             continue
         score = cosine_similarity(query_embedding, emb)
-        cosine_scored.append((score, row_id, content))
+        cosine_scored.append((score, row_id, content, item_company_id))
     cosine_scored.sort(key=lambda x: x[0], reverse=True)
 
-    if not query_text:
-        return [
-            KnowledgeItem(id=row_id, source="", ticket_id=None, title=None,
-                          content=content, quality="good")
-            for _, row_id, content in cosine_scored[:limit]
-        ]
-
-    # BM25 scoring via FTS5
-    bm25_rows = await fts_search_knowledge(query_text, limit=limit * 3)
-
-    # Reciprocal Rank Fusion (k=60 is the conventional constant)
-    k = 60
+    k = 60  # RRF constant
     rrf_scores: dict[int, float] = {}
     contents: dict[int, str] = {}
+    cosine_top: dict[int, float] = {}
 
-    for rank, (_, item_id, content) in enumerate(cosine_scored[: limit * 3]):
+    pool = cosine_scored[: limit * 3]
+
+    for rank, (score, item_id, content, _) in enumerate(pool):
         rrf_scores[item_id] = rrf_scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
         contents[item_id] = content
+        cosine_top[item_id] = score
 
-    for rank, (item_id, content) in enumerate(bm25_rows):
-        rrf_scores[item_id] = rrf_scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
-        contents[item_id] = content
+    if query_text:
+        bm25_rows = await fts_search_knowledge(query_text, limit=limit * 3)
+        for rank, (item_id, content) in enumerate(bm25_rows):
+            rrf_scores[item_id] = rrf_scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
+            contents[item_id] = content
+
+    # Company boost: same-company items get bonus equivalent to rank-1 position
+    if company_id:
+        for _, item_id, _, item_company_id in pool:
+            if item_company_id == company_id and item_id in rrf_scores:
+                rrf_scores[item_id] += 1.0 / (k + 1)
 
     sorted_ids = sorted(rrf_scores, key=lambda x: rrf_scores[x], reverse=True)
-    return [
-        KnowledgeItem(id=item_id, source="", ticket_id=None, title=None,
-                      content=contents[item_id], quality="good")
-        for item_id in sorted_ids[:limit]
-    ]
+    result = []
+    for item_id in sorted_ids[:limit]:
+        score = cosine_top.get(item_id, 0.0)
+        result.append((
+            KnowledgeItem(id=item_id, source="", ticket_id=None, title=None,
+                          content=contents[item_id], quality="good"),
+            score,
+        ))
+    return result
 
 
 async def save_and_index(

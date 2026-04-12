@@ -79,3 +79,47 @@ def test_build_system_prompt_with_steps():
     text = _build_system_prompt("тест", solution_steps="1. Меню ФН → 2. Диагностика")
     assert "Типовые шаги" in text
     assert "Меню ФН" in text
+
+
+# ---- Task 3 tests ----
+import numpy as np
+from bot.knowledge.store import find_similar
+
+@pytest.mark.asyncio
+async def test_find_similar_returns_tuples():
+    await _db.init_db()
+    # Insert a knowledge item with embedding
+    emb = np.ones(4, dtype=np.float32)
+    emb_bytes = emb.tobytes()
+    await _db.save_knowledge_item(
+        source="test", content="АТОЛ ошибка ОФД",
+        embedding=emb_bytes, quality="good", company_id="corp1",
+    )
+    results = await find_similar(emb, limit=1, query_text="")
+    assert len(results) == 1
+    item, score = results[0]
+    assert 0.0 <= score <= 1.0
+    assert "АТОЛ" in item.content
+
+@pytest.mark.asyncio
+async def test_find_similar_company_boost():
+    await _db.init_db()
+    # same-company item is slightly less similar but should rank first due to boost
+    query = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    same_co = np.array([0.9, 0.436, 0.0, 0.0], dtype=np.float32)  # ~cos 0.9
+    diff_co = np.array([0.95, 0.312, 0.0, 0.0], dtype=np.float32) # ~cos 0.95
+    same_co = same_co / np.linalg.norm(same_co)
+    diff_co = diff_co / np.linalg.norm(diff_co)
+    await _db.save_knowledge_item(
+        source="test", content="same company item",
+        embedding=same_co.tobytes(), quality="good", company_id="corp1",
+    )
+    await _db.save_knowledge_item(
+        source="test", content="diff company item",
+        embedding=diff_co.tobytes(), quality="good", company_id="corp2",
+    )
+    # Without boost: diff_co should rank higher (closer to query)
+    results_no_boost = await find_similar(query, limit=2, company_id="")
+    # With boost: same_co should rank first
+    results_with_boost = await find_similar(query, limit=2, company_id="corp1")
+    assert results_with_boost[0][0].content == "same company item"
