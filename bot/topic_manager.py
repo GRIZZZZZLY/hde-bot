@@ -366,6 +366,13 @@ async def _ensure_active_topic(
                 message_thread_id=record.topic_id,
             )
         except TelegramAPIError as exc:
+            if any(k in str(exc).lower() for k in ("thread not found", "not found", "deleted")):
+                logger.warning(
+                    "Topic %d for ticket %s not found in Telegram (pending_delete), recreating",
+                    record.topic_id, ticket_id,
+                )
+                await db.mark_topic_deleted(ticket_id)
+                return await _ensure_active_topic(bot, payload, announce_assignment=announce_assignment)
             logger.error("Failed to reopen topic %d for ticket %s: %s", record.topic_id, ticket_id, exc)
         await _rename_topic_if_needed(bot, record, payload)
         await db.upsert_topic(ticket_id, record.topic_id, topic_state="active", delete_after_at=None, deleted_at=None, **metadata)
