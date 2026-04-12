@@ -280,7 +280,23 @@ async def _post_ticket_history(
     if not posts:
         return
 
-    # Post AI summary FIRST (before history)
+    # Post history first
+    messages = format_ticket_history(posts, info)
+    for text in messages:
+        try:
+            await bot.send_message(
+                chat_id=config.group_chat_id,
+                message_thread_id=topic_id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                disable_notification=True,
+            )
+        except TelegramAPIError as exc:
+            logger.warning("Failed to post history message to topic %d: %s", topic_id, exc)
+            break
+
+    # Post AI summary LAST
     from .ai_summary import generate_ticket_summary, _build_history_text
     from .handlers.ai_feedback import make_ai_feedback_keyboard, register_feedback_pending
     summary = await generate_ticket_summary(
@@ -305,22 +321,6 @@ async def _post_ticket_history(
             )
         except TelegramAPIError as exc:
             logger.warning("Failed to post AI summary to topic %d: %s", topic_id, exc)
-
-    # Then post history
-    messages = format_ticket_history(posts, info)
-    for text in messages:
-        try:
-            await bot.send_message(
-                chat_id=config.group_chat_id,
-                message_thread_id=topic_id,
-                text=text,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-                disable_notification=True,
-            )
-        except TelegramAPIError as exc:
-            logger.warning("Failed to post history message to topic %d: %s", topic_id, exc)
-            break
 
 
 async def _ensure_active_topic(
