@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import difflib
+import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -1239,8 +1241,7 @@ async def find_solution_pattern(
     keywords: str,
 ) -> Optional[dict]:
     """Return the best matching pattern for given equipment and keywords, or None."""
-    import re as _re
-    words = {w for w in _re.sub(r"[^\w\s]", " ", keywords.lower()).split() if len(w) >= 3}
+    words = {w for w in re.sub(r"[^\w\s]", " ", keywords.lower()).split() if len(w) >= 3}
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         candidates: list = []
@@ -1265,7 +1266,8 @@ async def find_solution_pattern(
             if score > best_score:
                 best_score = score
                 best = dict(row)
-        return best
+        # Only return if at least one keyword matched
+        return best if best_score > 0 else None
 
 
 async def increment_pattern_use(pattern_id: int) -> None:
@@ -1292,7 +1294,6 @@ async def pattern_exists_similar(
     problem_type: str,
 ) -> bool:
     """Return True if a pattern with same equipment and similar problem_type exists."""
-    import difflib
     patterns = await list_solution_patterns(limit=200)
     for p in patterns:
         if p["equipment"] != equipment:
