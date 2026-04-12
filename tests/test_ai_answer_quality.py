@@ -49,3 +49,33 @@ async def test_count_patterns_by_equipment():
     assert counts.get("АТОЛ") == 1
     assert counts.get("Эвотор") == 1
     assert counts.get("Без бренда") == 1
+
+
+# ---- Task 2 tests ----
+from bot.ai_summary import _detect_equipment, _build_system_prompt
+
+def test_detect_equipment_atol():
+    assert _detect_equipment("АТОЛ 30Ф ошибка ОФД", "") == "АТОЛ"
+
+def test_detect_equipment_in_history():
+    assert _detect_equipment("Проблема с кассой", "У нас стоит Эвотор 7.2") == "Эвотор"
+
+def test_detect_equipment_none():
+    assert _detect_equipment("Не могу войти в личный кабинет", "нет связи") is None
+
+def test_detect_equipment_acquiring():
+    assert _detect_equipment("Терминал Сбера не работает", "") == "Эквайринг Сбер"
+
+def test_build_system_prompt_contains_role():
+    text = _build_system_prompt("тест")
+    assert "2-й линии" in text
+    assert "СПЕЦИАЛИСТУ" in text
+
+def test_build_system_prompt_with_equipment():
+    text = _build_system_prompt("тест", equipment="АТОЛ")
+    assert "АТОЛ" in text
+
+def test_build_system_prompt_with_steps():
+    text = _build_system_prompt("тест", solution_steps="1. Меню ФН → 2. Диагностика")
+    assert "Типовые шаги" in text
+    assert "Меню ФН" in text
