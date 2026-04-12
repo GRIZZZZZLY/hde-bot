@@ -10,7 +10,7 @@ import numpy as np
 import aiosqlite
 
 from .. import db
-from .store import embedding_to_bytes, find_similar, save_and_index
+from .store import embedding_to_bytes, find_similar
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
