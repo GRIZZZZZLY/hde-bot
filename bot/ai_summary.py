@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_GEMINI_MODEL = "gemini-2.5-flash-lite-preview-06-17"
+_GEMINI_MODEL = "gemini-2.0-flash"
 _GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{_GEMINI_MODEL}:generateContent"
