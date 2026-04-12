@@ -248,3 +248,40 @@ async def test_implicit_good_replaces_old():
         ) as cur:
             count = (await cur.fetchone())[0]
     assert count == 1
+
+
+# --- Task 3: last_used_at tracking ---
+import numpy as np
+from bot.knowledge.store import find_similar
+
+
+@pytest.mark.asyncio
+async def test_find_similar_updates_last_used_at():
+    await _db.init_db()
+    emb = np.ones(4, dtype=np.float32)
+    await _db.upsert_knowledge_item(
+        source="hde_closed", content="АТОЛ ОФД", ticket_id="LU_T1"
+    )
+    # Проставить embedding напрямую
+    async with aiosqlite.connect(_db.DB_PATH) as db:
+        await db.execute(
+            "UPDATE knowledge_items SET embedding=? WHERE ticket_id='LU_T1'",
+            (emb.tobytes(),),
+        )
+        await db.commit()
+    # last_used_at должен быть NULL до поиска
+    async with aiosqlite.connect(_db.DB_PATH) as db:
+        async with db.execute(
+            "SELECT last_used_at FROM knowledge_items WHERE ticket_id='LU_T1'"
+        ) as cur:
+            row = await cur.fetchone()
+    assert row[0] is None
+
+    await find_similar(emb, limit=1, query_text="")
+
+    async with aiosqlite.connect(_db.DB_PATH) as db:
+        async with db.execute(
+            "SELECT last_used_at FROM knowledge_items WHERE ticket_id='LU_T1'"
+        ) as cur:
+            row = await cur.fetchone()
+    assert row[0] is not None  # обновился после поиска

@@ -92,6 +92,17 @@ async def find_similar(
                           content=contents[item_id], quality="good"),
             score,
         ))
+
+    # Update last_used_at for returned items (throttled 24h, non-fatal)
+    if result:
+        returned_ids = [item.id for item, _ in result if item.id is not None]
+        if returned_ids:
+            try:
+                from .. import db as _db
+                await _db.update_knowledge_last_used(returned_ids)
+            except Exception as exc:
+                logger.warning("update_knowledge_last_used failed: %s", exc)
+
     return result
 
 
