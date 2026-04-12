@@ -33,13 +33,23 @@ _FORMAT_INSTRUCTIONS = (
 )
 
 
-def _build_system_prompt(ticket_title: str, rag_examples: list[str] | None = None) -> str:
+def _build_system_prompt(
+    ticket_title: str,
+    rag_examples: list[str] | None = None,
+    wiki_context: str | None = None,
+) -> str:
     base = "Ты — ассистент технической поддержки.\n"
     if ticket_title:
         base += (
             f"Тема обращения: «{ticket_title}»\n\n"
             "Используй тему и примеры, чтобы предложить конкретный ответ, "
             "подходящий именно для этого типа проблемы.\n\n"
+        )
+    if wiki_context:
+        base += (
+            "Справочная статья из базы знаний по данной теме:\n\n"
+            f"{wiki_context}\n\n"
+            "---\n\n"
         )
     if rag_examples:
         examples_text = "\n\n---\n\n".join(rag_examples)
@@ -125,7 +135,17 @@ async def generate_ticket_summary(
     except Exception as exc:
         logger.warning("RAG context retrieval failed: %s", exc)
 
-    system_text = _build_system_prompt(ticket_title, rag_examples or None)
+    # Wiki: find relevant article for this topic
+    wiki_ctx: str | None = None
+    try:
+        from .wiki.searcher import get_wiki_context
+        wiki_ctx = await get_wiki_context(ticket_title)
+        if wiki_ctx:
+            logger.info("Wiki context found for ticket %s (%d chars)", ticket_id, len(wiki_ctx))
+    except Exception as exc:
+        logger.warning("Wiki context retrieval failed: %s", exc)
+
+    system_text = _build_system_prompt(ticket_title, rag_examples or None, wiki_ctx)
 
     payload = {
         "system_instruction": {"parts": [{"text": system_text}]},
