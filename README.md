@@ -1,34 +1,42 @@
 # HDE Telegram Topic Bot
 
-Telegram-бот для интеграции с HelpDeskEddy. Бот ведет forum topics по тикетам, считает pre-SLA, пересылает клиентские ответы и позволяет сотруднику отвечать из Telegram через HDE API.
+Telegram-бот для специалиста 2-й линии поддержки кассового оборудования. Мост между HelpDeskEddy (HDE) и Telegram: каждый тикет — отдельный forum topic, клиентские сообщения появляются автоматически, AI-подсказка генерируется при каждом новом тикете.
+
+> Полная архитектура и описание всех компонентов: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+
+---
 
 ## Что умеет
 
-- Создает topic, когда тикет назначается на нужного сотрудника.
-- Переименовывает topic, если меняется тема тикета.
-- Закрывает topic при снятии с сотрудника и удаляет его через 8 часов.
-- Удаляет topic сразу при закрытии тикета.
-- Публикует ответы клиента в topic.
-- Пересылает клиентские вложения в topic: фото, видео, voice, audio, документы.
-- Отправляет pre-SLA напоминания в личные сообщения.
-- Поддерживает команды оператора:
-  - `/note`
-  - `/send`
-  - `/delete`
-  - `/refresh`
-  - `/report`
-- Поддерживает отправку текста, одиночных вложений и альбомов из Telegram в HDE.
-- Поддерживает утренний digest и опциональный ежедневный отчет в Google Sheets.
+**Работа с тикетами**
+- Создаёт Telegram topic при назначении тикета, цвет зависит от приоритета
+- Публикует ответы клиента и вложения (фото, видео, голосовые, документы)
+- Транскрибирует аудиосообщения клиента через Deepgram
+- Закрывает topic при снятии тикета, удаляет через 8 часов
+- Синхронизирует состояние с HDE по команде `/refresh`
 
-## Архитектура
+**Ответы из Telegram**
+- `/send` — публичный ответ клиенту через HDE API
+- `/note` — внутренний комментарий в HDE
+- `/delete` — удалить отправленное сообщение из HDE
+- Поддержка текста, вложений и альбомов в /send и /note
 
-```text
-HelpDeskEddy -> webhook -> bot -> Telegram topics / personal alerts
-Telegram operator commands -> bot -> HDE API
-Scheduler -> pre-SLA / delayed delete / digest / daily report
-```
+**AI-подсказки**
+- При каждом новом тикете генерирует подсказку для специалиста через Gemini
+- Определяет бренд оборудования (АТОЛ, Эвотор, Штрих-М, Viki, эквайринг)
+- Ищет похожие решённые случаи (RAG: cosine + BM25 + RRF)
+- Показывает confidence score: `🧠 Суть (78%): АТОЛ 30Ф — ошибка ОФД`
+- Подсказывает типовые шаги решения из базы паттернов
+- Кнопки прямой отправки в HDE: `📤 Ответить клиенту` / `💬 Комментарий`
+- Учится на ответах оператора (implicit feedback)
 
-Telegram обновления принимаются через polling. HDE обновления приходят в отдельный `aiohttp` webhook endpoint.
+**Прочее**
+- SLA-таймер: личное уведомление за 10 минут до истечения
+- Утренний дайджест
+- Ежедневный отчёт в Google Sheets (через Playwright + gspread)
+- Режим отпуска: `/vacation 3d`
+
+---
 
 ## Быстрый старт
 
@@ -36,170 +44,173 @@ Telegram обновления принимаются через polling. HDE о�
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\activate      # Windows
+# source .venv/bin/activate  # Linux/Mac
 pip install -U pip
 pip install -r requirements.txt
 ```
 
-Если планируете запускать ежедневный отчет через Playwright:
-
-```bash
-python -m playwright install chromium
-```
-
-На Linux/VPS обычно лучше:
+Для ежедневного отчёта (опционально):
 
 ```bash
 python -m playwright install --with-deps chromium
 ```
 
-### 2. Подготовить `.env`
+### 2. Настроить `.env`
 
-Скопируйте [`.env.example`](.env.example) в `.env` и заполните реальные значения.
+```bash
+cp .env.example .env
+```
 
-Ключевые переменные для основного бота:
+Заполнить обязательные переменные:
 
-- `BOT_TOKEN`
-- `GROUP_CHAT_ID`
-- `PERSONAL_CHAT_ID`
-- `HDE_WEBHOOK_SECRET`
-- `HDE_OWNER_ID` или `HDE_OWNER_NAME`
-- `HDE_API_BASE_URL`
-- `HDE_API_EMAIL`
-- `HDE_API_KEY`
-- `WEBHOOK_HOST`
+```env
+# Telegram
+BOT_TOKEN=
+GROUP_CHAT_ID=          # ID группы с топиками (отрицательный)
+PERSONAL_CHAT_ID=       # Telegram ID оператора
 
-Дополнительно для ежедневного отчета:
+# HDE
+HDE_API_BASE_URL=       # https://company.helpdeskeddy.com/api/v2
+HDE_API_EMAIL=
+HDE_API_KEY=
+HDE_WEBHOOK_SECRET=     # любая случайная строка, совпадает с настройкой в HDE
+HDE_OWNER_ID=           # ID сотрудника в HDE (чьи тикеты обрабатывать)
 
-- `HDE_REPORT_PASSWORD` или `HDE_API_KEY`
-- `GOOGLE_SERVICE_ACCOUNT_FILE`
-- `GOOGLE_SPREADSHEET_ID`
-- `GOOGLE_WORKSHEET_NAME`
-- `GOOGLE_SHEET_NAME_IN_A`
+# Сервер
+WEBHOOK_HOST=           # https://your-domain.com
+
+# AI (опционально, но рекомендуется)
+GEMINI_API_KEY=         # https://aistudio.google.com/apikey
+DEEPGRAM_API_KEY=       # https://console.deepgram.com (транскрипция аудио)
+```
 
 ### 3. Локальный запуск
 
-Для локальной разработки:
-
 ```bash
-python start_dev.py
+python start_dev.py     # поднимает ngrok и запускает бота
 ```
 
-Скрипт поднимет `ngrok`, обновит `WEBHOOK_HOST` в `.env` и запустит бота.
-
-Для фиксированного `ngrok`-домена можно использовать:
-
-```env
-NGROK_STATIC_URL=https://your-static-domain.ngrok-free.dev
-```
-
-### 4. Запуск без `ngrok`
+Или без ngrok (если уже есть публичный URL):
 
 ```bash
 python -m bot.main
 ```
 
+---
+
 ## Команды бота
 
-- `/start` — краткое описание
-- `/status` — число активных topics, pending delete и pre-SLA
-- `/help` — список команд
-- `/note текст` — внутренний комментарий в HDE
-- `/note` reply-ем на сообщение или медиа — комментарий с вложением или альбомом
-- `/send текст` — публичный ответ клиенту через HDE
-- `/send` reply-ем на сообщение или медиа — ответ с текстом, caption и вложениями
-- `/delete` reply-ем на отправленное оператором сообщение — удалить его из HDE
-- `/refresh` — синхронизировать локальные topics с HDE
-- `/report` — записать отчет по операторам в Google Sheets за вчера
-- `/report YYYY-MM-DD` — отчет за конкретную дату
+| Команда | Описание |
+|---|---|
+| `/status` | Активные топики, pre-SLA счётчики |
+| `/help` | Список команд |
+| `/note текст` | Внутренний комментарий в HDE |
+| `/send текст` | Публичный ответ клиенту |
+| `/delete` | Удалить сообщение из HDE (reply) |
+| `/refresh` | Синхронизировать топики с HDE |
+| `/report` | Записать отчёт в Google Sheets |
+| `/vacation Nd` | Режим тишины на N дней |
+| `/workon` | Выйти из режима тишины |
+| `/aianalyze` | Извлечь паттерны решений из базы знаний |
+| `/aiimport` | Импортировать тикеты из HDE в базу знаний |
+| `/aistatus` | Статистика AI и базы знаний |
+| `/aiknowledge запрос` | Поиск по базе знаний |
+| `/aireindex` | Пересчитать эмбеддинги |
 
-## События HDE
+---
 
-Бот ожидает webhook-события:
+## Деплой на VPS
 
-- `assigned_on_create`
-- `owner_changed`
-- `ticket_updated`
-- `client_reply`
-- `staff_reply`
-- `ticket_closed`
+### Первичный деплой
 
-Подробная логика и правила HDE описаны в [docs/HDE_TELEGRAM_HYBRID_SPEC.md](docs/HDE_TELEGRAM_HYBRID_SPEC.md).
+```bash
+git clone ... && cd HDE_bot
+python -m venv .venv && pip install -r requirements.txt
+cp .env.example .env   # заполнить переменные
+cp deploy/systemd/hde-bot.service /etc/systemd/system/
+systemctl enable hde-bot && systemctl start hde-bot
+```
+
+### Обновление
+
+```bash
+git pull && systemctl restart hde-bot
+```
+
+Миграции базы данных применяются автоматически при каждом старте.
+
+### Первоначальная настройка AI
+
+После первого запуска:
+
+```
+/aiimport      — импортировать решённые тикеты из HDE
+/aianalyze     — извлечь паттерны решений (занимает 3-5 минут)
+```
+
+После этого AI-подсказки будут использовать реальную базу знаний.
+
+### nginx
+
+```nginx
+location /webhook/hde {
+    proxy_pass http://127.0.0.1:8080;
+}
+```
+
+Готовый конфиг: [deploy/nginx/hde-bot.conf](deploy/nginx/hde-bot.conf)
+
+---
 
 ## Структура проекта
 
-```text
-bot/
-  main.py               # aiohttp + aiogram entrypoint
-  hde_webhook.py        # прием webhook от HDE
-  topic_manager.py      # lifecycle topics
-  scheduler.py          # pre-SLA, delayed delete, digest, report
-  operator_replies.py   # /note, /send, /delete
-  hde_api.py            # HDE API client
-  client_media.py       # клиентские вложения из HDE webhook
-  refresh.py            # сверка локальных topics с HDE
-  reporting/
-    hde_playwright.py   # UI-автоматизация отчета HDE
-    google_sheets.py    # запись в Google Sheets
-    runner.py           # orchestration пайплайна отчета
-  db.py                 # SQLite storage
-  formatter.py          # тексты и визуальный стиль сообщений
-deploy/
-  systemd/
-  nginx/
-docs/
-  HDE_TELEGRAM_HYBRID_SPEC.md
-tests/
 ```
+bot/
+  main.py               — точка входа
+  config.py             — конфигурация из .env
+  db.py                 — SQLite: схема и все CRUD функции
+  topic_manager.py      — обработка webhook, жизненный цикл топиков
+  hde_api.py            — HDE REST API client
+  ai_summary.py         — Gemini AI-подсказки
+  scheduler.py          — SLA, delayed delete, digest
+  operator_replies.py   — /note, /send, /delete
+  handlers/
+    commands.py         — все команды бота
+    ai_feedback.py      — кнопки 👍/✏️/👎/📤/💬
+  knowledge/
+    indexer.py          — векторные эмбеддинги
+    store.py            — поиск: cosine + BM25 + RRF
+  reporting/
+    runner.py           — ежедневный отчёт
+
+tests/
+deploy/
+docs/
+  ARCHITECTURE.md       — полная архитектура
+```
+
+---
 
 ## Тесты
 
 ```bash
-pytest -q
+pytest tests/ -q
 ```
 
-## Деплой на VPS
+---
 
-Минимально для основного бота нужны:
+## Безопасность
 
-- `bot/`
-- `requirements.txt`
-- `.env`
-- `hde_bot.db` — только если нужно перенести текущее состояние
+- `.env` и `secrets/` не попадают в репозиторий (`.gitignore`)
+- HDE webhook верифицируется по HMAC-подписи
+- SQLite хранится локально, не экспортируется
+- Для Google Sheets используется service account (не OAuth)
 
-Если включаете ежедневный отчет, дополнительно нужны:
+---
 
-- `GOOGLE_SERVICE_ACCOUNT_FILE`, указанный в `.env`
-- установленный Chromium для Playwright
+## Что планируется
 
-На VPS не нужны:
-
-- `tests/`
-- `start_dev.py`
-- локальные кэши и `__pycache__`
-
-Готовые шаблоны:
-
-- [deploy/systemd/hde-bot.service](deploy/systemd/hde-bot.service)
-- [deploy/nginx/hde-bot.conf](deploy/nginx/hde-bot.conf)
-
-На VPS замените `WEBHOOK_HOST` на постоянный HTTPS-домен и обновите URL webhook в HDE.
-
-## Что важно знать
-
-- `.env` и `secrets/` не должны попадать в репозиторий.
-- SQLite хранит состояние topics, scheduler и сервисные маппинги.
-- Для operator replies нужен корректный `HDE_API_EMAIL + HDE_API_KEY`.
-- Для входящих клиентских вложений правило `client_reply` в HDE должно передавать ссылки на вложения.
-- Для публичных ответов из Telegram нужно тестировать фактическую доставку в клиентский канал HDE.
-- Ежедневный отчет опционален. Если переменные report-модуля не заполнены, основной бот продолжит работать без него.
-- Для Google Sheets используется service account. Нужно расшарить таблицу на email этого service account.
-
-## Статус проекта
-
-Проект находится на стадии рабочего интеграционного прототипа:
-
-- основная HDE/Telegram логика реализована;
-- локальный запуск и VPS-деплой предусмотрены;
-- тесты есть;
-- reporting-модуль можно запускать на VPS без интерактивного Google OAuth.
+- **Knowledge Management** — дедупликация, expiry, `/aimetrics`
+- **Quick Replies** — кнопки с шаблонами ответов
+- **HDE Status Updates** — смена статуса тикета из Telegram
