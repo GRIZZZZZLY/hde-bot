@@ -199,3 +199,52 @@ async def test_get_knowledge_metrics_structure():
     assert "dead_items" in metrics
     assert metrics["total"] == 2
     assert metrics["by_source"].get("hde_closed") == 1
+
+
+# --- Task 2: dedup integration ---
+from unittest.mock import AsyncMock, patch
+
+
+@pytest.mark.asyncio
+async def test_index_knowledge_item_upserts_by_ticket_id():
+    """Повторный вызов с тем же ticket_id не создаёт дубликат."""
+    await _db.init_db()
+    # Мокаем embed_text чтобы не загружать модель
+    with patch("bot.knowledge.indexer.embed_text", new=AsyncMock(return_value=None)):
+        from bot.knowledge.indexer import index_knowledge_item
+        id1 = await index_knowledge_item(
+            source="hde_closed", content="Контент 1", ticket_id="IDX1"
+        )
+        id2 = await index_knowledge_item(
+            source="hde_closed", content="Контент 2", ticket_id="IDX1"
+        )
+    assert id1 == id2  # тот же элемент, не дубликат
+    async with aiosqlite.connect(_db.DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM knowledge_items WHERE ticket_id='IDX1'"
+        ) as cur:
+            count = (await cur.fetchone())[0]
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_implicit_good_replaces_old():
+    """Новый implicit_good для того же тикета заменяет старый."""
+    await _db.init_db()
+    with patch("bot.knowledge.indexer.embed_text", new=AsyncMock(return_value=None)):
+        from bot.knowledge.indexer import index_knowledge_item
+        id1 = await index_knowledge_item(
+            source="implicit_good", content="Старый ответ", ticket_id="IMP1"
+        )
+        # Симулируем что topic_manager удалил старый перед новым
+        await _db.delete_knowledge_item_by_ticket("IMP1", "implicit_good")
+        id2 = await index_knowledge_item(
+            source="implicit_good", content="Новый ответ", ticket_id="IMP1"
+        )
+    assert id1 != id2  # разные ID (старый удалён, новый создан)
+    async with aiosqlite.connect(_db.DB_PATH) as db:
+        async with db.execute(
+            "SELECT COUNT(*) FROM knowledge_items WHERE ticket_id='IMP1'"
+        ) as cur:
+            count = (await cur.fetchone())[0]
+    assert count == 1

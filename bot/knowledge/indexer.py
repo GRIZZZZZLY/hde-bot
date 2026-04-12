@@ -7,7 +7,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .store import find_similar, save_and_index
+import aiosqlite
+
+from .. import db
+from .store import embedding_to_bytes, find_similar, save_and_index
 
 if TYPE_CHECKING:
     from sentence_transformers import SentenceTransformer
@@ -78,22 +81,35 @@ async def index_knowledge_item(
     company_id: str = "",
     company_name: str = "",
 ) -> int | None:
-    """Embed content and save to knowledge store. Returns item id or None."""
-    embedding = await embed_text(content, task_type="passage")
-    if embedding is None:
-        logger.warning("Could not embed knowledge item (source=%s), skipping", source)
+    """Embed content and upsert into knowledge_items. Returns item id or None."""
+    # Upsert first to get/create the DB row
+    try:
+        item_id, _ = await db.upsert_knowledge_item(
+            source=source,
+            content=content,
+            ticket_id=ticket_id,
+            title=title,
+            quality=quality,
+            url=url,
+            company_id=company_id,
+            company_name=company_name,
+        )
+    except Exception as exc:
+        logger.warning("upsert_knowledge_item failed: %s", exc)
         return None
-    item_id = await save_and_index(
-        source=source,
-        content=content,
-        embedding=embedding,
-        ticket_id=ticket_id,
-        title=title,
-        quality=quality,
-        url=url,
-        company_id=company_id,
-        company_name=company_name,
-    )
+    # Embed and update (non-fatal)
+    embedding = await embed_text(content, task_type="passage")
+    if embedding is not None:
+        try:
+            emb_bytes = embedding_to_bytes(embedding)
+            async with aiosqlite.connect(db.DB_PATH) as conn:
+                await conn.execute(
+                    "UPDATE knowledge_items SET embedding=? WHERE id=?",
+                    (emb_bytes, item_id),
+                )
+                await conn.commit()
+        except Exception as exc:
+            logger.warning("Embedding update failed for item %s: %s", item_id, exc)
     logger.info("Indexed knowledge item id=%d source=%s", item_id, source)
     return item_id
 

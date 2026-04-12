@@ -767,6 +767,13 @@ async def _implicit_feedback(record: "db.TicketTopic", staff_text: str) -> None:
         # Operator sent nearly the same text — AI suggestion was good
         await db.delete_ai_feedback_pending(record.topic_id)
         content = f"Тема: {pending['title']}\n\n{pending['history']}"
+        # Удалить старый implicit_good для этого тикета (один тикет = одна запись)
+        try:
+            await db.delete_knowledge_item_by_ticket(
+                pending["ticket_id"], "implicit_good"
+            )
+        except Exception as exc:
+            logger.warning("delete_knowledge_item_by_ticket failed: %s", exc)
         from .knowledge.indexer import index_knowledge_item
         await index_knowledge_item(
             source="implicit_good",
