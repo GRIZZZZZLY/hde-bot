@@ -103,11 +103,19 @@ async def get_rag_context(
     history_tail: str,
     *,
     limit: int = 3,
-) -> list[str]:
-    """Return list of content strings for top-N similar knowledge items."""
+    company_id: str = "",
+) -> tuple[list[str], int]:
+    """Return (content_list, max_confidence_pct) for top-N similar knowledge items."""
     query = f"{ticket_title}\n{history_tail[-600:]}"
     embedding = await embed_text(query, task_type="query")
     if embedding is None:
-        return []
-    similar = await find_similar(embedding, limit=limit, query_text=query)
-    return [item.content for item in similar]
+        return [], 0
+    similar = await find_similar(
+        embedding, limit=limit, query_text=query, company_id=company_id
+    )
+    if not similar:
+        return [], 0
+    examples = [item.content for item, _ in similar]
+    max_score = max(score for _, score in similar)
+    confidence_pct = int(max_score * 100)
+    return examples, confidence_pct

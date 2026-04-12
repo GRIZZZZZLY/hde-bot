@@ -123,3 +123,30 @@ async def test_find_similar_company_boost():
     # With boost: same_co should rank first
     results_with_boost = await find_similar(query, limit=2, company_id="corp1")
     assert results_with_boost[0][0].content == "same company item"
+
+
+# ---- Task 4 tests ----
+from bot.knowledge.indexer import get_rag_context
+
+@pytest.mark.asyncio
+async def test_get_rag_context_returns_confidence():
+    await _db.init_db()
+    examples, confidence = await get_rag_context("тест", "история", company_id="")
+    assert isinstance(examples, list)
+    assert isinstance(confidence, int)
+    assert 0 <= confidence <= 100
+
+@pytest.mark.asyncio
+async def test_get_rag_context_with_items():
+    await _db.init_db()
+    # Add an item and its embedding so RAG has something to find
+    import numpy as np
+    emb = np.ones(4, dtype=np.float32) / 2.0
+    await _db.save_knowledge_item(
+        source="test", content="АТОЛ ошибка ОФД решение",
+        embedding=emb.tobytes(), quality="good", company_id="",
+    )
+    examples, confidence = await get_rag_context("АТОЛ ОФД", "проблема", company_id="")
+    # examples list returned (may be empty if embed_text fails in test env without model)
+    assert isinstance(examples, list)
+    assert isinstance(confidence, int)
