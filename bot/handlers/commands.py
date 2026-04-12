@@ -526,106 +526,120 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
     org_cache: dict[str, tuple[str, str]] = {}  # user_id → (org_id, org_name)
 
     for owner_id in owner_ids:
-        try:
-            tickets = await client.get_closed_tickets(owner_id, limit=limit)
-        except HDEApiError as exc:
-            errors += 1
+        page = 1
+        total_pages = 1
+
+        while added < limit and page <= total_pages:
             try:
-                await wait_msg.edit_text(
-                    f"❌ Ошибка HDE API для оператора {owner_id}: {exc}", parse_mode="HTML"
+                page_tickets, total_pages = await client.get_closed_tickets_page(
+                    owner_id, page=page
                 )
-            except Exception:
-                pass
-            continue
-
-        for i, ticket_raw in enumerate(tickets, 1):
-            ticket_id = str(ticket_raw.get("id") or "")
-            ticket_title = str(ticket_raw.get("title") or "")
-
-            if not ticket_id:
+            except HDEApiError as exc:
                 errors += 1
-                continue
-
-            # Deduplication
-            content_hash = hashlib.sha256(f"hde:{ticket_id}".encode()).hexdigest()
-            async with aiosqlite.connect(DB_PATH) as db:
-                async with db.execute(
-                    "SELECT id FROM knowledge_items WHERE content_hash = ?", (content_hash,)
-                ) as cur:
-                    exists = await cur.fetchone()
-            if exists:
-                skipped += 1
-                continue
-
-            # Fetch full conversation
-            try:
-                info = await client.get_ticket_info(ticket_id)
-                posts = await client.get_ticket_posts(ticket_id)
-            except Exception as exc:
-                logger.warning("Failed to fetch ticket %s: %s", ticket_id, exc)
-                errors += 1
-                await asyncio.sleep(0.5)
-                continue
-
-            history = _build_history_text(posts, info)
-            if not history.strip():
-                skipped += 1
-                continue
-
-            # Fetch organization (cached per user to avoid duplicate API calls)
-            user_id_str = str(info.client_id)
-            if user_id_str not in org_cache:
-                org_cache[user_id_str] = await client.get_user_organization(user_id_str)
-            org_id, org_name = org_cache[user_id_str]
-            company_id = org_id or user_id_str
-            company_name = org_name or info.client_name or ""
-            content = f"Тема: {ticket_title}\n\n{history}"
-
-            # Index (embed + save)
-            item_id = await index_knowledge_item(
-                source="hde_closed",
-                content=content,
-                ticket_id=ticket_id,
-                title=ticket_title,
-                quality="good",
-                company_id=company_id,
-                company_name=company_name,
-            )
-            if item_id is not None:
-                # Save content_hash for deduplication
-                async with aiosqlite.connect(DB_PATH) as db:
-                    await db.execute(
-                        "UPDATE knowledge_items SET content_hash = ? WHERE id = ?",
-                        (content_hash, item_id),
+                try:
+                    await wait_msg.edit_text(
+                        f"❌ Ошибка HDE API для оператора {owner_id} (стр. {page}): {exc}",
+                        parse_mode="HTML",
                     )
-                    await db.commit()
-            else:
-                # No embedding yet — save text only, index later with /aireindex
-                item_id = await save_knowledge_item(
+                except Exception:
+                    pass
+                break
+
+            if not page_tickets:
+                break
+
+            for ticket_raw in page_tickets:
+                if added >= limit:
+                    break
+
+                ticket_id = str(ticket_raw.get("id") or "")
+                ticket_title = str(ticket_raw.get("title") or "")
+
+                if not ticket_id:
+                    errors += 1
+                    continue
+
+                # Deduplication
+                content_hash = hashlib.sha256(f"hde:{ticket_id}".encode()).hexdigest()
+                async with aiosqlite.connect(DB_PATH) as db:
+                    async with db.execute(
+                        "SELECT id FROM knowledge_items WHERE content_hash = ?", (content_hash,)
+                    ) as cur:
+                        exists = await cur.fetchone()
+                if exists:
+                    skipped += 1
+                    continue
+
+                # Fetch full conversation
+                try:
+                    info = await client.get_ticket_info(ticket_id)
+                    posts = await client.get_ticket_posts(ticket_id)
+                except Exception as exc:
+                    logger.warning("Failed to fetch ticket %s: %s", ticket_id, exc)
+                    errors += 1
+                    await asyncio.sleep(0.5)
+                    continue
+
+                history = _build_history_text(posts, info)
+                if not history.strip():
+                    skipped += 1
+                    continue
+
+                # Fetch organization (cached per user)
+                user_id_str = str(info.client_id)
+                if user_id_str not in org_cache:
+                    org_cache[user_id_str] = await client.get_user_organization(user_id_str)
+                org_id, org_name = org_cache[user_id_str]
+                company_id = org_id or user_id_str
+                company_name = org_name or info.client_name or ""
+                content = f"Тема: {ticket_title}\n\n{history}"
+
+                # Index (embed + save)
+                item_id = await index_knowledge_item(
                     source="hde_closed",
                     content=content,
                     ticket_id=ticket_id,
                     title=ticket_title,
                     quality="good",
-                    content_hash=content_hash,
                     company_id=company_id,
                     company_name=company_name,
                 )
-            added += 1
-
-            now = asyncio.get_event_loop().time()
-            if now - last_edit_at >= 2.0:
-                try:
-                    await wait_msg.edit_text(
-                        f"📥 <b>[{i}/{len(tickets)}]</b> {ticket_title[:50]}\n"
-                        f"✅ {added} добавлено · ⏭ {skipped} дублей · ❌ {errors} ошибок",
-                        parse_mode="HTML",
+                if item_id is not None:
+                    async with aiosqlite.connect(DB_PATH) as db:
+                        await db.execute(
+                            "UPDATE knowledge_items SET content_hash = ? WHERE id = ?",
+                            (content_hash, item_id),
+                        )
+                        await db.commit()
+                else:
+                    # No embedding yet — save text only, index later with /aireindex
+                    item_id = await save_knowledge_item(
+                        source="hde_closed",
+                        content=content,
+                        ticket_id=ticket_id,
+                        title=ticket_title,
+                        quality="good",
+                        content_hash=content_hash,
+                        company_id=company_id,
+                        company_name=company_name,
                     )
-                    last_edit_at = now
-                except Exception:
-                    pass
+                added += 1
 
-            await asyncio.sleep(0.5)
+                now = asyncio.get_event_loop().time()
+                if now - last_edit_at >= 2.0:
+                    try:
+                        await wait_msg.edit_text(
+                            f"📥 Стр. {page}/{total_pages} · {ticket_title[:40]}\n"
+                            f"✅ {added}/{limit} · ⏭ {skipped} дублей · ❌ {errors} ошибок",
+                            parse_mode="HTML",
+                        )
+                        last_edit_at = now
+                    except Exception:
+                        pass
+
+                await asyncio.sleep(0.5)
+
+            page += 1
 
     await set_setting("last_bulk_import_at", datetime.now(timezone.utc).isoformat())
 

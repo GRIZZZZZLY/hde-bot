@@ -211,6 +211,49 @@ class HDEApiClient:
 
         return all_tickets
 
+    async def get_closed_tickets_page(
+        self,
+        owner_id: str,
+        page: int = 1,
+    ) -> tuple[list[dict], int]:
+        """Fetch one page of closed tickets for owner_id.
+
+        Returns (tickets_on_page, total_pages).
+        Uses HDE's default page size (30) — per_page param is ignored by the API.
+        """
+        url = f"{self.base_url}/tickets/"
+        params = {
+            "owner_list": owner_id,
+            "status_list": "closed",
+            "page": str(page),
+        }
+        async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with session.get(url, params=params) as response:
+                data = await self._read_response(response)
+                if response.status >= 400:
+                    message = (
+                        self._extract_error_message(data)
+                        or f"HDE API error {response.status}"
+                    )
+                    raise HDEApiError(message)
+
+        if not isinstance(data, dict):
+            return [], 1
+
+        tickets_data = data.get("data", {})
+        if not isinstance(tickets_data, dict):
+            return [], 1
+
+        tickets = [t for t in tickets_data.values() if isinstance(t, dict)]
+
+        pagination = data.get("pagination", {})
+        total_pages = pagination.get("total_pages", 1) if isinstance(pagination, dict) else 1
+        logger.info(
+            "get_closed_tickets_page owner=%s page=%d total_pages=%d count=%d",
+            owner_id, page, total_pages, len(tickets),
+        )
+        return tickets, total_pages
+
     async def get_closed_tickets(
         self,
         owner_id: str,
@@ -218,57 +261,21 @@ class HDEApiClient:
     ) -> list[dict]:
         """Fetch up to `limit` closed tickets for the given owner_id.
 
-        Returns list of raw ticket dicts from HDE API.
+        NOTE: `limit` counts total fetched tickets, not unique new ones.
+        For import workflows that need N *new* tickets, use get_closed_tickets_page
+        directly and paginate until the desired number of new items are processed.
         """
         tickets: list[dict] = []
         page = 1
-        per_page = 100  # request max per page to minimise round-trips
 
         while True:
-            url = f"{self.base_url}/tickets/"
-            params = {
-                "owner_list": owner_id,
-                "status_list": "closed",
-                "page": str(page),
-                "per_page": str(per_page),
-            }
-            async with aiohttp.ClientSession(auth=self.auth) as session:
-                async with session.get(url, params=params) as response:
-                    data = await self._read_response(response)
-                    if response.status >= 400:
-                        message = (
-                            self._extract_error_message(data)
-                            or f"HDE API error {response.status}"
-                        )
-                        raise HDEApiError(message)
-
-            if not isinstance(data, dict):
-                break
-            logger.info(
-                "get_closed_tickets page=%d response keys=%s",
-                page, list(data.keys()),
-            )
-            tickets_data = data.get("data", {})
-            if not tickets_data:
-                break
-
-            for ticket_raw in tickets_data.values():
-                if isinstance(ticket_raw, dict):
-                    tickets.append(ticket_raw)
-                    if len(tickets) >= limit:
-                        return tickets
-
-            pagination = data.get("pagination", {})
-            total_pages = pagination.get("total_pages", 1) if isinstance(pagination, dict) else 1
-            logger.info(
-                "get_closed_tickets page=%d total_pages=%d fetched_so_far=%d pagination=%s",
-                page, total_pages, len(tickets), pagination,
-            )
-            if page >= total_pages:
+            page_tickets, total_pages = await self.get_closed_tickets_page(owner_id, page=page)
+            tickets.extend(page_tickets)
+            if len(tickets) >= limit or page >= total_pages:
                 break
             page += 1
 
-        return tickets
+        return tickets[:limit]
 
     async def _post(
         self,
