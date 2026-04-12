@@ -23,6 +23,9 @@ _GEMINI_URL = (
     f"{_GEMINI_MODEL}:generateContent"
 )
 
+_AUDIO_TYPES = {"mp3", "ogg", "wav", "m4a", "opus", "aac", "flac", "oga"}
+_DEEPGRAM_URL = "https://api.deepgram.com/v1/listen"
+
 _IMAGE_TYPES = {"jpg", "jpeg", "png", "gif", "webp"}
 _GEMINI_MIME: dict[str, str] = {
     "jpg": "image/jpeg",
@@ -112,6 +115,69 @@ def _log_generation(
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError as exc:
         logger.warning("Could not write ai_log.jsonl: %s", exc)
+
+
+async def _transcribe_audio_posts(
+    posts: "list[HDEPost]",
+    session: aiohttp.ClientSession,
+) -> list[str]:
+    """Transcribe audio attachments via Deepgram. Returns list of transcript strings."""
+    if not config.deepgram_api_key:
+        return []
+    auth = aiohttp.BasicAuth(config.hde_api_email, config.hde_api_key)
+    transcripts: list[str] = []
+    for post in posts:
+        for file_info in (post.files or []):
+            data_type = (file_info.get("data_type") or "").lower().lstrip(".")
+            if data_type not in _AUDIO_TYPES:
+                continue
+            url = file_info.get("url", "")
+            if not url:
+                continue
+            try:
+                async with session.get(
+                    url, auth=auth, timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status != 200:
+                        logger.debug("Audio download failed %s: HTTP %s", url, resp.status)
+                        continue
+                    audio_data = await resp.read()
+            except Exception as exc:
+                logger.warning("Audio download error %s: %s", url, exc)
+                continue
+            mime_type = f"audio/{data_type}"
+            try:
+                async with session.post(
+                    _DEEPGRAM_URL,
+                    data=audio_data,
+                    headers={
+                        "Authorization": f"Token {config.deepgram_api_key}",
+                        "Content-Type": mime_type,
+                    },
+                    params={"language": "ru", "model": "nova-2", "smart_format": "true"},
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        logger.warning("Deepgram error %s: %s", resp.status, body[:200])
+                        continue
+                    result = await resp.json()
+                    transcript = (
+                        result.get("results", {})
+                        .get("channels", [{}])[0]
+                        .get("alternatives", [{}])[0]
+                        .get("transcript", "")
+                        .strip()
+                    )
+                    if transcript:
+                        transcripts.append(transcript)
+                        logger.info(
+                            "Deepgram transcribed audio %s: %r...",
+                            file_info.get("name"), transcript[:80],
+                        )
+            except Exception as exc:
+                logger.warning("Deepgram transcription failed for %s: %s", url, exc)
+    return transcripts
 
 
 async def _collect_image_parts(
@@ -206,6 +272,14 @@ async def generate_ticket_summary(
 
     try:
         async with aiohttp.ClientSession() as session:
+            # Transcribe audio attachments via Deepgram (non-fatal)
+            try:
+                transcripts = await _transcribe_audio_posts(posts, session)
+                for t in transcripts:
+                    history += f"\n[Голосовое сообщение клиента: {t}]"
+            except Exception as exc:
+                logger.warning("Audio transcription collection failed: %s", exc)
+
             # Collect images from post attachments (non-fatal)
             image_parts: list[dict] = []
             try:

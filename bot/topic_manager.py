@@ -660,6 +660,75 @@ async def handle_client_reply(bot: Bot, payload: dict) -> None:
         await db.update_topic(record.ticket_id, last_client_reply_at=to_storage(reply_at))
 
 
+async def _implicit_feedback(record: "db.TicketTopic", staff_text: str) -> None:
+    """Auto-learn from diff between AI suggestion and operator's actual reply."""
+    import difflib
+    import re as _re
+    from html import unescape
+
+    pending = await db.get_ai_feedback_pending(record.topic_id)
+    if not pending:
+        return
+
+    ai_text = (pending.get("answer_text") or "").strip()
+    # Strip HTML from staff reply
+    clean_staff = unescape(_re.sub(r"<[^>]+>", "", staff_text)).strip()
+    if not ai_text or not clean_staff:
+        return
+
+    ratio = difflib.SequenceMatcher(None, ai_text.lower(), clean_staff.lower()).ratio()
+    logger.debug(
+        "Implicit feedback for topic %d: ratio=%.2f ai=%r staff=%r",
+        record.topic_id, ratio, ai_text[:60], clean_staff[:60],
+    )
+
+    if ratio >= 0.7:
+        # Operator sent nearly the same text — AI suggestion was good
+        await db.delete_ai_feedback_pending(record.topic_id)
+        content = f"Тема: {pending['title']}\n\n{pending['history']}"
+        from .knowledge.indexer import index_knowledge_item
+        await index_knowledge_item(
+            source="implicit_good",
+            content=content,
+            ticket_id=pending["ticket_id"],
+            title=pending["title"],
+            quality="good",
+        )
+        logger.info(
+            "Implicit 👍 for ticket %s (ratio=%.2f)", pending["ticket_id"], ratio
+        )
+    elif ratio <= 0.35:
+        # Operator wrote something significantly different — save as correction
+        await db.delete_ai_feedback_pending(record.topic_id)
+        content = (
+            f"Тема: {pending['title']}\n\n"
+            f"{pending['history']}\n\n"
+            f"Правильный ответ: {clean_staff}"
+        )
+        from .knowledge.indexer import index_knowledge_item
+        await index_knowledge_item(
+            source="implicit_corrected",
+            content=content,
+            ticket_id=pending["ticket_id"],
+            title=pending["title"],
+            quality="corrected",
+        )
+        logger.info(
+            "Implicit ✏️ for ticket %s (ratio=%.2f)", pending["ticket_id"], ratio
+        )
+        # Update wiki article with operator's actual answer (non-fatal)
+        try:
+            from .wiki.builder import build_or_update_wiki_article
+            await build_or_update_wiki_article(
+                title=pending["title"],
+                content=content,
+                ticket_id=pending["ticket_id"],
+            )
+        except Exception as exc:
+            logger.warning("Wiki update failed after implicit correction: %s", exc)
+    # 0.35–0.7: ambiguous edit, skip to avoid noise
+
+
 async def handle_staff_reply(bot: Bot, payload: dict) -> None:
     ticket_id = _payload_value(payload, "ticket_id")
     record = await db.get_topic(ticket_id)
@@ -682,6 +751,14 @@ async def handle_staff_reply(bot: Bot, payload: dict) -> None:
         pre_sla_notify_at=None,
         pre_sla_sent_at=None,
     )
+
+    # Implicit feedback: compare AI suggestion with what operator actually sent
+    staff_text = _payload_value(payload, "message") or ""
+    if staff_text and record:
+        try:
+            await _implicit_feedback(record, staff_text)
+        except Exception as exc:
+            logger.warning("Implicit feedback failed for ticket %s: %s", ticket_id, exc)
 
 
 async def handle_ticket_closed(bot: Bot, payload: dict) -> None:
