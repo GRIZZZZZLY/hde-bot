@@ -164,14 +164,18 @@ async def generate_ticket_summary(
         _log_generation(ticket_id, ticket_title, history, text)
 
     # Parse "Суть: ...\nОтвет: ..."
+    import re as _re
+    logger.info("Gemini raw response for ticket %s: %r", ticket_id, text[:400])
     suit_line = ""
     answer_line = ""
     for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.lower().startswith("суть:"):
-            suit_line = stripped[5:].strip()
-        elif stripped.lower().startswith("ответ:"):
-            answer_line = stripped[6:].strip()
+        # Strip markdown bold/italic (**text**, *text*) before matching
+        cleaned = _re.sub(r"\*+", "", line).strip()
+        lower = cleaned.lower()
+        if lower.startswith("суть:"):
+            suit_line = cleaned[5:].strip()
+        elif lower.startswith("ответ:"):
+            answer_line = cleaned[6:].strip()
 
     if not suit_line and not answer_line:
         # Fallback: show raw text

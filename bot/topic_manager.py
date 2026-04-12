@@ -277,26 +277,10 @@ async def _post_ticket_history(
         logger.error("Unexpected error fetching history for ticket %s: %s", ticket_id, exc)
         return
 
-    messages = format_ticket_history(posts, info)
-    posted_all = True
-    for text in messages:
-        try:
-            await bot.send_message(
-                chat_id=config.group_chat_id,
-                message_thread_id=topic_id,
-                text=text,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-                disable_notification=True,
-            )
-        except TelegramAPIError as exc:
-            logger.warning("Failed to post history message to topic %d: %s", topic_id, exc)
-            posted_all = False
-            break
-
     if not posts:
         return
 
+    # Post AI summary FIRST (before history)
     from .ai_summary import generate_ticket_summary, _build_history_text
     from .handlers.ai_feedback import make_ai_feedback_keyboard, register_feedback_pending
     summary = await generate_ticket_summary(
@@ -322,6 +306,22 @@ async def _post_ticket_history(
         except TelegramAPIError as exc:
             logger.warning("Failed to post AI summary to topic %d: %s", topic_id, exc)
 
+    # Then post history
+    messages = format_ticket_history(posts, info)
+    for text in messages:
+        try:
+            await bot.send_message(
+                chat_id=config.group_chat_id,
+                message_thread_id=topic_id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                disable_notification=True,
+            )
+        except TelegramAPIError as exc:
+            logger.warning("Failed to post history message to topic %d: %s", topic_id, exc)
+            break
+
 
 async def _ensure_active_topic(
     bot: Bot,
@@ -339,11 +339,26 @@ async def _ensure_active_topic(
         topic_id = await _create_topic(bot, payload)
         await db.upsert_topic(ticket_id, topic_id, topic_state="active", **metadata)
         await db.update_topic(ticket_id, last_assigned_at=to_storage(utcnow()))
+        # Send assignment notification FIRST (before summary and history)
+        if announce_assignment:
+            notif_text = format_assignment_message(
+                display_id=ticket_id,
+                company_name=metadata["company_name"],
+                ticket_name=metadata["ticket_name"],
+                status=metadata["status"],
+                priority=metadata["priority"],
+                link=metadata["hde_link"],
+                is_reassignment=False,
+            )
+            try:
+                await _send_topic_message(bot, topic_id, notif_text)
+            except TelegramAPIError as exc:
+                logger.error("Failed to send assignment message to topic %d: %s", topic_id, exc)
         await _post_ticket_history(
             bot, ticket_id, topic_id,
             ticket_title=_payload_value(payload, "ticket_name"),
         )
-        should_announce_assignment = announce_assignment
+        should_announce_assignment = False  # already sent above
     elif record.is_pending_delete:
         try:
             await bot.reopen_forum_topic(
@@ -381,7 +396,7 @@ async def _ensure_active_topic(
 
     if should_announce_assignment:
         text = format_assignment_message(
-            display_id=record.unique_id,
+            display_id=record.ticket_id,
             company_name=record.company_name,
             ticket_name=record.ticket_name,
             status=record.status,
