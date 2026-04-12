@@ -129,7 +129,7 @@ async def generate_ticket_summary(
         "contents": [{"parts": [{"text": f"Переписка:\n{history}"}]}],
         "generationConfig": {
             "temperature": 0.3,
-            "maxOutputTokens": 300,
+            "maxOutputTokens": 800,
         },
     }
 
