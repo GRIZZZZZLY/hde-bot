@@ -7,6 +7,7 @@ import numpy as np
 
 from ..db import (
     KnowledgeItem,
+    fts_search_knowledge,
     list_all_knowledge_embeddings,
     save_knowledge_item,
 )
@@ -34,13 +35,19 @@ async def find_similar(
     query_embedding: np.ndarray,
     *,
     limit: int = 3,
+    query_text: str = "",
 ) -> list[KnowledgeItem]:
-    """Return top-N knowledge items most similar to query_embedding."""
+    """Return top-N knowledge items most similar to query_embedding.
+
+    When query_text is provided, merges cosine similarity with BM25 (FTS5)
+    via Reciprocal Rank Fusion — exact terms like product codes stay retrievable.
+    """
     rows = await list_all_knowledge_embeddings()
     if not rows:
         return []
 
-    scored: list[tuple[float, tuple[int, str]]] = []
+    # Cosine scoring
+    cosine_scored: list[tuple[float, int, str]] = []
     for row_id, content, emb_bytes in rows:
         try:
             emb = bytes_to_embedding(emb_bytes)
@@ -48,21 +55,38 @@ async def find_similar(
             logger.warning("Skipping corrupted embedding row_id=%s", row_id, exc_info=True)
             continue
         score = cosine_similarity(query_embedding, emb)
-        scored.append((score, (row_id, content)))
+        cosine_scored.append((score, row_id, content))
+    cosine_scored.sort(key=lambda x: x[0], reverse=True)
 
-    scored.sort(key=lambda x: x[0], reverse=True)
+    if not query_text:
+        return [
+            KnowledgeItem(id=row_id, source="", ticket_id=None, title=None,
+                          content=content, quality="good")
+            for _, row_id, content in cosine_scored[:limit]
+        ]
 
-    result = []
-    for score, (row_id, content) in scored[:limit]:
-        result.append(KnowledgeItem(
-            id=row_id,
-            source="",
-            ticket_id=None,
-            title=None,
-            content=content,
-            quality="good",
-        ))
-    return result
+    # BM25 scoring via FTS5
+    bm25_rows = await fts_search_knowledge(query_text, limit=limit * 3)
+
+    # Reciprocal Rank Fusion (k=60 is the conventional constant)
+    k = 60
+    rrf_scores: dict[int, float] = {}
+    contents: dict[int, str] = {}
+
+    for rank, (_, item_id, content) in enumerate(cosine_scored[: limit * 3]):
+        rrf_scores[item_id] = rrf_scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
+        contents[item_id] = content
+
+    for rank, (item_id, content) in enumerate(bm25_rows):
+        rrf_scores[item_id] = rrf_scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
+        contents[item_id] = content
+
+    sorted_ids = sorted(rrf_scores, key=lambda x: rrf_scores[x], reverse=True)
+    return [
+        KnowledgeItem(id=item_id, source="", ticket_id=None, title=None,
+                      content=contents[item_id], quality="good")
+        for item_id in sorted_ids[:limit]
+    ]
 
 
 async def save_and_index(

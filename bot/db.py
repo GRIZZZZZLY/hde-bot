@@ -239,6 +239,14 @@ async def init_db() -> None:
         )
         await db.execute(
             """
+            CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+                content,
+                tokenize='unicode61 remove_diacritics 1'
+            )
+            """
+        )
+        await db.execute(
+            """
             CREATE TABLE IF NOT EXISTS knowledge_items (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 source       TEXT NOT NULL,
@@ -261,6 +269,19 @@ async def init_db() -> None:
                 await db.execute(f"ALTER TABLE knowledge_items ADD COLUMN {col} {col_type}")
             except Exception:
                 pass  # column already exists
+
+        # Populate FTS index for existing items (first-time migration, idempotent)
+        try:
+            await db.execute(
+                """
+                INSERT INTO knowledge_fts(rowid, content)
+                SELECT id, content FROM knowledge_items
+                WHERE quality != 'bad'
+                  AND id NOT IN (SELECT rowid FROM knowledge_fts)
+                """
+            )
+        except Exception:
+            pass  # FTS may already be populated or query not supported
 
         await db.execute(
             """
@@ -1004,6 +1025,14 @@ async def save_knowledge_item(
              embedding, quality, url or None, content_hash or None,
              company_id or None, company_name or None),
         )
+        if quality != "bad" and cursor.lastrowid:
+            try:
+                await db.execute(
+                    "INSERT INTO knowledge_fts(rowid, content) VALUES (?, ?)",
+                    (cursor.lastrowid, content),
+                )
+            except Exception:
+                pass  # FTS insert failure is non-fatal
         await db.commit()
         row_id = cursor.lastrowid
         assert row_id is not None, "INSERT into knowledge_items returned no lastrowid"
@@ -1145,3 +1174,21 @@ async def update_knowledge_company(item_id: int, company_id: str, company_name: 
             (company_id or None, company_name or None, item_id),
         )
         await db.commit()
+
+
+async def fts_search_knowledge(query: str, limit: int = 10) -> list[tuple[int, str]]:
+    """BM25 full-text search via FTS5. Returns (id, content) ordered by relevance."""
+    import re
+    # Strip FTS5 special characters to avoid syntax errors
+    clean = re.sub(r'["\(\)\^\*\-]', ' ', query).strip()
+    if not clean:
+        return []
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            async with db.execute(
+                "SELECT rowid, content FROM knowledge_fts WHERE content MATCH ? ORDER BY rank LIMIT ?",
+                (clean, limit),
+            ) as cur:
+                return [(int(row[0]), row[1]) for row in await cur.fetchall()]
+        except Exception:
+            return []

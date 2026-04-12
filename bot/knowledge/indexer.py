@@ -109,5 +109,5 @@ async def get_rag_context(
     embedding = await embed_text(query, task_type="query")
     if embedding is None:
         return []
-    similar = await find_similar(embedding, limit=limit)
+    similar = await find_similar(embedding, limit=limit, query_text=query)
     return [item.content for item in similar]
