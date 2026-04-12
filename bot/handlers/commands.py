@@ -379,95 +379,109 @@ async def cmd_aiknowledge(message: Message) -> None:
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
+@router.message(Command("aimetrics"))
+async def cmd_aimetrics(message: Message) -> None:
+    """Показать метрики базы знаний и кнопки управления."""
+    from ..db import get_knowledge_metrics
+    from ..scheduler import KNOWLEDGE_EXPIRY_DAYS
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    metrics = await get_knowledge_metrics()
+    by_source = metrics["by_source"]
+
+    # Строки по источникам
+    source_lines = []
+    labels = {
+        "hde_closed": "из закрытых тикетов HDE (/aiimport)",
+        "implicit_good": "подтверждены операторами",
+        "implicit_corrected": "исправления AI-ответов",
+        "feedback": "ручной фидбек",
+    }
+    for src, label in labels.items():
+        count = by_source.get(src, 0)
+        if count:
+            source_lines.append(f"  • {count:4d} — {label}")
+    other_sources = {k: v for k, v in by_source.items() if k not in labels}
+    for src, count in other_sources.items():
+        source_lines.append(f"  • {count:4d} — {src}")
+
+    sources_text = "\n".join(source_lines) if source_lines else "  (пусто)"
+
+    # Паттерны
+    patterns_text = ""
+    if metrics["top_patterns"]:
+        lines = []
+        for i, p in enumerate(metrics["top_patterns"], 1):
+            eq = p["equipment"] or "Без бренда"
+            lines.append(f"{i}. {eq} — {p['problem_type']} ({p['use_count']} раз)")
+        patterns_text = "\n🔥 <b>Топ-5 паттернов решений:</b>\n" + "\n".join(lines)
+
+    # Мёртвые элементы
+    dead_text = ""
+    if metrics["dead_items"]:
+        lines = []
+        for p in metrics["dead_items"]:
+            date = (p["created_at"] or "")[:10]
+            title = (p["title"] or "без заголовка")[:60]
+            lines.append(f"[{date}] {title}")
+        dead_text = "\n💀 <b>Топ-5 без использования:</b>\n" + "\n".join(lines)
+
+    # Предупреждения
+    warnings = []
+    if metrics["expired_count"]:
+        warnings.append(
+            f"⚠️ Устарело (&gt;{KNOWLEDGE_EXPIRY_DAYS} дн, не используются): "
+            f"<b>{metrics['expired_count']}</b>"
+        )
+    if metrics["no_embedding_count"]:
+        warnings.append(
+            f"⚠️ Без эмбеддинга: <b>{metrics['no_embedding_count']}</b> → /aireindex"
+        )
+    warnings_text = ("\n" + "\n".join(warnings)) if warnings else ""
+
+    text = (
+        f"📊 <b>База знаний:</b> {metrics['total']} записей\n"
+        f"{sources_text}"
+        f"{warnings_text}"
+        f"{patterns_text}"
+        f"{dead_text}"
+    )
+
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🧹 Дедуп", callback_data="km_dedup")
+    builder.button(text="🗑 Удалить устаревшие", callback_data="km_expire")
+    builder.adjust(2)
+
+    await message.answer(text, parse_mode="HTML", reply_markup=builder.as_markup())
+
+
+@router.callback_query(F.data == "km_dedup")
+async def cb_km_dedup(callback: CallbackQuery) -> None:
+    from ..db import dedup_knowledge_items
+    count = await dedup_knowledge_items()
+    await callback.answer(f"🧹 Помечено дублей: {count}", show_alert=True)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "km_expire")
+async def cb_km_expire(callback: CallbackQuery) -> None:
+    from ..db import expire_stale_knowledge
+    from ..scheduler import KNOWLEDGE_EXPIRY_DAYS
+    count = await expire_stale_knowledge(KNOWLEDGE_EXPIRY_DAYS)
+    await callback.answer(f"🗑 Помечено устаревших: {count}", show_alert=True)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
 @router.message(Command("aistatus"))
 async def cmd_aistatus(message: Message) -> None:
-    """AI Knowledge System health overview."""
-    from ..db import (
-        count_knowledge_by_source,
-        count_items_without_embedding,
-        get_last_knowledge_item_date,
-        get_setting,
-    )
-    from ..config import config
-    from datetime import datetime, timezone
-
-    counts = await count_knowledge_by_source()
-    without_emb = await count_items_without_embedding()
-    last_item_at = await get_last_knowledge_item_date()
-    last_import_at = await get_setting("last_bulk_import_at", "")
-
-    total = sum(counts.values())
-    rag_status = "активен ✅" if config.gemini_api_key else "недоступен ❌ (нет Gemini key)"
-
-    source_labels = {
-        "feedback": "👍 feedback",
-        "corrected": "✏️ corrected",
-        "hde_closed": "📥 HDE import",
-        "teamly": "🏢 Teamly",
-        "doc": "📄 Внешние статьи",
-        "macro": "🔧 Макросы HDE",
-        "transcription": "🎙️ Транскрипции",
-    }
-
-    lines: list[str] = ["🧠 <b>AI Knowledge Status</b>", ""]
-    lines.append(f"📚 База знаний: <b>{total} записей</b>")
-    if without_emb:
-        lines.append(f"   ⚠️ Без embedding: {without_emb} — /aireindex чтобы исправить")
-
-    if counts:
-        lines.append("")
-        lines.append("По источникам:")
-        for source, cnt in sorted(counts.items(), key=lambda x: -x[1]):
-            label = source_labels.get(source, source)
-            lines.append(f"• {label}: <b>{cnt}</b>")
-
-    lines.append("")
-    lines.append(f"🔍 RAG: {rag_status}")
-
-    if last_item_at:
-        try:
-            dt = datetime.fromisoformat(last_item_at)
-            delta = datetime.now(timezone.utc) - dt.replace(tzinfo=timezone.utc)
-            hours = int(delta.total_seconds() // 3600)
-            if hours < 1:
-                age = "менее часа назад"
-            elif hours < 24:
-                age = f"{hours} ч. назад"
-            else:
-                age = f"{delta.days} дн. назад"
-            lines.append(f"🕐 Последнее пополнение: {age}")
-        except Exception:
-            pass
-
-    if last_import_at:
-        try:
-            dt = datetime.fromisoformat(last_import_at)
-            delta = datetime.now(timezone.utc) - dt.replace(tzinfo=timezone.utc)
-            lines.append(f"📥 Последний bulk-импорт: {delta.days} дн. назад")
-        except Exception:
-            pass
-
-    warnings: list[str] = []
-    if not config.gemini_api_key:
-        warnings.append("Gemini API key не настроен — RAG и embeddings недоступны")
-    if without_emb:
-        warnings.append(f"{without_emb} записей без embedding — /aireindex")
-    if last_item_at:
-        try:
-            dt = datetime.fromisoformat(last_item_at)
-            delta = datetime.now(timezone.utc) - dt.replace(tzinfo=timezone.utc)
-            if delta.days >= 7:
-                warnings.append("База не пополнялась 7+ дней")
-        except Exception:
-            pass
-
-    if warnings:
-        lines.append("")
-        lines.append("⚠️ <b>Предупреждения:</b>")
-        for w in warnings:
-            lines.append(f"• {w}")
-
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    """Алиас для /aimetrics (обратная совместимость)."""
+    await cmd_aimetrics(message)
 
 
 @router.message(Command("aiimport"))
