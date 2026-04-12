@@ -302,6 +302,25 @@ async def init_db() -> None:
             )
         except Exception:
             pass  # column already exists
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS solution_patterns (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                equipment    TEXT,
+                problem_type TEXT NOT NULL,
+                steps        TEXT NOT NULL,
+                source       TEXT NOT NULL DEFAULT 'analyze',
+                use_count    INTEGER NOT NULL DEFAULT 0,
+                created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_solution_patterns_equip
+            ON solution_patterns(equipment, problem_type)
+            """
+        )
         await db.commit()
 
 
@@ -1192,3 +1211,105 @@ async def fts_search_knowledge(query: str, limit: int = 10) -> list[tuple[int, s
                 return [(int(row[0]), row[1]) for row in await cur.fetchall()]
         except Exception:
             return []
+
+
+# ---------------------------------------------------------------------------
+# Solution patterns (AI answer quality)
+# ---------------------------------------------------------------------------
+
+async def save_solution_pattern(
+    problem_type: str,
+    steps: str,
+    source: str = "analyze",
+    equipment: Optional[str] = None,
+) -> int:
+    """Insert a new solution pattern. Returns new row id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO solution_patterns (equipment, problem_type, steps, source) VALUES (?, ?, ?, ?)",
+            (equipment, problem_type, steps, source),
+        )
+        await db.commit()
+        assert cursor.lastrowid is not None
+        return cursor.lastrowid
+
+
+async def find_solution_pattern(
+    equipment: Optional[str],
+    keywords: str,
+) -> Optional[dict]:
+    """Return the best matching pattern for given equipment and keywords, or None."""
+    import re as _re
+    words = {w for w in _re.sub(r"[^\w\s]", " ", keywords.lower()).split() if len(w) >= 3}
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        candidates: list = []
+        if equipment:
+            async with db.execute(
+                "SELECT * FROM solution_patterns WHERE equipment = ? ORDER BY use_count DESC LIMIT 10",
+                (equipment,),
+            ) as cur:
+                candidates = list(await cur.fetchall())
+        if not candidates:
+            async with db.execute(
+                "SELECT * FROM solution_patterns WHERE equipment IS NULL ORDER BY use_count DESC LIMIT 10",
+            ) as cur:
+                candidates = list(await cur.fetchall())
+        if not candidates:
+            return None
+        best: Optional[dict] = None
+        best_score = -1
+        for row in candidates:
+            row_words = set(row["problem_type"].lower().split())
+            score = len(words & row_words)
+            if score > best_score:
+                best_score = score
+                best = dict(row)
+        return best
+
+
+async def increment_pattern_use(pattern_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE solution_patterns SET use_count = use_count + 1 WHERE id = ?",
+            (pattern_id,),
+        )
+        await db.commit()
+
+
+async def list_solution_patterns(limit: int = 50) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM solution_patterns ORDER BY use_count DESC, created_at DESC LIMIT ?",
+            (limit,),
+        ) as cur:
+            return [dict(row) for row in await cur.fetchall()]
+
+
+async def pattern_exists_similar(
+    equipment: Optional[str],
+    problem_type: str,
+) -> bool:
+    """Return True if a pattern with same equipment and similar problem_type exists."""
+    import difflib
+    patterns = await list_solution_patterns(limit=200)
+    for p in patterns:
+        if p["equipment"] != equipment:
+            continue
+        ratio = difflib.SequenceMatcher(
+            None, p["problem_type"].lower(), problem_type.lower()
+        ).ratio()
+        if ratio >= 0.7:
+            return True
+    return False
+
+
+async def count_solution_patterns_by_equipment() -> dict[str, int]:
+    """Return {equipment_label: count} for reporting."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT COALESCE(equipment, 'Без бренда'), COUNT(*) "
+            "FROM solution_patterns GROUP BY equipment ORDER BY COUNT(*) DESC"
+        ) as cur:
+            return dict(await cur.fetchall())
