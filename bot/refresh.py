@@ -94,6 +94,31 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
     created: list[HDETicket] = []
     renamed: list[HDETicket] = []
 
+    # ── Step 0: probe active/pending topics to detect manually-deleted ones ───
+    # edit_forum_topic is the lightest probe that throws "thread not found"
+    # when a topic was manually deleted without the bot being notified.
+    for topic in all_db_topics:
+        ticket = (
+            hde_by_ticket_id.get(topic.ticket_id)
+            or hde_by_unique_id.get(topic.unique_id or "")
+        )
+        if ticket is None:
+            continue  # stale ticket — will be handled in Step 2
+        try:
+            await bot.edit_forum_topic(
+                chat_id=config.group_chat_id,
+                message_thread_id=topic.topic_id,
+                name=_topic_display_name(ticket, topic),
+            )
+        except TelegramAPIError as exc:
+            if any(k in str(exc).lower() for k in ("thread not found", "not found", "deleted")):
+                logger.warning(
+                    "refresh: topic %d for ticket %s not found in Telegram, marking deleted",
+                    topic.topic_id, topic.ticket_id,
+                )
+                await db.mark_topic_deleted(topic.ticket_id)
+            # other errors (e.g. flood) — skip silently, step 1 will recreate
+
     # ── Step 1: upsert a topic for every open HDE ticket ──────────────────────
     for ticket in hde_tickets:
         existing = (
