@@ -1,6 +1,7 @@
 """Generate ticket summary via Google Gemini API."""
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -21,6 +22,18 @@ _GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{_GEMINI_MODEL}:generateContent"
 )
+
+_IMAGE_TYPES = {"jpg", "jpeg", "png", "gif", "webp"}
+_GEMINI_MIME: dict[str, str] = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+}
+_MAX_IMAGES = 3          # max images per Gemini request
+_MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 4 MB per image
+
 
 _FORMAT_INSTRUCTIONS = (
     "Ответь РОВНО двумя строками — обе обязательны:\n"
@@ -101,6 +114,50 @@ def _log_generation(
         logger.warning("Could not write ai_log.jsonl: %s", exc)
 
 
+async def _collect_image_parts(
+    posts: "list[HDEPost]",
+    session: aiohttp.ClientSession,
+) -> list[dict]:
+    """Download images from post attachments, return Gemini inlineData parts."""
+    parts: list[dict] = []
+    auth = aiohttp.BasicAuth(config.hde_api_email, config.hde_api_key)
+    for post in posts:
+        for file_info in (post.files or []):
+            if len(parts) >= _MAX_IMAGES:
+                break
+            data_type = (file_info.get("data_type") or "").lower().lstrip(".")
+            if data_type not in _IMAGE_TYPES:
+                continue
+            url = file_info.get("url", "")
+            if not url:
+                continue
+            try:
+                async with session.get(
+                    url,
+                    auth=auth,
+                    timeout=aiohttp.ClientTimeout(total=15),
+                ) as resp:
+                    if resp.status != 200:
+                        logger.debug("Image download failed %s: HTTP %s", url, resp.status)
+                        continue
+                    raw = await resp.read()
+            except Exception as exc:
+                logger.debug("Image download error %s: %s", url, exc)
+                continue
+            if len(raw) > _MAX_IMAGE_BYTES:
+                logger.debug("Image too large (%d bytes), skipping %s", len(raw), url)
+                continue
+            mime = _GEMINI_MIME.get(data_type, "image/jpeg")
+            parts.append({
+                "inlineData": {
+                    "mimeType": mime,
+                    "data": base64.b64encode(raw).decode(),
+                }
+            })
+            logger.debug("Added image %s (%d bytes) to Gemini request", file_info.get("name"), len(raw))
+    return parts
+
+
 async def generate_ticket_summary(
     posts: "list[HDEPost]",
     info: "HDETicketInfo",
@@ -147,17 +204,31 @@ async def generate_ticket_summary(
 
     system_text = _build_system_prompt(ticket_title, rag_examples or None, wiki_ctx)
 
-    payload = {
-        "system_instruction": {"parts": [{"text": system_text}]},
-        "contents": [{"parts": [{"text": f"Переписка:\n{history}"}]}],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": 1000,
-        },
-    }
-
     try:
         async with aiohttp.ClientSession() as session:
+            # Collect images from post attachments (non-fatal)
+            image_parts: list[dict] = []
+            try:
+                image_parts = await _collect_image_parts(posts, session)
+                if image_parts:
+                    logger.info(
+                        "Including %d image(s) in Gemini request for ticket %s",
+                        len(image_parts), ticket_id,
+                    )
+            except Exception as exc:
+                logger.warning("Image collection failed: %s", exc)
+
+            content_parts: list[dict] = [{"text": f"Переписка:\n{history}"}] + image_parts
+
+            payload = {
+                "system_instruction": {"parts": [{"text": system_text}]},
+                "contents": [{"parts": content_parts}],
+                "generationConfig": {
+                    "temperature": 0.3,
+                    "maxOutputTokens": 1000,
+                },
+            }
+
             async with session.post(
                 _GEMINI_URL,
                 json=payload,

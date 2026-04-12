@@ -29,6 +29,11 @@ class HDEPost:
     text: str            # raw HTML from HDE
     date_created: str    # "HH:MM:SS DD.MM.YYYY"
     is_comment: bool = False  # True = internal comment, False = public post
+    files: list = None   # [{"name": ..., "url": ..., "data_type": ...}]
+
+    def __post_init__(self) -> None:
+        if self.files is None:
+            self.files = []
 
 
 @dataclass
@@ -148,6 +153,7 @@ class HDEApiClient:
                 user_id=int(item.get("user_id", 0)),
                 text=item.get("text", ""),
                 date_created=item.get("date_created", ""),
+                files=item.get("files") or [],
             )
             for item in items
             if isinstance(item, dict)
