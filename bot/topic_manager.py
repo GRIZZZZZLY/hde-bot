@@ -519,12 +519,17 @@ def _is_work_time() -> bool:
 async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) -> None:
     record = await db.get_topic(ticket_id)
 
+    # Always guard deleted topics first — delayed webhooks must not recreate them
+    if record is not None and record.is_deleted:
+        logger.info("Ignoring owner_changed for already-deleted ticket %s", ticket_id)
+        return
+
     if _effective_owner_match(payload):
         # Announce assignment only during work hours
         await _ensure_active_topic(bot, payload, announce_assignment=_is_work_time())
         return
 
-    if record is None or record.is_deleted:
+    if record is None:
         logger.info("Ignoring owner_changed for untracked ticket %s", ticket_id)
         return
 
@@ -615,6 +620,12 @@ async def handle_ticket_updated(bot: Bot, payload: dict) -> None:
 
 async def handle_client_reply(bot: Bot, payload: dict) -> None:
     if not _is_work_time():
+        return
+
+    ticket_id = _payload_value(payload, "ticket_id")
+    _existing = await db.get_topic(ticket_id)
+    if _existing is not None and _existing.is_deleted:
+        logger.info("Ignoring client_reply for deleted ticket %s", ticket_id)
         return
 
     record = await _ensure_active_topic(bot, payload)
