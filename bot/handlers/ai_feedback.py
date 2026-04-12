@@ -93,6 +93,16 @@ async def cb_ai_good(callback: CallbackQuery) -> None:
         quality="good",
     )
     logger.info("Saved good example for ticket %s", pending["ticket_id"])
+    # Update wiki article (non-fatal)
+    try:
+        from ..wiki.builder import build_or_update_wiki_article
+        await build_or_update_wiki_article(
+            title=pending["title"],
+            content=content,
+            ticket_id=pending["ticket_id"],
+        )
+    except Exception as exc:
+        logger.warning("Wiki update failed after 👍: %s", exc)
 
 
 @router.callback_query(F.data == "ai:bad")
@@ -228,4 +238,14 @@ async def capture_correction(message: Message) -> None:
         title=pending["title"],
         quality="corrected",
     )
+    # Update wiki article (non-fatal)
+    try:
+        from ..wiki.builder import build_or_update_wiki_article
+        await build_or_update_wiki_article(
+            title=pending["title"],
+            content=content,
+            ticket_id=pending["ticket_id"],
+        )
+    except Exception as exc:
+        logger.warning("Wiki update failed after correction: %s", exc)
     await message.answer("✅ <b>Сохранено как исправленный пример</b>", parse_mode="HTML")
