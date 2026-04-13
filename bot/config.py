@@ -56,6 +56,7 @@ class Config:
     work_hour_end: int
     gemini_api_key: str
     deepgram_api_key: str
+    groq_api_key: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -94,6 +95,7 @@ class Config:
             work_hour_end=int(os.getenv("WORK_HOUR_END", "18")),
             gemini_api_key=os.getenv("GEMINI_API_KEY", "").strip(),
             deepgram_api_key=os.getenv("DEEPGRAM_API_KEY", "").strip(),
+            groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
         )
 
     def matches_owner(self, owner_id: str, owner_name: str) -> bool:

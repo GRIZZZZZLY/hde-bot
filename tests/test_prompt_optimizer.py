@@ -96,3 +96,32 @@ async def test_reject_all_candidates():
         ) as cur:
             count = (await cur.fetchone())[0]
     assert count == 0
+
+
+# --- LLM Router ---
+
+from unittest.mock import AsyncMock
+
+
+@pytest.mark.asyncio
+async def test_llm_router_complete_all_returns_responses():
+    """LLMRouter.complete_all returns dict model→response, skips unavailable models."""
+    from bot.optimizer.llm_router import LLMRouter
+
+    async def fake_complete(system, user):
+        return "fake response"
+
+    router = LLMRouter.__new__(LLMRouter)
+    router.clients = {"gemini": AsyncMock(complete=fake_complete)}
+
+    results = await router.complete_all(system="system", user="user")
+    assert results == {"gemini": "fake response"}
+
+
+@pytest.mark.asyncio
+async def test_groq_client_skipped_when_no_api_key():
+    """GroqClient.complete raises ValueError if no api key."""
+    from bot.optimizer.llm_router import GroqClient
+    client = GroqClient(model="llama-3.3-70b-versatile", api_key="")
+    with pytest.raises(ValueError, match="GROQ_API_KEY"):
+        await client.complete("system", "user")
