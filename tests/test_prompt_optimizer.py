@@ -244,3 +244,28 @@ async def test_run_optimizer_skips_when_too_few_samples():
 
     mock_report.assert_not_called()
     bot_mock.send_message.assert_not_called()
+
+
+# --- callbacks ---
+
+@pytest.mark.asyncio
+async def test_opt_apply_activates_version():
+    """callback opt:apply:{id} → version becomes active."""
+    await _db.init_db()
+    vid = await _db.save_prompt_version("Новый промпт", 0.82, "llama")
+
+    from unittest.mock import AsyncMock, MagicMock, patch
+    callback = MagicMock()
+    callback.data = f"opt:apply:{vid}"
+    callback.answer = AsyncMock()
+    callback.message = MagicMock()
+    callback.message.edit_text = AsyncMock()
+
+    with patch("bot.handlers.commands.db", _db):
+        with patch("bot.handlers.commands.invalidate_prompt_cache") as mock_inv:
+            from bot.handlers.commands import cb_opt_apply
+            await cb_opt_apply(callback)
+
+    active = await _db.get_active_prompt()
+    assert active == "Новый промпт"
+    mock_inv.assert_called_once()

@@ -12,6 +12,8 @@ from ..db import (
     count_total_topics,
     mark_report_sent,
 )
+from .. import db
+from ..ai_summary import invalidate_prompt_cache
 from ..digest import send_morning_digest
 from ..formatter import format_refresh_result
 from ..refresh import refresh_topics
@@ -968,6 +970,78 @@ async def on_edited_message(message: Message) -> None:
         return
 
     await message.answer(result, parse_mode="HTML")
+
+
+@router.message(Command("aioptimize"))
+async def cmd_aioptimize(message: Message) -> None:
+    """Manually trigger prompt optimizer (for testing)."""
+    from ..optimizer.agent import run_optimizer
+    from ..config import config as _cfg
+    if message.from_user and message.from_user.id not in _cfg.operator_telegram_user_ids:
+        return
+    await message.answer("🧪 Запускаю оптимизатор промптов...")
+    import asyncio
+    asyncio.create_task(run_optimizer(message.bot))
+
+
+@router.callback_query(F.data.startswith("opt:apply:"))
+async def cb_opt_apply(callback: CallbackQuery) -> None:
+    try:
+        version_id = int(callback.data.split(":")[-1])
+        await db.apply_prompt_version(version_id)
+        invalidate_prompt_cache()
+        await callback.answer("✅ Новый промпт применён", show_alert=True)
+        try:
+            await callback.message.edit_text(
+                (callback.message.text or "") + "\n\n<i>✅ Применено</i>",
+                parse_mode="HTML",
+                reply_markup=None,
+            )
+        except Exception:
+            await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception as exc:
+        await callback.answer(f"❌ Ошибка: {exc}", show_alert=True)
+
+
+@router.callback_query(F.data == "opt:reject")
+async def cb_opt_reject(callback: CallbackQuery) -> None:
+    from ..db import reject_all_prompt_candidates
+    await reject_all_prompt_candidates()
+    await callback.answer("❌ Отклонено", show_alert=False)
+    try:
+        await callback.message.edit_text(
+            (callback.message.text or "") + "\n\n<i>❌ Отклонено</i>",
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+    except Exception:
+        await callback.message.edit_reply_markup(reply_markup=None)
+
+
+@router.callback_query(F.data.startswith("opt:detail:"))
+async def cb_opt_detail(callback: CallbackQuery) -> None:
+    from ..db import get_optimization_samples
+    await callback.answer()
+    try:
+        samples = await get_optimization_samples(days=30)
+        total = len(samples)
+        by_outcome: dict[str, int] = {}
+        for s in samples:
+            by_outcome[s["outcome"]] = by_outcome.get(s["outcome"], 0) + 1
+
+        lines = [
+            "📊 <b>Детали оптимизации</b>",
+            f"Всего сэмплов: {total}",
+        ]
+        for outcome, count in sorted(by_outcome.items()):
+            lines.append(f"  • {outcome}: {count}")
+
+        await callback.message.answer(
+            "\n".join(lines),
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        await callback.message.answer(f"❌ Ошибка: {exc}")
 
 
 @router.message()
