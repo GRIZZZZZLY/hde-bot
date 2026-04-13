@@ -69,6 +69,30 @@ _FORMAT_INSTRUCTIONS = (
     "ВАЖНО: шаги для специалиста, не для клиента. Не используй markdown. Не добавляй ничего лишнего."
 )
 
+_active_prompt_loaded: bool = False
+_active_format_instructions: str | None = None
+
+try:
+    from . import db  # noqa: E402  — available at runtime, may be absent in tests
+except ImportError:
+    db = None  # type: ignore[assignment]
+
+
+async def get_active_format_instructions() -> str:
+    """Return active FORMAT_INSTRUCTIONS from DB (lazily loaded, cached in memory).
+
+    Falls back to built-in _FORMAT_INSTRUCTIONS if nothing in DB.
+    Call invalidate_prompt_cache() after applying a new version.
+    """
+    global _active_prompt_loaded, _active_format_instructions
+    if not _active_prompt_loaded:
+        try:
+            _active_format_instructions = await db.get_active_prompt()  # type: ignore[union-attr]
+        except Exception:
+            _active_format_instructions = None
+        _active_prompt_loaded = True
+    return _active_format_instructions or _FORMAT_INSTRUCTIONS
+
 
 def _build_system_prompt(
     ticket_title: str,
@@ -76,7 +100,9 @@ def _build_system_prompt(
     wiki_context: str | None = None,
     equipment: str | None = None,
     solution_steps: str | None = None,
+    format_instructions: str | None = None,
 ) -> str:
+    instr = format_instructions or _FORMAT_INSTRUCTIONS
     base = (
         "Ты — помощник технического специалиста 2-й линии поддержки.\n"
         "Специализация: кассовое оборудование (АТОЛ, Эвотор, Штрих-М, Viki),\n"
@@ -110,7 +136,7 @@ def _build_system_prompt(
             "---\n\n"
             "Теперь обработай новый тикет:\n\n"
         )
-    return base + _FORMAT_INSTRUCTIONS
+    return base + instr
 
 
 def _build_history_text(posts: "list[HDEPost]", info: "HDETicketInfo") -> str:
@@ -322,12 +348,14 @@ async def generate_ticket_summary(
     except Exception as exc:
         logger.warning("Wiki context retrieval failed: %s", exc)
 
+    format_instructions = await get_active_format_instructions()
     system_text = _build_system_prompt(
         ticket_title,
         rag_examples or None,
         wiki_ctx,
         equipment=equipment,
         solution_steps=solution_steps,
+        format_instructions=format_instructions,
     )
 
     try:
@@ -422,12 +450,6 @@ async def generate_ticket_summary(
 
 
 def invalidate_prompt_cache() -> None:
-    """Invalidate cached active prompt (call after apply_prompt_version).
-
-    Stub for Task 5 — full implementation added in Task 8.
-    """
+    """Invalidate cached active prompt (call after apply_prompt_version)."""
     global _active_prompt_loaded
-    try:
-        _active_prompt_loaded = False
-    except NameError:
-        pass
+    _active_prompt_loaded = False

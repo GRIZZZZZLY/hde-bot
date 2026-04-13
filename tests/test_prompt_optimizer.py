@@ -100,7 +100,7 @@ async def test_reject_all_candidates():
 
 # --- LLM Router ---
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 
 @pytest.mark.asyncio
@@ -269,3 +269,34 @@ async def test_opt_apply_activates_version():
     active = await _db.get_active_prompt()
     assert active == "Новый промпт"
     mock_inv.assert_called_once()
+
+
+# --- lazy prompt loading ---
+
+@pytest.mark.asyncio
+async def test_get_active_format_instructions_returns_builtin_when_no_db():
+    """If no active version in DB — returns built-in _FORMAT_INSTRUCTIONS."""
+    await _db.init_db()
+    import bot.ai_summary as _ai_mod
+    from bot.ai_summary import get_active_format_instructions, _FORMAT_INSTRUCTIONS
+    # Reset cache
+    _ai_mod._active_prompt_loaded = False
+    with patch("bot.ai_summary.db", _db):
+        result = await get_active_format_instructions()
+    assert result == _FORMAT_INSTRUCTIONS
+
+
+@pytest.mark.asyncio
+async def test_get_active_format_instructions_returns_db_version():
+    """If active version in DB — returns it."""
+    await _db.init_db()
+    vid = await _db.save_prompt_version("Кастомная инструкция", 0.85, "llama")
+    await _db.apply_prompt_version(vid)
+
+    import bot.ai_summary as _ai_mod
+    _ai_mod._active_prompt_loaded = False  # reset cache
+
+    with patch("bot.ai_summary.db", _db):
+        from bot.ai_summary import get_active_format_instructions
+        result = await get_active_format_instructions()
+    assert result == "Кастомная инструкция"
