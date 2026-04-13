@@ -839,6 +839,10 @@ async def cmd_aianalyze(message: Message) -> None:
         "Только JSON, без markdown.\n\nТикеты:\n"
     )
 
+    import asyncio as _asyncio
+    _RATE_DELAY = 4.0   # seconds between requests — stays under Gemini free-tier 15 RPM
+    _RETRY_DELAY = 65.0  # seconds to wait after a 429 before retrying the same batch
+
     async with aiohttp.ClientSession() as session:
         for i in range(0, len(items), batch_size):
             batch = items[i : i + batch_size]
@@ -850,46 +854,72 @@ async def cmd_aianalyze(message: Message) -> None:
                 "contents": [{"parts": [{"text": _ANALYZE_PROMPT + batch_text}]}],
                 "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2000},
             }
-            try:
-                async with session.post(
-                    (
-                        "https://generativelanguage.googleapis.com/v1beta/models/"
-                        "gemini-2.5-flash:generateContent"
-                    ),
-                    json=payload,
-                    params={"key": _config.gemini_api_key},
-                    timeout=aiohttp.ClientTimeout(total=60),
-                ) as resp:
-                    if resp.status != 200:
-                        body = await resp.text()
-                        logger.warning(
-                            "aianalyze batch %d: Gemini HTTP %s: %s",
-                            i, resp.status, body[:300],
-                        )
-                        skipped += len(batch)
-                        continue
-                    data = await resp.json()
-                    raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                    raw = _re.sub(r"^```[^\n]*\n?", "", raw).rstrip("`").strip()
-                    patterns = _json.loads(raw)
-            except Exception as exc:
-                logger.warning("aianalyze batch %d failed: %s", i, exc)
-                skipped += len(batch)
-                continue
 
-            for p in patterns:
-                eq = p.get("equipment") or None
-                pt = (p.get("problem_type") or "").strip()
-                st = (p.get("steps") or "").strip()
-                if not pt or not st:
-                    continue
-                if await pattern_exists_similar(eq, pt):
-                    skipped += 1
-                    continue
-                await save_solution_pattern(
-                    problem_type=pt, steps=st, source="analyze", equipment=eq
-                )
-                created += 1
+            # One retry after a 429 (wait 65 s then try again)
+            for attempt in range(2):
+                try:
+                    async with session.post(
+                        (
+                            "https://generativelanguage.googleapis.com/v1beta/models/"
+                            "gemini-2.5-flash:generateContent"
+                        ),
+                        json=payload,
+                        params={"key": _config.gemini_api_key},
+                        timeout=aiohttp.ClientTimeout(total=60),
+                    ) as resp:
+                        if resp.status == 429:
+                            body = await resp.text()
+                            if attempt == 0:
+                                logger.warning(
+                                    "aianalyze batch %d: 429 rate limit, waiting %ss",
+                                    i, int(_RETRY_DELAY),
+                                )
+                                try:
+                                    await status_msg.edit_text(
+                                        f"⏳ Обработано {i}/{len(items)} — ожидаю сброса лимита Gemini (~1 мин)..."
+                                    )
+                                except Exception:
+                                    pass
+                                await _asyncio.sleep(_RETRY_DELAY)
+                                continue  # retry
+                            # second attempt also 429 — give up on this batch
+                            logger.warning("aianalyze batch %d: 429 on retry, skipping", i)
+                            skipped += len(batch)
+                            break
+                        if resp.status != 200:
+                            body = await resp.text()
+                            logger.warning(
+                                "aianalyze batch %d: Gemini HTTP %s: %s",
+                                i, resp.status, body[:300],
+                            )
+                            skipped += len(batch)
+                            break
+                        data = await resp.json()
+                        raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        raw = _re.sub(r"^```[^\n]*\n?", "", raw).rstrip("`").strip()
+                        patterns = _json.loads(raw)
+
+                        for p in patterns:
+                            eq = p.get("equipment") or None
+                            pt = (p.get("problem_type") or "").strip()
+                            st = (p.get("steps") or "").strip()
+                            if not pt or not st:
+                                continue
+                            if await pattern_exists_similar(eq, pt):
+                                skipped += 1
+                                continue
+                            await save_solution_pattern(
+                                problem_type=pt, steps=st, source="analyze", equipment=eq
+                            )
+                            created += 1
+                        break  # success — exit retry loop
+                except Exception as exc:
+                    logger.warning("aianalyze batch %d failed: %s", i, exc)
+                    skipped += len(batch)
+                    break
+
+            # Rate-limit pause between every batch
+            await _asyncio.sleep(_RATE_DELAY)
 
             # Update progress every 50 items
             processed = min(i + batch_size, len(items))
