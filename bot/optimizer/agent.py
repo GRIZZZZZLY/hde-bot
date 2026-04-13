@@ -8,7 +8,7 @@ from aiogram import Bot
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from .. import db
-from ..ai_summary import _FORMAT_INSTRUCTIONS, invalidate_prompt_cache
+from ..ai_summary import get_active_format_instructions, invalidate_prompt_cache
 from ..config import config
 from .evaluator import combined_score
 from .llm_router import LLMRouter
@@ -32,7 +32,7 @@ async def run_optimizer(bot: Bot) -> None:
         )
         return
 
-    current_instructions = await db.get_active_prompt() or _FORMAT_INSTRUCTIONS
+    current_instructions = await get_active_format_instructions()
 
     try:
         baseline = await combined_score(samples, current_instructions)
