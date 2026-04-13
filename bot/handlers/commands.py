@@ -588,17 +588,22 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                     skipped += 1
                     continue
 
-                # Fetch full conversation
+                # Fetch full conversation (posts + internal comments)
                 try:
                     info = await client.get_ticket_info(ticket_id)
                     posts = await client.get_ticket_posts(ticket_id)
+                    try:
+                        comments = await client.get_ticket_comments(ticket_id)
+                    except Exception:
+                        comments = []
+                    all_posts = sorted(posts + comments, key=lambda p: p.date_created)
                 except Exception as exc:
                     logger.warning("Failed to fetch ticket %s: %s", ticket_id, exc)
                     errors += 1
                     await asyncio.sleep(0.5)
                     continue
 
-                history = _build_history_text(posts, info)
+                history = _build_history_text(all_posts, info)
                 if not history.strip():
                     skipped += 1
                     continue

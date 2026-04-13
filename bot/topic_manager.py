@@ -271,6 +271,10 @@ async def _post_ticket_history(
         client = HDEApiClient()
         info = await client.get_ticket_info(ticket_id)
         posts = await client.get_ticket_posts(ticket_id)
+        try:
+            comments = await client.get_ticket_comments(ticket_id)
+        except HDEApiError:
+            comments = []
     except HDEApiError as exc:
         logger.warning("Could not fetch history for ticket %s: %s", ticket_id, exc)
         return
@@ -278,7 +282,10 @@ async def _post_ticket_history(
         logger.error("Unexpected error fetching history for ticket %s: %s", ticket_id, exc)
         return
 
-    if not posts:
+    # Merge posts and comments, sort by date_created ascending
+    all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+
+    if not all_posts:
         logger.info("No posts for ticket %s, skipping history+summary", ticket_id)
         return
 
@@ -287,7 +294,7 @@ async def _post_ticket_history(
     from .handlers.ai_feedback import suit_feedback_kb, answer_feedback_kb, memo_feedback_kb, register_feedback_pending
     gen_task = asyncio.create_task(
         generate_ticket_summary(
-            posts, info,
+            all_posts, info,
             ticket_title=ticket_title,
             ticket_id=ticket_id,
             company_id=company_id,
@@ -295,7 +302,7 @@ async def _post_ticket_history(
     )
 
     # Post history while generation runs in background
-    messages = format_ticket_history(posts, info)
+    messages = format_ticket_history(all_posts, info)
     for text in messages:
         try:
             await bot.send_message(
@@ -332,6 +339,7 @@ async def _post_ticket_history(
             text=suit_text,
             parse_mode="HTML",
             disable_web_page_preview=True,
+            disable_notification=True,
             reply_markup=suit_feedback_kb(),
         )
         # Message 2 — Ответ клиенту
@@ -345,6 +353,7 @@ async def _post_ticket_history(
                 ),
                 parse_mode="HTML",
                 disable_web_page_preview=True,
+                disable_notification=True,
                 reply_markup=answer_feedback_kb(),
             )
         # Message 3 — Памятка для специалиста
@@ -358,9 +367,10 @@ async def _post_ticket_history(
                 ),
                 parse_mode="HTML",
                 disable_web_page_preview=True,
+                disable_notification=True,
                 reply_markup=memo_feedback_kb(),
             )
-        plain_history = _build_history_text(posts, info)
+        plain_history = _build_history_text(all_posts, info)
         await register_feedback_pending(
             topic_id=topic_id,
             ticket_id=ticket_id,
@@ -671,6 +681,7 @@ async def handle_client_reply(bot: Bot, payload: dict) -> None:
                 message=_payload_value(payload, "message"),
                 sla_remaining=payload.get("sla_remaining_minutes"),
                 link=record.hde_link or _payload_value(payload, "link"),
+                date_str=_payload_value(payload, "last_post_date"),
             ),
         )
     except TelegramAPIError as exc:

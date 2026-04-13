@@ -85,13 +85,14 @@ def format_client_reply(
     message: str,
     sla_remaining: Optional[str],
     link: str,
+    date_str: str = "",
 ) -> str:
     actor = _escape(user_name) if user_name else "Клиент"
     body = _escape(message) if message else "Без текста"
+    date = f" · {_parse_hde_post_date(date_str)}" if date_str else ""
     return (
-        f"📩 <b>Ответ клиента</b> · {actor}\n"
-        "──────────────\n"
-        f"{body}\n\n"
+        f"👤 <b>{actor}</b>{date}\n"
+        f"<blockquote>{body}</blockquote>\n"
         f'🔗 <a href="{_escape(link)}">Открыть в HDE</a>'
     )
 
@@ -279,12 +280,19 @@ def _strip_html(text: str) -> str:
 
 
 def _parse_hde_post_date(date_str: str) -> str:
-    """Convert 'HH:MM:SS DD.MM.YYYY' → 'DD.MM HH:MM'."""
-    try:
-        dt = _dt.strptime(date_str.strip(), "%H:%M:%S %d.%m.%Y")
-        return dt.strftime("%d.%m %H:%M")
-    except ValueError:
-        return date_str[:16]
+    """Convert HDE date formats → 'DD.MM HH:MM'.
+
+    Handles:
+    - "HH:MM:SS DD.MM.YYYY"  (posts/comments API)
+    - "DD.MM.YYYY HH:MM"     (webhook last_post_date)
+    """
+    s = date_str.strip()
+    for fmt in ("%H:%M:%S %d.%m.%Y", "%d.%m.%Y %H:%M"):
+        try:
+            return _dt.strptime(s, fmt).strftime("%d.%m %H:%M")
+        except ValueError:
+            continue
+    return s[:16]
 
 
 def format_ticket_history(
@@ -309,9 +317,14 @@ def format_ticket_history(
         result.append(f"<i>· · · {skipped} более ранних сообщений · · ·</i>")
 
     for post in shown:
-        is_client = post.user_id == info.client_id
-        icon = "👤" if is_client else "🧑‍💼"
-        name = escape(info.client_name if is_client else info.owner_name)
+        if post.is_comment:
+            icon = "🔒"
+            name = escape(post.user_name or "Сотрудник")
+        else:
+            is_client = post.user_id == info.client_id
+            icon = "👤" if is_client else "🧑‍💼"
+            fallback = info.client_name if is_client else info.owner_name
+            name = escape(post.user_name or fallback)
         date = _parse_hde_post_date(post.date_created)
         body = _strip_html(post.text)
         if not body:

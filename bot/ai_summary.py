@@ -179,14 +179,22 @@ def _build_system_prompt(
 
 
 def _build_history_text(posts: "list[HDEPost]", info: "HDETicketInfo") -> str:
-    """Convert posts to plain text for the prompt."""
+    """Convert posts to plain text for the prompt.
+
+    Internal comments (is_comment=True) are included as "Коллега" so the AI
+    has full context from first-line support notes.
+    """
     import re
     from html import unescape
 
     lines: list[str] = []
     for post in posts:
-        is_client = post.user_id == info.client_id
-        role = "Клиент" if is_client else "Сотрудник"
+        if post.is_comment:
+            role = "Коллега"
+        elif post.user_id == info.client_id:
+            role = "Клиент"
+        else:
+            role = "Сотрудник"
         text = re.sub(r"<[^>]+>", "", post.text)
         text = unescape(text).strip()
         if text:

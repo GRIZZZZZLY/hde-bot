@@ -29,6 +29,7 @@ class HDEPost:
     text: str            # raw HTML from HDE
     date_created: str    # "HH:MM:SS DD.MM.YYYY"
     is_comment: bool = False  # True = internal comment, False = public post
+    user_name: str = ""  # display name of the post author (if available from API)
     files: list = None   # [{"name": ..., "url": ..., "data_type": ...}]
 
     def __post_init__(self) -> None:
@@ -153,6 +154,7 @@ class HDEApiClient:
                 user_id=int(item.get("user_id", 0)),
                 text=item.get("text", ""),
                 date_created=item.get("date_created", ""),
+                user_name=f"{item.get('user_name', '')} {item.get('user_lastname', '')}".strip(),
                 files=item.get("files") or [],
             )
             for item in items
@@ -160,6 +162,32 @@ class HDEApiClient:
         ]
         posts.reverse()  # oldest first for display
         return posts
+
+    async def get_ticket_comments(self, ticket_id: str, limit: int = 20) -> list[HDEPost]:
+        """Return up to *limit* internal comments (oldest-first)."""
+        url = f"{self.base_url}/tickets/{ticket_id}/comments/"
+        params = {"limit": str(limit)}
+        async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with session.get(url, params=params) as response:
+                data = await self._read_response(response)
+                if response.status >= 400:
+                    raise HDEApiError(self._extract_error_message(data) or f"HDE API error {response.status}")
+        items = data.get("data", []) if isinstance(data, dict) else []
+        comments = [
+            HDEPost(
+                post_id=int(item.get("id", 0)),
+                user_id=int(item.get("user_id", 0)),
+                text=item.get("text", ""),
+                date_created=item.get("date_created", ""),
+                is_comment=True,
+                user_name=f"{item.get('user_name', '')} {item.get('user_lastname', '')}".strip(),
+                files=item.get("files") or [],
+            )
+            for item in items
+            if isinstance(item, dict)
+        ]
+        comments.reverse()  # oldest first for display
+        return comments
 
     async def get_my_open_tickets(self) -> list[HDETicket]:
         """Return all open/in-progress tickets assigned to me, paginated."""
