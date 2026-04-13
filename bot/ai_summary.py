@@ -396,90 +396,90 @@ async def generate_ticket_summary(
         format_instructions=format_instructions,
     )
 
-    try:
-        async with aiohttp.ClientSession() as session:
-            # Transcribe audio attachments via Deepgram (non-fatal)
-            try:
-                transcripts = await _transcribe_audio_posts(posts, session)
-                for t in transcripts:
-                    history += f"\n[Голосовое сообщение клиента: {t}]"
-            except Exception as exc:
-                logger.warning("Audio transcription collection failed: %s", exc)
+    # Groq first — much faster than Gemini (text-only)
+    raw_text: str | None = await _call_groq_for_summary(system_text, history, ticket_id)
 
-            # Collect images from post attachments (non-fatal)
-            image_parts: list[dict] = []
-            try:
-                image_parts = await _collect_image_parts(posts, session)
-                if image_parts:
-                    logger.info(
-                        "Including %d image(s) in Gemini request for ticket %s",
-                        len(image_parts), ticket_id,
-                    )
-            except Exception as exc:
-                logger.warning("Image collection failed: %s", exc)
-
-            content_parts: list[dict] = [{"text": f"Переписка:\n{history}"}] + image_parts
-
-            payload = {
-                "system_instruction": {"parts": [{"text": system_text}]},
-                "contents": [{"parts": content_parts}],
-                "generationConfig": {
-                    "temperature": 0.3,
-                    "maxOutputTokens": 2000,
-                },
-            }
-
-            gemini_data = None
-            for attempt in range(3):
-                try:
-                    async with session.post(
-                        _GEMINI_URL,
-                        json=payload,
-                        params={"key": config.gemini_api_key},
-                        timeout=aiohttp.ClientTimeout(total=30),
-                    ) as resp:
-                        status = resp.status
-                        if status in (429, 503):
-                            await resp.read()  # drain connection
-                        elif status != 200:
-                            body = await resp.text()
-                            logger.warning("Gemini API error %s for ticket %s: %s", status, ticket_id, body[:200])
-                            break  # non-retryable → try Groq
-                        else:
-                            gemini_data = await resp.json()
-
-                    if status in (429, 503):
-                        if attempt < 2:
-                            wait = 65 if status == 429 else 15
-                            logger.warning(
-                                "Gemini %s for ticket %s, retry in %ss (attempt %d/3)",
-                                status, ticket_id, wait, attempt + 1,
-                            )
-                            await asyncio.sleep(wait)
-                            continue
-                        logger.warning("Gemini %s after 3 attempts for ticket %s, trying Groq", status, ticket_id)
-                        break  # → Groq fallback
-                    break  # success
-                except Exception as exc:
-                    if attempt < 2:
-                        logger.warning("Gemini request error attempt %d for ticket %s: %s", attempt + 1, ticket_id, exc)
-                        await asyncio.sleep(5)
-                        continue
-                    logger.warning("Gemini request failed after 3 attempts for ticket %s: %s", ticket_id, exc)
-                    break  # → Groq fallback
-    except Exception as exc:
-        logger.warning("Gemini session failed for ticket %s: %s", ticket_id, exc)
-
-    raw_text: str | None = None
-    if gemini_data is not None:
-        try:
-            raw_text = gemini_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except (KeyError, IndexError, TypeError) as exc:
-            logger.warning("Unexpected Gemini response structure for ticket %s: %s", ticket_id, exc)
-
-    # Groq fallback if Gemini produced no text
+    # Gemini fallback if Groq unavailable or failed (also supports images/audio)
     if raw_text is None:
-        raw_text = await _call_groq_for_summary(system_text, history, ticket_id)
+        gemini_data = None
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Transcribe audio attachments via Deepgram (non-fatal)
+                try:
+                    transcripts = await _transcribe_audio_posts(posts, session)
+                    for t in transcripts:
+                        history += f"\n[Голосовое сообщение клиента: {t}]"
+                except Exception as exc:
+                    logger.warning("Audio transcription collection failed: %s", exc)
+
+                # Collect images from post attachments (non-fatal)
+                image_parts: list[dict] = []
+                try:
+                    image_parts = await _collect_image_parts(posts, session)
+                    if image_parts:
+                        logger.info(
+                            "Including %d image(s) in Gemini request for ticket %s",
+                            len(image_parts), ticket_id,
+                        )
+                except Exception as exc:
+                    logger.warning("Image collection failed: %s", exc)
+
+                content_parts: list[dict] = [{"text": f"Переписка:\n{history}"}] + image_parts
+
+                payload = {
+                    "system_instruction": {"parts": [{"text": system_text}]},
+                    "contents": [{"parts": content_parts}],
+                    "generationConfig": {
+                        "temperature": 0.3,
+                        "maxOutputTokens": 2000,
+                    },
+                }
+
+                for attempt in range(3):
+                    try:
+                        async with session.post(
+                            _GEMINI_URL,
+                            json=payload,
+                            params={"key": config.gemini_api_key},
+                            timeout=aiohttp.ClientTimeout(total=30),
+                        ) as resp:
+                            status = resp.status
+                            if status in (429, 503):
+                                await resp.read()  # drain connection
+                            elif status != 200:
+                                body = await resp.text()
+                                logger.warning("Gemini API error %s for ticket %s: %s", status, ticket_id, body[:200])
+                                break  # non-retryable
+                            else:
+                                gemini_data = await resp.json()
+
+                        if status in (429, 503):
+                            if attempt < 2:
+                                wait = 65 if status == 429 else 15
+                                logger.warning(
+                                    "Gemini %s for ticket %s, retry in %ss (attempt %d/3)",
+                                    status, ticket_id, wait, attempt + 1,
+                                )
+                                await asyncio.sleep(wait)
+                                continue
+                            logger.warning("Gemini %s after 3 attempts for ticket %s", status, ticket_id)
+                            break
+                        break  # success
+                    except Exception as exc:
+                        if attempt < 2:
+                            logger.warning("Gemini request error attempt %d for ticket %s: %s", attempt + 1, ticket_id, exc)
+                            await asyncio.sleep(5)
+                            continue
+                        logger.warning("Gemini request failed after 3 attempts for ticket %s: %s", ticket_id, exc)
+                        break
+        except Exception as exc:
+            logger.warning("Gemini session failed for ticket %s: %s", ticket_id, exc)
+
+        if gemini_data is not None:
+            try:
+                raw_text = gemini_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            except (KeyError, IndexError, TypeError) as exc:
+                logger.warning("Unexpected Gemini response structure for ticket %s: %s", ticket_id, exc)
 
     if not raw_text:
         return None
