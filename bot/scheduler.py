@@ -21,6 +21,7 @@ _last_digest_date: Optional[str] = None   # "YYYY-MM-DD" UTC date
 _last_report_date: Optional[str] = None   # "YYYY-MM-DD" UTC date — set when report runs
 _report_button_sent: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when button is sent
 _last_knowledge_expiry_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when weekly expiry runs
+_last_optimization_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when nightly optimizer runs
 _ALLOWED_UPDATES = ["message", "callback_query"]
 
 KNOWLEDGE_EXPIRY_DAYS = 180
@@ -148,6 +149,18 @@ async def process_scheduled_actions(bot: Bot) -> None:
                     logger.info("Weekly expiry: marked %d stale knowledge items as expired", marked)
             except Exception as exc:
                 logger.warning("Weekly knowledge expiry failed: %s", exc)
+
+    # Nightly prompt optimization — daily at 23:00 UTC (02:00 MSK)
+    if now.hour == 23 and now.minute < 1:
+        global _last_optimization_date
+        if _last_optimization_date != today:
+            _last_optimization_date = today
+            try:
+                from .optimizer.agent import run_optimizer
+                asyncio.create_task(run_optimizer(bot))
+                logger.info("Scheduled prompt optimizer for tonight")
+            except Exception as exc:
+                logger.warning("Failed to schedule optimizer: %s", exc)
 
     # Pre-SLA and pending deletions require both work day AND work hours
     if not is_work_time():
