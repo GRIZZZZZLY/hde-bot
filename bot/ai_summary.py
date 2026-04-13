@@ -18,11 +18,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_GEMINI_MODEL = "gemini-2.5-flash"
+_GEMINI_MODEL = "gemini-3.0-flash"
 _GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{_GEMINI_MODEL}:generateContent"
 )
+
+_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+_GROQ_MODEL = "llama-3.3-70b-versatile"
 
 _AUDIO_TYPES = {"mp3", "ogg", "wav", "m4a", "opus", "aac", "flac", "oga"}
 _DEEPGRAM_URL = "https://api.deepgram.com/v1/listen"
@@ -48,6 +51,40 @@ _EQUIPMENT_PATTERNS = [
     (r'\bтинькофф\b|tinkoff|тиньков', 'Эквайринг Тинькофф'),
     (r'\bптк\b|ptkf', 'ПТК'),
 ]
+
+
+async def _call_groq_for_summary(system_text: str, history: str, ticket_id: str) -> str | None:
+    """Fallback: generate summary via Groq when Gemini is unavailable."""
+    if not config.groq_api_key:
+        logger.info("Groq fallback skipped: GROQ_API_KEY not set")
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                _GROQ_URL,
+                json={
+                    "model": _GROQ_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system_text},
+                        {"role": "user", "content": f"Переписка:\n{history}"},
+                    ],
+                    "max_tokens": 2000,
+                    "temperature": 0.3,
+                },
+                headers={"Authorization": f"Bearer {config.groq_api_key}"},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.warning("Groq API error %s for ticket %s: %s", resp.status, ticket_id, body[:200])
+                    return None
+                data = await resp.json()
+        text = data["choices"][0]["message"]["content"].strip()
+        logger.info("Groq fallback succeeded for ticket %s", ticket_id)
+        return text
+    except Exception as exc:
+        logger.warning("Groq request failed for ticket %s: %s", ticket_id, exc)
+        return None
 
 
 def _detect_equipment(title: str, history: str) -> str | None:
@@ -388,11 +425,11 @@ async def generate_ticket_summary(
                 "contents": [{"parts": content_parts}],
                 "generationConfig": {
                     "temperature": 0.3,
-                    "maxOutputTokens": 1000,
+                    "maxOutputTokens": 2000,
                 },
             }
 
-            data = None
+            gemini_data = None
             for attempt in range(3):
                 try:
                     async with session.post(
@@ -407,9 +444,9 @@ async def generate_ticket_summary(
                         elif status != 200:
                             body = await resp.text()
                             logger.warning("Gemini API error %s for ticket %s: %s", status, ticket_id, body[:200])
-                            return None
+                            break  # non-retryable → try Groq
                         else:
-                            data = await resp.json()
+                            gemini_data = await resp.json()
 
                     if status in (429, 503):
                         if attempt < 2:
@@ -420,8 +457,8 @@ async def generate_ticket_summary(
                             )
                             await asyncio.sleep(wait)
                             continue
-                        logger.warning("Gemini %s after 3 attempts for ticket %s, giving up", status, ticket_id)
-                        return None
+                        logger.warning("Gemini %s after 3 attempts for ticket %s, trying Groq", status, ticket_id)
+                        break  # → Groq fallback
                     break  # success
                 except Exception as exc:
                     if attempt < 2:
@@ -429,22 +466,24 @@ async def generate_ticket_summary(
                         await asyncio.sleep(5)
                         continue
                     logger.warning("Gemini request failed after 3 attempts for ticket %s: %s", ticket_id, exc)
-                    return None
-            else:
-                # All retries exhausted via continue
-                return None
+                    break  # → Groq fallback
     except Exception as exc:
-        logger.warning("Gemini request failed: %s", exc)
-        return None
+        logger.warning("Gemini session failed for ticket %s: %s", ticket_id, exc)
 
-    try:
-        text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except (KeyError, IndexError, TypeError) as exc:
-        logger.warning("Unexpected Gemini response structure: %s", exc)
-        return None
+    raw_text: str | None = None
+    if gemini_data is not None:
+        try:
+            raw_text = gemini_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except (KeyError, IndexError, TypeError) as exc:
+            logger.warning("Unexpected Gemini response structure for ticket %s: %s", ticket_id, exc)
 
-    if not text:
+    # Groq fallback if Gemini produced no text
+    if raw_text is None:
+        raw_text = await _call_groq_for_summary(system_text, history, ticket_id)
+
+    if not raw_text:
         return None
+    text = raw_text
 
     # Log raw output for future curation
     if ticket_id:
