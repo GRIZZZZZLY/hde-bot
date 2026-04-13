@@ -840,8 +840,8 @@ async def cmd_aianalyze(message: Message) -> None:
     )
 
     import asyncio as _asyncio
-    _RATE_DELAY = 4.0   # seconds between requests — stays under Gemini free-tier 15 RPM
-    _RETRY_DELAY = 65.0  # seconds to wait after a 429 before retrying the same batch
+    _RATE_DELAY = 8.0    # seconds between requests — Gemini 2.0 Flash free-tier ~8 RPM
+    _RETRY_DELAY = 120.0  # seconds to wait after a 429 before retrying the same batch
 
     async with aiohttp.ClientSession() as session:
         for i in range(0, len(items), batch_size):
@@ -861,7 +861,7 @@ async def cmd_aianalyze(message: Message) -> None:
                     async with session.post(
                         (
                             "https://generativelanguage.googleapis.com/v1beta/models/"
-                            "gemini-2.5-flash:generateContent"
+                            "gemini-2.0-flash:generateContent"
                         ),
                         json=payload,
                         params={"key": _config.gemini_api_key},

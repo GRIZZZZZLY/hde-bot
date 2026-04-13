@@ -1,6 +1,7 @@
 """Generate ticket summary via Google Gemini API."""
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -391,17 +392,47 @@ async def generate_ticket_summary(
                 },
             }
 
-            async with session.post(
-                _GEMINI_URL,
-                json=payload,
-                params={"key": config.gemini_api_key},
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    logger.warning("Gemini API error %s: %s", resp.status, body[:200])
+            data = None
+            for attempt in range(3):
+                try:
+                    async with session.post(
+                        _GEMINI_URL,
+                        json=payload,
+                        params={"key": config.gemini_api_key},
+                        timeout=aiohttp.ClientTimeout(total=30),
+                    ) as resp:
+                        status = resp.status
+                        if status in (429, 503):
+                            await resp.read()  # drain connection
+                        elif status != 200:
+                            body = await resp.text()
+                            logger.warning("Gemini API error %s for ticket %s: %s", status, ticket_id, body[:200])
+                            return None
+                        else:
+                            data = await resp.json()
+
+                    if status in (429, 503):
+                        if attempt < 2:
+                            wait = 65 if status == 429 else 15
+                            logger.warning(
+                                "Gemini %s for ticket %s, retry in %ss (attempt %d/3)",
+                                status, ticket_id, wait, attempt + 1,
+                            )
+                            await asyncio.sleep(wait)
+                            continue
+                        logger.warning("Gemini %s after 3 attempts for ticket %s, giving up", status, ticket_id)
+                        return None
+                    break  # success
+                except Exception as exc:
+                    if attempt < 2:
+                        logger.warning("Gemini request error attempt %d for ticket %s: %s", attempt + 1, ticket_id, exc)
+                        await asyncio.sleep(5)
+                        continue
+                    logger.warning("Gemini request failed after 3 attempts for ticket %s: %s", ticket_id, exc)
                     return None
-                data = await resp.json()
+            else:
+                # All retries exhausted via continue
+                return None
     except Exception as exc:
         logger.warning("Gemini request failed: %s", exc)
         return None
