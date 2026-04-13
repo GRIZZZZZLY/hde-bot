@@ -861,6 +861,11 @@ async def cmd_aianalyze(message: Message) -> None:
                     timeout=aiohttp.ClientTimeout(total=60),
                 ) as resp:
                     if resp.status != 200:
+                        body = await resp.text()
+                        logger.warning(
+                            "aianalyze batch %d: Gemini HTTP %s: %s",
+                            i, resp.status, body[:300],
+                        )
                         skipped += len(batch)
                         continue
                     data = await resp.json()
