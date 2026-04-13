@@ -89,7 +89,7 @@ class LLMRouter:
         }
 
     async def complete_all(self, system: str, user: str) -> dict[str, str]:
-        """Call all clients in parallel. Skip clients that raise errors."""
+        """Try Groq clients first (in parallel); fall back to Gemini only if all Groq fail."""
 
         async def _safe_complete(name: str, client: LLMClient) -> tuple[str, str | None]:
             try:
@@ -99,6 +99,18 @@ class LLMRouter:
                 logger.warning("LLM client %s failed: %s", name, exc)
                 return name, None
 
-        tasks = [_safe_complete(name, client) for name, client in self.clients.items()]
-        results = await asyncio.gather(*tasks)
-        return {name: text for name, text in results if text is not None}
+        groq_clients = {k: v for k, v in self.clients.items() if k != "gemini"}
+        gemini_client = self.clients.get("gemini")
+
+        # Try Groq models first (in parallel)
+        groq_tasks = [_safe_complete(name, client) for name, client in groq_clients.items()]
+        groq_results = await asyncio.gather(*groq_tasks)
+        results = {name: text for name, text in groq_results if text is not None}
+
+        # Fall back to Gemini only if every Groq call failed
+        if not results and gemini_client is not None:
+            name, text = await _safe_complete("gemini", gemini_client)
+            if text is not None:
+                results["gemini"] = text
+
+        return results

@@ -842,6 +842,43 @@ async def cmd_aianalyze(message: Message) -> None:
     import asyncio as _asyncio
     _RATE_DELAY = 8.0    # seconds between requests — Gemini 2.0 Flash free-tier ~8 RPM
     _RETRY_DELAY = 120.0  # seconds to wait after a 429 before retrying the same batch
+    _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+    _GROQ_MODEL = "llama-3.3-70b-versatile"
+
+    async def _try_groq_batch(session, prompt_text: str) -> list | None:
+        """Try to analyze a batch with Groq. Returns parsed list or None on failure."""
+        if not _config.groq_api_key:
+            return None
+        try:
+            async with session.post(
+                _GROQ_URL,
+                json={
+                    "model": _GROQ_MODEL,
+                    "messages": [{"role": "user", "content": prompt_text}],
+                    "temperature": 0.1,
+                    "max_tokens": 2000,
+                },
+                headers={"Authorization": f"Bearer {_config.groq_api_key}"},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.warning("aianalyze Groq HTTP %s: %s", resp.status, body[:200])
+                    return None
+                data = await resp.json()
+                raw = data["choices"][0]["message"]["content"].strip()
+                raw = _re.sub(r"^```[^\n]*\n?", "", raw).rstrip("`").strip()
+                result = _json.loads(raw)
+                if isinstance(result, list):
+                    return result
+                if isinstance(result, dict):
+                    for v in result.values():
+                        if isinstance(v, list):
+                            return v
+                return None
+        except Exception as exc:
+            logger.warning("aianalyze Groq batch failed: %s", exc)
+            return None
 
     async with aiohttp.ClientSession() as session:
         for i in range(0, len(items), batch_size):
@@ -850,75 +887,82 @@ async def cmd_aianalyze(message: Message) -> None:
             for idx, (title, content) in enumerate(batch, 1):
                 batch_text += f"\n[{idx}] {title}\n{content[:400]}\n"
 
-            payload = {
-                "contents": [{"parts": [{"text": _ANALYZE_PROMPT + batch_text}]}],
-                "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2000},
-            }
+            full_prompt = _ANALYZE_PROMPT + batch_text
 
-            # One retry after a 429 (wait 65 s then try again)
-            for attempt in range(2):
-                try:
-                    async with session.post(
-                        (
-                            "https://generativelanguage.googleapis.com/v1beta/models/"
-                            "gemini-2.0-flash:generateContent"
-                        ),
-                        json=payload,
-                        params={"key": _config.gemini_api_key},
-                        timeout=aiohttp.ClientTimeout(total=60),
-                    ) as resp:
-                        if resp.status == 429:
-                            body = await resp.text()
-                            if attempt == 0:
-                                logger.warning(
-                                    "aianalyze batch %d: 429 rate limit, waiting %ss",
-                                    i, int(_RETRY_DELAY),
-                                )
-                                try:
-                                    await status_msg.edit_text(
-                                        f"⏳ Обработано {i}/{len(items)} — ожидаю сброса лимита Gemini (~1 мин)..."
+            # --- Groq first ---
+            patterns = await _try_groq_batch(session, full_prompt)
+
+            # --- Gemini fallback ---
+            if patterns is None:
+                payload = {
+                    "contents": [{"parts": [{"text": full_prompt}]}],
+                    "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2000},
+                }
+                for attempt in range(2):
+                    try:
+                        async with session.post(
+                            (
+                                "https://generativelanguage.googleapis.com/v1beta/models/"
+                                "gemini-2.0-flash:generateContent"
+                            ),
+                            json=payload,
+                            params={"key": _config.gemini_api_key},
+                            timeout=aiohttp.ClientTimeout(total=60),
+                        ) as resp:
+                            if resp.status == 429:
+                                if attempt == 0:
+                                    logger.warning(
+                                        "aianalyze batch %d: 429 rate limit, waiting %ss",
+                                        i, int(_RETRY_DELAY),
                                     )
-                                except Exception:
-                                    pass
-                                await _asyncio.sleep(_RETRY_DELAY)
-                                continue  # retry
-                            # second attempt also 429 — give up on this batch
-                            logger.warning("aianalyze batch %d: 429 on retry, skipping", i)
-                            skipped += len(batch)
+                                    try:
+                                        await status_msg.edit_text(
+                                            f"⏳ Обработано {i}/{len(items)} — ожидаю сброса лимита Gemini (~1 мин)..."
+                                        )
+                                    except Exception:
+                                        pass
+                                    await _asyncio.sleep(_RETRY_DELAY)
+                                    continue
+                                logger.warning("aianalyze batch %d: 429 on retry, skipping", i)
+                                skipped += len(batch)
+                                break
+                            if resp.status != 200:
+                                body = await resp.text()
+                                logger.warning(
+                                    "aianalyze batch %d: Gemini HTTP %s: %s",
+                                    i, resp.status, body[:300],
+                                )
+                                skipped += len(batch)
+                                break
+                            data = await resp.json()
+                            raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                            raw = _re.sub(r"^```[^\n]*\n?", "", raw).rstrip("`").strip()
+                            patterns = _json.loads(raw)
                             break
-                        if resp.status != 200:
-                            body = await resp.text()
-                            logger.warning(
-                                "aianalyze batch %d: Gemini HTTP %s: %s",
-                                i, resp.status, body[:300],
-                            )
-                            skipped += len(batch)
-                            break
-                        data = await resp.json()
-                        raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                        raw = _re.sub(r"^```[^\n]*\n?", "", raw).rstrip("`").strip()
-                        patterns = _json.loads(raw)
+                    except Exception as exc:
+                        logger.warning("aianalyze batch %d Gemini failed: %s", i, exc)
+                        skipped += len(batch)
+                        break
 
-                        for p in patterns:
-                            eq = p.get("equipment") or None
-                            pt = (p.get("problem_type") or "").strip()
-                            st = (p.get("steps") or "").strip()
-                            if not pt or not st:
-                                continue
-                            if await pattern_exists_similar(eq, pt):
-                                skipped += 1
-                                continue
-                            await save_solution_pattern(
-                                problem_type=pt, steps=st, source="analyze", equipment=eq
-                            )
-                            created += 1
-                        break  # success — exit retry loop
-                except Exception as exc:
-                    logger.warning("aianalyze batch %d failed: %s", i, exc)
-                    skipped += len(batch)
-                    break
+            if patterns is None:
+                # Both Groq and Gemini failed for this batch
+                skipped += len(batch)
+            else:
+                for p in patterns:
+                    eq = p.get("equipment") or None
+                    pt = (p.get("problem_type") or "").strip()
+                    st = (p.get("steps") or "").strip()
+                    if not pt or not st:
+                        continue
+                    if await pattern_exists_similar(eq, pt):
+                        skipped += 1
+                        continue
+                    await save_solution_pattern(
+                        problem_type=pt, steps=st, source="analyze", equipment=eq
+                    )
+                    created += 1
 
-            # Rate-limit pause between every batch
+            # Rate-limit pause between every batch (Gemini fallback needs it)
             await _asyncio.sleep(_RATE_DELAY)
 
             # Update progress every 50 items
