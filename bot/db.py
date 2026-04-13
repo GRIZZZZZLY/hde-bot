@@ -334,6 +334,30 @@ async def init_db() -> None:
             ON solution_patterns(equipment, problem_type)
             """
         )
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS optimization_samples (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id   TEXT NOT NULL,
+                title       TEXT,
+                history     TEXT NOT NULL,
+                ai_answer   TEXT NOT NULL,
+                op_answer   TEXT,
+                outcome     TEXT NOT NULL,
+                confidence  INTEGER,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS prompt_versions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                content     TEXT NOT NULL,
+                score       REAL,
+                proposed_by TEXT,
+                status      TEXT NOT NULL DEFAULT 'candidate',
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                applied_at  TEXT
+            )
+        """)
         await db.commit()
 
 
@@ -1537,3 +1561,87 @@ async def get_knowledge_metrics() -> dict:
         "top_patterns": top_patterns,
         "dead_items": dead_items,
     }
+
+
+# ---------------------------------------------------------------------------
+# Prompt optimizer — optimization_samples and prompt_versions
+# ---------------------------------------------------------------------------
+
+async def save_optimization_sample(
+    ticket_id: str,
+    title: str,
+    history: str,
+    ai_answer: str,
+    outcome: str,
+    *,
+    op_answer: str | None = None,
+    confidence: int | None = None,
+) -> int:
+    """Save a labelled operator feedback sample for prompt optimization."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO optimization_samples "
+            "(ticket_id, title, history, ai_answer, op_answer, outcome, confidence) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (ticket_id, title or "", history, ai_answer, op_answer, outcome, confidence),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_optimization_samples(days: int = 30) -> list[dict]:
+    """Return optimization samples from the last N days."""
+    from datetime import datetime, timezone, timedelta
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, ticket_id, title, history, ai_answer, op_answer, outcome, confidence "
+            "FROM optimization_samples WHERE created_at >= ? ORDER BY created_at DESC",
+            (cutoff,),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_active_prompt() -> str | None:
+    """Return content of the active prompt version, or None if none applied yet."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT content FROM prompt_versions WHERE status='active' ORDER BY id DESC LIMIT 1"
+        ) as cur:
+            row = await cur.fetchone()
+    return row[0] if row else None
+
+
+async def save_prompt_version(content: str, score: float | None, proposed_by: str) -> int:
+    """Save a candidate prompt version. Returns its id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT INTO prompt_versions (content, score, proposed_by, status) VALUES (?,?,?,?)",
+            (content, score, proposed_by, "candidate"),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def apply_prompt_version(version_id: int) -> None:
+    """Mark version as active, all others as rejected."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE prompt_versions SET status='rejected' WHERE status IN ('active', 'candidate')"
+        )
+        await db.execute(
+            "UPDATE prompt_versions SET status='active', applied_at=datetime('now') WHERE id=?",
+            (version_id,),
+        )
+        await db.commit()
+
+
+async def reject_all_prompt_candidates() -> None:
+    """Mark all candidate prompt versions as rejected."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE prompt_versions SET status='rejected' WHERE status='candidate'"
+        )
+        await db.commit()
