@@ -1591,7 +1591,6 @@ async def save_optimization_sample(
 
 async def get_optimization_samples(days: int = 30) -> list[dict]:
     """Return optimization samples from the last N days."""
-    from datetime import datetime, timezone, timedelta
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -1607,11 +1606,12 @@ async def get_optimization_samples(days: int = 30) -> list[dict]:
 async def get_active_prompt() -> str | None:
     """Return content of the active prompt version, or None if none applied yet."""
     async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT content FROM prompt_versions WHERE status='active' ORDER BY id DESC LIMIT 1"
         ) as cur:
             row = await cur.fetchone()
-    return row[0] if row else None
+    return row["content"] if row else None
 
 
 async def save_prompt_version(content: str, score: float | None, proposed_by: str) -> int:
