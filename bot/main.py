@@ -45,9 +45,10 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
     return dp
 
 
-async def _run_hde_server(stop_event: asyncio.Event) -> None:
+async def _run_hde_server(bot: Bot, stop_event: asyncio.Event) -> None:
     """aiohttp server — only handles HDE webhooks."""
     app = web.Application()
+    app["bot"] = bot
     app.router.add_post(config.webhook_path_hde, hde_webhook_handler)
     app.router.add_get("/health", lambda r: web.Response(text="ok"))
 
@@ -95,7 +96,7 @@ async def _main_async() -> None:
     stop_event = asyncio.Event()
 
     scheduler_task = asyncio.create_task(run_scheduler(bot, stop_event))
-    hde_task = asyncio.create_task(_run_hde_server(stop_event))
+    hde_task = asyncio.create_task(_run_hde_server(bot, stop_event))
 
     try:
         await dp.start_polling(bot, allowed_updates=_ALLOWED_UPDATES, handle_signals=True)
