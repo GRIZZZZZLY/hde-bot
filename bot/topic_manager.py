@@ -262,7 +262,7 @@ async def _post_ticket_history(
 ) -> None:
     """Fetch conversation history from HDE and post it to the topic (oldest→newest).
 
-    After history messages, generates and posts an AI summary (if GEMINI_API_KEY is set).
+    AI generation starts immediately in background; summary is posted after history.
     """
     if not config.has_hde_api_credentials():
         return
@@ -279,9 +279,22 @@ async def _post_ticket_history(
         return
 
     if not posts:
+        logger.info("No posts for ticket %s, skipping history+summary", ticket_id)
         return
 
-    # Post history first
+    # Start AI generation immediately — runs in parallel with history posting
+    from .ai_summary import generate_ticket_summary, _build_history_text
+    from .handlers.ai_feedback import suit_feedback_kb, answer_feedback_kb, register_feedback_pending
+    gen_task = asyncio.create_task(
+        generate_ticket_summary(
+            posts, info,
+            ticket_title=ticket_title,
+            ticket_id=ticket_id,
+            company_id=company_id,
+        )
+    )
+
+    # Post history while generation runs in background
     messages = format_ticket_history(posts, info)
     for text in messages:
         try:
@@ -297,57 +310,53 @@ async def _post_ticket_history(
             logger.warning("Failed to post history message to topic %d: %s", topic_id, exc)
             break
 
-    # Post AI summary LAST
+    # Await generation result (was running during history posting)
     from html import escape as _html_escape
-    from .ai_summary import generate_ticket_summary, _build_history_text
-    from .handlers.ai_feedback import suit_feedback_kb, answer_feedback_kb, register_feedback_pending
-    result = await generate_ticket_summary(
-        posts, info,
-        ticket_title=ticket_title,
-        ticket_id=ticket_id,
-        company_id=company_id,
-    )
-    if result:
-        suit_line, answer_line, confidence_pct = result
-        try:
-            # Message 1 — Суть
-            suit_label = (
-                f"🧠 <b>Суть ({confidence_pct}%):</b>"
-                if confidence_pct >= 40
-                else "🧠 <b>Суть:</b>"
-            )
-            suit_text = f"{suit_label} {_html_escape(suit_line)}"
+    result = await gen_task
+    if result is None:
+        logger.info("AI summary not generated for ticket %s", ticket_id)
+        return
+
+    suit_line, answer_line, confidence_pct = result
+    try:
+        # Message 1 — Суть
+        suit_label = (
+            f"🧠 <b>Суть ({confidence_pct}%):</b>"
+            if confidence_pct >= 40
+            else "🧠 <b>Суть:</b>"
+        )
+        suit_text = f"{suit_label} {_html_escape(suit_line)}"
+        await bot.send_message(
+            chat_id=config.group_chat_id,
+            message_thread_id=topic_id,
+            text=suit_text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+            reply_markup=suit_feedback_kb(),
+        )
+        # Message 2 — Предложенный ответ
+        if answer_line:
             await bot.send_message(
                 chat_id=config.group_chat_id,
                 message_thread_id=topic_id,
-                text=suit_text,
+                text=(
+                    f"💡 <b>Предложенный ответ:</b>\n"
+                    f"<i>«{_html_escape(answer_line)}»</i>"
+                ),
                 parse_mode="HTML",
                 disable_web_page_preview=True,
-                reply_markup=suit_feedback_kb(),
+                reply_markup=answer_feedback_kb(),
             )
-            # Message 2 — Предложенный ответ
-            if answer_line:
-                await bot.send_message(
-                    chat_id=config.group_chat_id,
-                    message_thread_id=topic_id,
-                    text=(
-                        f"💡 <b>Предложенный ответ:</b>\n"
-                        f"<i>«{_html_escape(answer_line)}»</i>"
-                    ),
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                    reply_markup=answer_feedback_kb(),
-                )
-            plain_history = _build_history_text(posts, info)
-            await register_feedback_pending(
-                topic_id=topic_id,
-                ticket_id=ticket_id,
-                history=plain_history,
-                title=ticket_title,
-                answer_text=answer_line,
-            )
-        except TelegramAPIError as exc:
-            logger.warning("Failed to post AI summary to topic %d: %s", topic_id, exc)
+        plain_history = _build_history_text(posts, info)
+        await register_feedback_pending(
+            topic_id=topic_id,
+            ticket_id=ticket_id,
+            history=plain_history,
+            title=ticket_title,
+            answer_text=answer_line,
+        )
+    except TelegramAPIError as exc:
+        logger.warning("Failed to post AI summary to topic %d: %s", topic_id, exc)
 
 
 async def _ensure_active_topic(
