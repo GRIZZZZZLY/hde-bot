@@ -160,3 +160,65 @@ async def test_implicit_feedback_saves_accepted_sample():
     assert len(samples) == 1
     assert samples[0]["outcome"] == "accepted"
     assert samples[0]["ticket_id"] == "T1"
+
+
+# --- mutations ---
+
+def test_build_mutation_prompt_contains_current_instructions():
+    from bot.optimizer.mutations import build_mutation_prompt
+    system, user = build_mutation_prompt(
+        current_instructions="Ответь двумя строками.",
+        good_examples=[{"ai_answer": "Хороший ответ", "op_answer": "Хороший ответ"}],
+        bad_examples=[{"ai_answer": "Плохой ответ", "op_answer": None}],
+    )
+    assert "Ответь двумя строками." in system
+    assert "Хороший ответ" in user
+    assert "Плохой ответ" in user
+
+
+# --- evaluator ---
+
+@pytest.mark.asyncio
+async def test_combined_score_perfect_acceptance():
+    """If all generated answers match op_answer — score near 1."""
+    from bot.optimizer.evaluator import combined_score
+
+    samples = [
+        {"history": "История", "title": "Тест", "ai_answer": "Ответ AI",
+         "op_answer": "Ответ оператора", "outcome": "accepted", "confidence": 80},
+    ]
+
+    async def fake_generate(history, title, fmt):
+        return "Ответ оператора"  # perfect match
+
+    score = await combined_score(samples, "инструкция", _generate_fn=fake_generate)
+    assert score > 0.7
+
+
+@pytest.mark.asyncio
+async def test_combined_score_all_rejected():
+    """All rejected — score = 0."""
+    from bot.optimizer.evaluator import combined_score
+
+    samples = [
+        {"history": "История", "title": "Тест", "ai_answer": "Ответ AI",
+         "op_answer": None, "outcome": "rejected", "confidence": 30},
+    ]
+
+    async def fake_generate(history, title, fmt):
+        return "что-то"
+
+    score = await combined_score(samples, "инструкция", _generate_fn=fake_generate)
+    assert score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_combined_score_empty_samples():
+    """Empty dataset — score = 0."""
+    from bot.optimizer.evaluator import combined_score
+
+    async def fake_generate(history, title, fmt):
+        return "что-то"
+
+    score = await combined_score([], "инструкция", _generate_fn=fake_generate)
+    assert score == 0.0
