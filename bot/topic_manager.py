@@ -284,7 +284,7 @@ async def _post_ticket_history(
 
     # Start AI generation immediately — runs in parallel with history posting
     from .ai_summary import generate_ticket_summary, _build_history_text
-    from .handlers.ai_feedback import suit_feedback_kb, answer_feedback_kb, register_feedback_pending
+    from .handlers.ai_feedback import suit_feedback_kb, answer_feedback_kb, memo_feedback_kb, register_feedback_pending
     gen_task = asyncio.create_task(
         generate_ticket_summary(
             posts, info,
@@ -317,7 +317,7 @@ async def _post_ticket_history(
         logger.info("AI summary not generated for ticket %s", ticket_id)
         return
 
-    suit_line, answer_line, confidence_pct = result
+    suit_line, client_line, memo_line, confidence_pct = result
     try:
         # Message 1 — Суть
         suit_label = (
@@ -334,18 +334,31 @@ async def _post_ticket_history(
             disable_web_page_preview=True,
             reply_markup=suit_feedback_kb(),
         )
-        # Message 2 — Предложенный ответ
-        if answer_line:
+        # Message 2 — Ответ клиенту
+        if client_line:
             await bot.send_message(
                 chat_id=config.group_chat_id,
                 message_thread_id=topic_id,
                 text=(
-                    f"💡 <b>Предложенный ответ:</b>\n"
-                    f"<i>«{_html_escape(answer_line)}»</i>"
+                    f"💬 <b>Ответ клиенту:</b>\n"
+                    f"<i>«{_html_escape(client_line)}»</i>"
                 ),
                 parse_mode="HTML",
                 disable_web_page_preview=True,
                 reply_markup=answer_feedback_kb(),
+            )
+        # Message 3 — Памятка для специалиста
+        if memo_line:
+            await bot.send_message(
+                chat_id=config.group_chat_id,
+                message_thread_id=topic_id,
+                text=(
+                    f"📋 <b>Памятка:</b>\n"
+                    f"{_html_escape(memo_line)}"
+                ),
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=memo_feedback_kb(),
             )
         plain_history = _build_history_text(posts, info)
         await register_feedback_pending(
@@ -353,7 +366,7 @@ async def _post_ticket_history(
             ticket_id=ticket_id,
             history=plain_history,
             title=ticket_title,
-            answer_text=answer_line,
+            answer_text=client_line,
         )
     except TelegramAPIError as exc:
         logger.warning("Failed to post AI summary to topic %d: %s", topic_id, exc)
