@@ -258,6 +258,7 @@ async def _post_ticket_history(
     ticket_id: str,
     topic_id: int,
     ticket_title: str = "",
+    company_id: str = "",
 ) -> None:
     """Fetch conversation history from HDE and post it to the topic (oldest→newest).
 
@@ -304,7 +305,7 @@ async def _post_ticket_history(
         posts, info,
         ticket_title=ticket_title,
         ticket_id=ticket_id,
-        company_id=_payload_value(payload, "company_id"),
+        company_id=company_id,
     )
     if result:
         suit_line, answer_line, confidence_pct = result
@@ -383,6 +384,7 @@ async def _ensure_active_topic(
         await _post_ticket_history(
             bot, ticket_id, topic_id,
             ticket_title=_payload_value(payload, "ticket_name"),
+            company_id=_payload_value(payload, "company_id"),
         )
         should_announce_assignment = False  # already sent above
     elif record.is_pending_delete:

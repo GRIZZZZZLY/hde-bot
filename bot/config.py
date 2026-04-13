@@ -103,6 +103,9 @@ class Config:
             return str(owner_id).strip() == self.hde_owner_id
         if self.hde_owner_name and owner_name:
             return owner_name.strip().lower() == self.hde_owner_name.lower()
+        # No owner filter configured — accept all assignments
+        if not self.hde_owner_id and not self.hde_owner_name:
+            return True
         return False
 
     def has_hde_api_credentials(self) -> bool:
