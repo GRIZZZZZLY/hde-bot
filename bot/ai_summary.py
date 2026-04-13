@@ -419,3 +419,15 @@ async def generate_ticket_summary(
         return None
 
     return (suit_line, answer_line, confidence_pct)
+
+
+def invalidate_prompt_cache() -> None:
+    """Invalidate cached active prompt (call after apply_prompt_version).
+
+    Stub for Task 5 — full implementation added in Task 8.
+    """
+    global _active_prompt_loaded
+    try:
+        _active_prompt_loaded = False
+    except NameError:
+        pass

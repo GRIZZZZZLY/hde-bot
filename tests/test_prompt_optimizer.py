@@ -222,3 +222,25 @@ async def test_combined_score_empty_samples():
 
     score = await combined_score([], "инструкция", _generate_fn=fake_generate)
     assert score == 0.0
+
+
+# --- agent ---
+
+@pytest.mark.asyncio
+async def test_run_optimizer_skips_when_too_few_samples():
+    """< 10 samples → optimizer returns early without sending report."""
+    await _db.init_db()
+    await _db.save_optimization_sample("T1", "Тест", "История", "AI ответ", "accepted")
+    await _db.save_optimization_sample("T2", "Тест2", "История2", "AI ответ2", "rejected")
+
+    from unittest.mock import AsyncMock, MagicMock, patch
+    bot_mock = MagicMock()
+    bot_mock.send_message = AsyncMock()
+
+    with patch("bot.optimizer.agent.db", _db):
+        with patch("bot.optimizer.agent._send_report", new=AsyncMock()) as mock_report:
+            from bot.optimizer.agent import run_optimizer
+            await run_optimizer(bot_mock)
+
+    mock_report.assert_not_called()
+    bot_mock.send_message.assert_not_called()
