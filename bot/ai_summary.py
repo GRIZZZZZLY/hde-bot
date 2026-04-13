@@ -68,7 +68,7 @@ async def _call_groq_for_summary(system_text: str, history: str, ticket_id: str)
                         {"role": "system", "content": system_text},
                         {"role": "user", "content": f"Переписка:\n{history}"},
                     ],
-                    "max_tokens": 2000,
+                    "max_tokens": 3000,
                     "temperature": 0.3,
                 },
                 headers={"Authorization": f"Bearer {config.groq_api_key}"},
@@ -98,13 +98,17 @@ def _detect_equipment(title: str, history: str) -> str | None:
 
 
 _FORMAT_INSTRUCTIONS = (
-    "Ответь РОВНО двумя строками — обе обязательны:\n"
+    "Ответь РОВНО тремя строками — все три обязательны:\n"
     "Суть: <диагноз проблемы, бренд/модель если известны>\n"
-    "Ответ: <конкретные технические шаги через →>\n\n"
-    "Пример:\n"
-    "Суть: АТОЛ 30Ф — ошибка связи с ОФД, истёк сертификат.\n"
-    "Ответ: Меню ФН → Диагностика ОФД → Обновить сертификат в ЛК ОФД → Перерегистрация.\n\n"
-    "ВАЖНО: шаги для специалиста, не для клиента. Не используй markdown. Не добавляй ничего лишнего."
+    "Клиенту: <сообщение от лица поддержки — готовый ответ, инструкция или уточняющий вопрос>\n"
+    "Памятка: <внутренний чеклист для специалиста: что проверить → как решить, шаги через →>\n\n"
+    "Правила для «Клиенту»:\n"
+    "- Вежливо, от лица поддержки, без технического жаргона\n"
+    "- Если проблема ясна и решение известно → готовый ответ с шагами для клиента\n"
+    "- Если нужна информация от клиента → уточняющий вопрос\n"
+    "- Если клиент должен выполнить действия сам → пошаговая инструкция\n"
+    "Правила для «Памятка»: технически точно, для специалиста, шаги через →\n"
+    "Не используй markdown. Не добавляй ничего лишнего."
 )
 
 _active_prompt_loaded: bool = False
@@ -142,13 +146,10 @@ def _build_system_prompt(
 ) -> str:
     instr = format_instructions or _FORMAT_INSTRUCTIONS
     base = (
-        "Ты — помощник технического специалиста 2-й линии поддержки.\n"
-        "Специализация: кассовое оборудование (АТОЛ, Эвотор, Штрих-М, Viki),\n"
-        "фискальные регистраторы, ОФД/ФН, сетевые подключения, эквайринг\n"
-        "(Сбер, ВТБ, Тинькофф).\n\n"
+        "Ты — помощник технического специалиста 2-й линии поддержки кассового оборудования.\n"
+        "Специализация: АТОЛ, Эвотор, Штрих-М, Viki, фискальные регистраторы, ОФД/ФН,\n"
+        "сетевые подключения, эквайринг (Сбер, ВТБ, Т-Банк).\n\n"
         "Тикет передан с 1-й линии — базовую диагностику уже провели.\n\n"
-        "ВАЖНО: ты подсказываешь СПЕЦИАЛИСТУ что делать, не пишешь ответ клиенту.\n"
-        "Ответ — техническая инструкция к выполнению.\n\n"
     )
     if ticket_title:
         base += f"Тема обращения: «{ticket_title}»\n\n"
@@ -329,8 +330,8 @@ async def generate_ticket_summary(
     ticket_title: str = "",
     ticket_id: str = "",
     company_id: str = "",
-) -> tuple[str, str, int] | None:
-    """Return (suit_line, answer_line, confidence_pct) or None if disabled/failed."""
+) -> tuple[str, str, str, int] | None:
+    """Return (suit_line, client_line, memo_line, confidence_pct) or None if disabled/failed."""
     if not config.gemini_api_key:
         logger.info("AI summary skipped: GEMINI_API_KEY not set")
         return None
@@ -431,7 +432,7 @@ async def generate_ticket_summary(
                     "contents": [{"parts": content_parts}],
                     "generationConfig": {
                         "temperature": 0.3,
-                        "maxOutputTokens": 2000,
+                        "maxOutputTokens": 3000,
                     },
                 }
 
@@ -489,11 +490,12 @@ async def generate_ticket_summary(
     if ticket_id:
         _log_generation(ticket_id, ticket_title, history, text)
 
-    # Parse "Суть: ...\nОтвет: ..."
+    # Parse "Суть: ...\nКлиенту: ...\nПамятка: ..."
     import re as _re
-    logger.info("Gemini raw response for ticket %s: %r", ticket_id, text[:400])
+    logger.info("AI raw response for ticket %s: %r", ticket_id, text[:400])
     suit_line = ""
-    answer_line = ""
+    client_line = ""
+    memo_line = ""
     current_key: str | None = None
     for line in text.splitlines():
         # Strip markdown bold/italic (**text**, *text*) before matching
@@ -502,21 +504,30 @@ async def generate_ticket_summary(
         if lower.startswith("суть:"):
             suit_line = cleaned[5:].strip()
             current_key = "suit"
+        elif lower.startswith("клиенту:"):
+            client_line = cleaned[8:].strip()
+            current_key = "client"
+        elif lower.startswith("памятка:"):
+            memo_line = cleaned[8:].strip()
+            current_key = "memo"
+        # Legacy fallback: support old "Ответ:" label
         elif lower.startswith("ответ:"):
-            answer_line = cleaned[6:].strip()
-            current_key = "answer"
+            client_line = cleaned[6:].strip()
+            current_key = "client"
         elif cleaned and current_key == "suit" and not suit_line:
-            suit_line = cleaned  # content on next line after "Суть:"
-        elif cleaned and current_key == "answer" and not answer_line:
-            answer_line = cleaned  # content on next line after "Ответ:"
+            suit_line = cleaned
+        elif cleaned and current_key == "client" and not client_line:
+            client_line = cleaned
+        elif cleaned and current_key == "memo" and not memo_line:
+            memo_line = cleaned
         elif not cleaned:
             current_key = None  # blank line resets context
 
-    if not suit_line and not answer_line:
-        logger.warning("Could not parse Суть/Ответ from Gemini response for ticket %s", ticket_id)
+    if not suit_line and not client_line:
+        logger.warning("Could not parse Суть/Клиенту from AI response for ticket %s", ticket_id)
         return None
 
-    return (suit_line, answer_line, confidence_pct)
+    return (suit_line, client_line, memo_line, confidence_pct)
 
 
 def invalidate_prompt_cache() -> None:
