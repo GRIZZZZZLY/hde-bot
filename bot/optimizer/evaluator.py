@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 _OUTCOME_WEIGHTS = {
     "sent": 1.0,
-    "accepted": 1.0,
+    "accepted": 0.8,
     "corrected": 0.4,
     "rejected": 0.0,
 }
