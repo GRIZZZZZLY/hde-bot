@@ -796,6 +796,7 @@ async def cmd_aianalyze(message: Message) -> None:
         save_solution_pattern,
         pattern_exists_similar,
         count_solution_patterns_by_equipment,
+        mark_knowledge_items_analyzed,
         DB_PATH,
     )
     from ..config import config as _config
@@ -803,22 +804,23 @@ async def cmd_aianalyze(message: Message) -> None:
     import time as _time
     import re as _re
 
-    if not _config.gemini_api_key:
-        await message.answer("❌ GEMINI_API_KEY не настроен")
+    if not _config.gemini_api_key and not _config.groq_api_key:
+        await message.answer("❌ Ни GEMINI_API_KEY, ни GROQ_API_KEY не настроены")
         return
 
-    # Load all suitable knowledge items
+    # Load only items not yet analyzed
     async with aiosqlite.connect(DB_PATH) as conn:
         async with conn.execute(
-            "SELECT title, content FROM knowledge_items "
-            "WHERE source IN ('hde_closed', 'feedback', 'implicit_good') "
-            "AND quality != 'bad' AND content != '' "
-            "ORDER BY created_at DESC LIMIT 2000"
+            "SELECT id, title, content FROM knowledge_items "
+            "WHERE analyzed_at IS NULL "
+            "AND source IN ('hde_closed', 'feedback', 'implicit_good') "
+            "AND quality NOT IN ('bad', 'expired') AND content != '' "
+            "ORDER BY created_at DESC LIMIT 500"
         ) as cur:
             items = await cur.fetchall()
 
     if not items:
-        await message.answer("ℹ️ Нет тикетов для анализа. Сначала запусти /aiimport")
+        await message.answer("ℹ️ Нет новых тикетов для анализа — все уже обработаны.\nЗапусти /aiimport чтобы добавить новые.")
         return
 
     status_msg = await message.answer(f"⏳ Начинаю анализ {len(items)} тикетов...")
@@ -883,8 +885,9 @@ async def cmd_aianalyze(message: Message) -> None:
     async with aiohttp.ClientSession() as session:
         for i in range(0, len(items), batch_size):
             batch = items[i : i + batch_size]
+            batch_ids = [row[0] for row in batch]
             batch_text = ""
-            for idx, (title, content) in enumerate(batch, 1):
+            for idx, (_, title, content) in enumerate(batch, 1):
                 batch_text += f"\n[{idx}] {title}\n{content[:400]}\n"
 
             full_prompt = _ANALYZE_PROMPT + batch_text
@@ -945,7 +948,7 @@ async def cmd_aianalyze(message: Message) -> None:
                         break
 
             if patterns is None:
-                # Both Groq and Gemini failed for this batch
+                # Both Groq and Gemini failed for this batch — don't mark as analyzed
                 skipped += len(batch)
             else:
                 for p in patterns:
@@ -961,6 +964,8 @@ async def cmd_aianalyze(message: Message) -> None:
                         problem_type=pt, steps=st, source="analyze", equipment=eq
                     )
                     created += 1
+                # Mark these items as analyzed so they're skipped next run
+                await mark_knowledge_items_analyzed(batch_ids)
 
             # Rate-limit pause between every batch (Gemini fallback needs it)
             await _asyncio.sleep(_RATE_DELAY)

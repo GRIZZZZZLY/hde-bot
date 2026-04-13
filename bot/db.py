@@ -282,6 +282,13 @@ async def init_db() -> None:
             )
         except Exception:
             pass  # column already exists
+        # Migration: add analyzed_at to track which items were processed by /aianalyze
+        try:
+            await db.execute(
+                "ALTER TABLE knowledge_items ADD COLUMN analyzed_at TEXT"
+            )
+        except Exception:
+            pass  # column already exists
 
         # Populate FTS index for existing items (first-time migration, idempotent)
         try:
@@ -1491,6 +1498,19 @@ async def expire_stale_knowledge(expiry_days: int = 180) -> int:
         )
         await db.commit()
         return cur.rowcount
+
+
+async def mark_knowledge_items_analyzed(item_ids: list[int]) -> None:
+    """Set analyzed_at = now for the given knowledge_item ids."""
+    if not item_ids:
+        return
+    placeholders = ",".join("?" * len(item_ids))
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            f"UPDATE knowledge_items SET analyzed_at = datetime('now') WHERE id IN ({placeholders})",
+            item_ids,
+        )
+        await db.commit()
 
 
 async def update_knowledge_last_used(item_ids: list[int]) -> None:
