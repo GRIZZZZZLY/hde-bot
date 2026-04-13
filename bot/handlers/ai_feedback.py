@@ -53,6 +53,14 @@ def answer_feedback_kb() -> InlineKeyboardMarkup:
     ])
 
 
+def memo_feedback_kb() -> InlineKeyboardMarkup:
+    """Keyboard for the Памятка message."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="👍 Полезно", callback_data="memo:good"),
+        InlineKeyboardButton(text="👎 Бесполезно", callback_data="memo:bad"),
+    ]])
+
+
 async def register_feedback_pending(
     topic_id: int,
     ticket_id: str,
@@ -179,6 +187,24 @@ async def cb_suit_good(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "suit:bad")
 async def cb_suit_bad(callback: CallbackQuery) -> None:
+    await callback.answer("👎 Отмечено", show_alert=False)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "memo:good")
+async def cb_memo_good(callback: CallbackQuery) -> None:
+    await callback.answer("👍 Отмечено", show_alert=False)
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data == "memo:bad")
+async def cb_memo_bad(callback: CallbackQuery) -> None:
     await callback.answer("👎 Отмечено", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
