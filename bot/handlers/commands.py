@@ -797,6 +797,7 @@ async def cmd_aianalyze(message: Message) -> None:
         pattern_exists_similar,
         count_solution_patterns_by_equipment,
         mark_knowledge_items_analyzed,
+        normalize_equipment,
         DB_PATH,
     )
     from ..config import config as _config
@@ -832,8 +833,9 @@ async def cmd_aianalyze(message: Message) -> None:
     _ANALYZE_PROMPT = (
         "Ты анализируешь решённые тикеты технической поддержки кассового оборудования.\n"
         "Из каждого тикета извлеки:\n"
-        "- equipment: бренд оборудования (АТОЛ/Эвотор/Штрих-М/Viki/Эквайринг Сбер/ВТБ/Тинькофф/ПТК) "
-        "или null если не определён\n"
+        "- equipment: бренд оборудования — используй СТРОГО одно из: "
+        "АТОЛ, Эвотор, Штрих-М, Viki, ВикиПринт, Эквайринг Сбер, ВТБ, Т-Банк, ПТК, AQSI, PAX, Posiflora "
+        "или null если бренд не определён\n"
         "- problem_type: краткое описание типа проблемы (5-10 слов)\n"
         "- steps: конкретные шаги решения через → (если шагов нет — пропусти тикет)\n\n"
         "Верни JSON-массив: [{\"equipment\": ..., \"problem_type\": ..., \"steps\": ...}, ...]\n"
@@ -952,7 +954,7 @@ async def cmd_aianalyze(message: Message) -> None:
                 skipped += len(batch)
             else:
                 for p in patterns:
-                    eq = p.get("equipment") or None
+                    eq = normalize_equipment(p.get("equipment"))
                     pt = (p.get("problem_type") or "").strip()
                     st = (p.get("steps") or "").strip()
                     if not pt or not st:

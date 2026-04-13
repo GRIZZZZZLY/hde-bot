@@ -13,6 +13,51 @@ logger = logging.getLogger(__name__)
 
 from .time_utils import to_storage, utcnow
 
+# ---------------------------------------------------------------------------
+# Equipment name normalization
+# ---------------------------------------------------------------------------
+
+_EQUIPMENT_NORM: dict[str, str] = {
+    "атол": "АТОЛ",
+    "atol": "АТОЛ",
+    "эвотор": "Эвотор",
+    "евотор": "Эвотор",
+    "эватор": "Эвотор",
+    "viki": "Viki",
+    "вики": "Viki",
+    "vikiprint": "ВикиПринт",
+    "википринт": "ВикиПринт",
+    "вики принт": "ВикиПринт",
+    "штрих": "Штрих-М",
+    "штрих-м": "Штрих-М",
+    "штрихм": "Штрих-М",
+    "сбер": "Эквайринг Сбер",
+    "сбербанк": "Эквайринг Сбер",
+    "эквайринг сбер": "Эквайринг Сбер",
+    "тинькофф": "Т-Банк",
+    "тбанк": "Т-Банк",
+    "т банк": "Т-Банк",
+    "tinkoff": "Т-Банк",
+    "t-bank": "Т-Банк",
+    "tbank": "Т-Банк",
+    "aqsi": "AQSI",
+    "акси": "AQSI",
+    "pax d230": "PAX",
+    "pax q25": "PAX",
+    "pax": "PAX",
+    "втб": "ВТБ",
+    "птк": "ПТК",
+    "posiflora": "Posiflora",
+    "посифлора": "Posiflora",
+}
+
+
+def normalize_equipment(name: str | None) -> str | None:
+    """Return canonical equipment brand name, or None if name is empty."""
+    if not name:
+        return None
+    return _EQUIPMENT_NORM.get(name.lower().strip(), name.strip() or None)
+
 DB_PATH = "hde_bot.db"
 
 TICKET_TOPIC_COLUMNS = {
@@ -289,6 +334,27 @@ async def init_db() -> None:
             )
         except Exception:
             pass  # column already exists
+
+        # Migration: normalize equipment names in solution_patterns (idempotent)
+        _norm_updates = [
+            ("АТОЛ",           ["Атол", "atol", "ATOL"]),
+            ("Эвотор",         ["ЭВотор", "Евотор", "Эватор"]),
+            ("Штрих-М",        ["Штрих", "ШтрихМ"]),
+            ("Viki",           ["Вики", "вики", "viki"]),
+            ("ВикиПринт",      ["Википринт", "Viki Print", "VikiPrint"]),
+            ("Эквайринг Сбер", ["Сбер", "Сбербанк"]),
+            ("Т-Банк",         ["Тинькофф", "Тбанк", "Т банк", "Tinkoff", "TBank", "T-Bank"]),
+            ("AQSI",           ["Акси", "акси"]),
+            ("PAX",            ["PAX D230", "Pax q25", "Pax D230", "PAX d230"]),
+            ("ВТБ",            ["втб", "Втб"]),
+            ("ПТК",            ["птк", "Птк"]),
+        ]
+        for canonical, variants in _norm_updates:
+            for variant in variants:
+                await db.execute(
+                    "UPDATE solution_patterns SET equipment = ? WHERE equipment = ?",
+                    (canonical, variant),
+                )
 
         # Populate FTS index for existing items (first-time migration, idempotent)
         try:
