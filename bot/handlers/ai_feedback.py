@@ -111,6 +111,7 @@ async def cb_ai_bad(callback: CallbackQuery) -> None:
         await callback.answer()
         return
     topic_id = callback.message.message_thread_id
+    pending = await get_ai_feedback_pending(topic_id)
     await callback.answer()
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
@@ -118,6 +119,20 @@ async def cb_ai_bad(callback: CallbackQuery) -> None:
         pass
     await delete_ai_feedback_pending(topic_id)
     logger.info("Marked summary as bad for topic %d", topic_id)
+    # Save for prompt optimizer
+    if pending:
+        try:
+            from .. import db as _db_module
+            await _db_module.save_optimization_sample(
+                ticket_id=pending.get("ticket_id", ""),
+                title=pending.get("title", ""),
+                history=pending.get("history", ""),
+                ai_answer=pending.get("answer_text", ""),
+                op_answer=None,
+                outcome="rejected",
+            )
+        except Exception:
+            pass
 
 
 @router.callback_query(F.data == "ai:edit")
@@ -216,6 +231,19 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
         except Exception:
             pass
     logger.info("Sent AI answer to HDE ticket %s (%s)", pending["ticket_id"], label)
+    # Save for prompt optimizer
+    try:
+        from .. import db as _db_module
+        await _db_module.save_optimization_sample(
+            ticket_id=pending.get("ticket_id", ""),
+            title=pending.get("title", ""),
+            history=pending.get("history", ""),
+            ai_answer=pending.get("answer_text", ""),
+            op_answer=None,
+            outcome="sent",
+        )
+    except Exception:
+        pass
 
 
 @router.message(_HasPendingCorrection(), F.text.is_not(None))

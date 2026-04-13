@@ -125,3 +125,38 @@ async def test_groq_client_skipped_when_no_api_key():
     client = GroqClient(model="llama-3.3-70b-versatile", api_key="")
     with pytest.raises(ValueError, match="GROQ_API_KEY"):
         await client.complete("system", "user")
+
+
+# --- data collection ---
+
+@pytest.mark.asyncio
+async def test_implicit_feedback_saves_accepted_sample():
+    """ratio >= 0.7 → save record outcome='accepted' in optimization_samples."""
+    await _db.init_db()
+
+    # Save pending feedback record
+    from datetime import datetime, timezone, timedelta
+    expires = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
+    async with aiosqlite.connect(_db.DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO ai_feedback_pending (topic_id, ticket_id, title, history, answer_text, expires_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (1, "T1", "Тест", "История тикета", "Нажмите кнопку обновить", expires),
+        )
+        await db.commit()
+
+    # Simulate staff reply with similar text
+    from unittest.mock import AsyncMock, MagicMock, patch
+    with patch("bot.topic_manager.db", _db):
+        with patch("bot.knowledge.indexer.index_knowledge_item", new=AsyncMock()):
+            with patch("bot.db.delete_knowledge_item_by_ticket", new=AsyncMock(return_value=0)):
+                with patch("bot.topic_manager._maybe_update_pattern", new=AsyncMock()):
+                    from bot.topic_manager import _implicit_feedback
+                    record = MagicMock()
+                    record.topic_id = 1
+                    await _implicit_feedback(record, "Нажмите кнопку обновления")
+
+    samples = await _db.get_optimization_samples(days=1)
+    assert len(samples) == 1
+    assert samples[0]["outcome"] == "accepted"
+    assert samples[0]["ticket_id"] == "T1"

@@ -785,6 +785,18 @@ async def _implicit_feedback(record: "db.TicketTopic", staff_text: str) -> None:
         logger.info(
             "Implicit 👍 for ticket %s (ratio=%.2f)", pending["ticket_id"], ratio
         )
+        # Save sample for prompt optimizer
+        try:
+            await db.save_optimization_sample(
+                ticket_id=pending["ticket_id"],
+                title=pending.get("title", ""),
+                history=pending.get("history", ""),
+                ai_answer=pending.get("answer_text", ""),
+                op_answer=clean_staff,
+                outcome="accepted",
+            )
+        except Exception as exc:
+            logger.warning("save_optimization_sample failed: %s", exc)
         # Reinforce or create solution pattern (only for high-confidence matches)
         if ratio >= 0.85:
             try:
@@ -810,6 +822,18 @@ async def _implicit_feedback(record: "db.TicketTopic", staff_text: str) -> None:
         logger.info(
             "Implicit ✏️ for ticket %s (ratio=%.2f)", pending["ticket_id"], ratio
         )
+        # Save sample for prompt optimizer
+        try:
+            await db.save_optimization_sample(
+                ticket_id=pending["ticket_id"],
+                title=pending.get("title", ""),
+                history=pending.get("history", ""),
+                ai_answer=pending.get("answer_text", ""),
+                op_answer=clean_staff,
+                outcome="corrected",
+            )
+        except Exception as exc:
+            logger.warning("save_optimization_sample failed: %s", exc)
         # Update wiki article with operator's actual answer (non-fatal)
         try:
             from .wiki.builder import build_or_update_wiki_article
