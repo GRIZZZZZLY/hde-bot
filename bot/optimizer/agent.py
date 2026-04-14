@@ -103,7 +103,7 @@ async def run_optimizer(bot: Bot) -> None:
         groq_api_key=config.groq_api_key,
     )
     try:
-        mutations = await router.complete_all(system=system_prompt, user=user_prompt)
+        mutations, mut_errors = await router.complete_all(system=system_prompt, user=user_prompt)
     except Exception as exc:
         logger.warning("Optimizer: mutation requests failed: %s", exc)
         if progress_msg:
@@ -111,9 +111,13 @@ async def run_optimizer(bot: Bot) -> None:
         return
 
     if not mutations:
-        logger.warning("Optimizer: no mutations returned from any model")
+        logger.warning("Optimizer: no mutations returned from any model, errors: %s", mut_errors)
         if progress_msg:
-            await _update_progress(progress_msg, 50, "❌ Ни одна модель не вернула мутацию.")
+            err_lines = "\n".join(f"• {m}: {e}" for m, e in mut_errors.items()) or "нет деталей"
+            await _update_progress(
+                progress_msg, 50,
+                f"❌ Ни одна модель не вернула мутацию.\n\n{err_lines}",
+            )
         return
 
     if progress_msg:

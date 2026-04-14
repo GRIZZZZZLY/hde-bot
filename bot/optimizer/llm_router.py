@@ -88,29 +88,47 @@ class LLMRouter:
             "mixtral": GroqClient(model="mixtral-8x7b-32768", api_key=groq_api_key),
         }
 
-    async def complete_all(self, system: str, user: str) -> dict[str, str]:
-        """Try Groq clients first (in parallel); fall back to Gemini only if all Groq fail."""
+    async def complete_all(
+        self, system: str, user: str
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Try Groq clients first (in parallel); fall back to Gemini only if all Groq fail.
 
-        async def _safe_complete(name: str, client: LLMClient) -> tuple[str, str | None]:
+        Returns (results, errors) where:
+          results: model_name → generated text (successful completions)
+          errors:  model_name → error message (failed completions)
+        """
+
+        async def _safe_complete(
+            name: str, client: LLMClient
+        ) -> tuple[str, str | None, str | None]:
             try:
                 text = await client.complete(system, user)
-                return name, text
+                return name, text, None
             except Exception as exc:
                 logger.warning("LLM client %s failed: %s", name, exc)
-                return name, None
+                return name, None, str(exc)
 
         groq_clients = {k: v for k, v in self.clients.items() if k != "gemini"}
         gemini_client = self.clients.get("gemini")
 
+        errors: dict[str, str] = {}
+
         # Try Groq models first (in parallel)
         groq_tasks = [_safe_complete(name, client) for name, client in groq_clients.items()]
         groq_results = await asyncio.gather(*groq_tasks)
-        results = {name: text for name, text in groq_results if text is not None}
+        results = {}
+        for name, text, err in groq_results:
+            if text is not None:
+                results[name] = text
+            elif err is not None:
+                errors[name] = err
 
         # Fall back to Gemini only if every Groq call failed
         if not results and gemini_client is not None:
-            name, text = await _safe_complete("gemini", gemini_client)
+            name, text, err = await _safe_complete("gemini", gemini_client)
             if text is not None:
                 results["gemini"] = text
+            elif err is not None:
+                errors["gemini"] = err
 
-        return results
+        return results, errors
