@@ -42,7 +42,12 @@ class GeminiClient:
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
                 data = await resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        candidates = data.get("candidates")
+        if not candidates:
+            error = data.get("error", {})
+            msg = error.get("message") if isinstance(error, dict) else str(data)
+            raise RuntimeError(f"Gemini returned no candidates: {msg}")
+        return candidates[0]["content"]["parts"][0]["text"].strip()
 
 
 class GroqClient:
@@ -84,8 +89,10 @@ class LLMRouter:
     def __init__(self, gemini_api_key: str, groq_api_key: str) -> None:
         self.clients: dict[str, LLMClient] = {
             "gemini": GeminiClient(model="gemini-2.5-flash", api_key=gemini_api_key),
-            "llama": GroqClient(model="llama-3.3-70b-versatile", api_key=groq_api_key),
-            "mixtral": GroqClient(model="mixtral-8x7b-32768", api_key=groq_api_key),
+            # Use smaller/faster Groq models for mutations to avoid rate limits.
+            # Main AI summaries use llama-3.3-70b-versatile (separate quota).
+            "llama": GroqClient(model="llama-3.1-8b-instant", api_key=groq_api_key),
+            "gemma": GroqClient(model="gemma2-9b-it", api_key=groq_api_key),
         }
 
     async def complete_all(

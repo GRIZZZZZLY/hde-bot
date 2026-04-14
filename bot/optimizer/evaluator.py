@@ -122,7 +122,12 @@ async def _generate_answer(history: str, title: str, format_instructions: str) -
         ) as resp:
             data = await resp.json()
 
-    text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    candidates = data.get("candidates")
+    if not candidates:
+        error = data.get("error", {})
+        msg = error.get("message") if isinstance(error, dict) else str(data)
+        raise RuntimeError(f"Gemini returned no candidates: {msg}")
+    text = candidates[0]["content"]["parts"][0]["text"].strip()
     # Extract only the "Ответ:" line if present
     for line in text.splitlines():
         if line.lower().startswith("ответ:"):
