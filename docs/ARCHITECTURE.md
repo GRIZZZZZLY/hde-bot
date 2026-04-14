@@ -24,7 +24,8 @@ Telegram-бот для специалиста 2-й линии поддержки
 | Telegram Bot API | aiogram 3.x (long polling) |
 | HTTP сервер (HDE webhooks) | aiohttp |
 | База данных | SQLite + aiosqlite (async) |
-| AI-генерация | Google Gemini 2.5-Flash |
+| AI-генерация (основной) | Groq API — llama-3.3-70b-versatile |
+| AI-генерация (резерв) | Google Gemini 2.5-Flash |
 | Эмбеддинги | `intfloat/multilingual-e5-large` (1024-dim) |
 | Полнотекстовый поиск | SQLite FTS5 (BM25) |
 | Транскрипция аудио | Deepgram API (nova-2, ru) |
@@ -43,7 +44,7 @@ bot/
   topic_manager.py      — обработка HDE webhook, жизненный цикл топиков
   hde_webhook.py        — aiohttp endpoint /webhook/hde
   hde_api.py            — HDE REST API client (Basic Auth)
-  ai_summary.py         — Gemini AI-подсказки, детекция оборудования
+  ai_summary.py         — AI-подсказки (Groq/Gemini), детекция оборудования
   client_media.py       — скачивание вложений из HDE
   formatter.py          — шаблоны сообщений Telegram
   operator_replies.py   — обработка /note, /send, /delete
@@ -55,17 +56,23 @@ bot/
   time_utils.py         — конвертация таймзон
   tg_session.py         — retry-wrapper для Telegram API
   handlers/
-    commands.py         — 18 bot-команд (/note, /send, /aianalyze, ...)
+    commands.py         — bot-команды (/note, /send, /aianalyze, /aioptimize, ...)
     ai_feedback.py      — callback-хендлеры кнопок AI (👍/✏️/👎/📤/💬)
   knowledge/
     indexer.py          — embed_text(), get_rag_context()
     store.py            — find_similar(): cosine + BM25 + RRF + company-буст
+  optimizer/
+    agent.py            — ночной цикл: данные → мутации → оценка → отчёт
+    evaluator.py        — replay тикетов, combined score
+    mutations.py        — промпт для LLM «предложи улучшение инструкций»
+    llm_router.py       — Groq-first роутер, Gemini как fallback
   reporting/
     hde_playwright.py   — UI-автоматизация скриншота из HDE
     google_sheets.py    — запись строки в Google Sheets
     runner.py           — оркестрация ежедневного отчёта
   wiki/
-    searcher.py         — поиск по wiki-статьям (опционально)
+    builder.py          — синтез статей из knowledge_items через LLM
+    searcher.py         — поиск по wiki-статьям
 
 tests/
   test_ai_answer_quality.py   — тесты AI компонентов
@@ -102,6 +109,8 @@ docs/
 | `knowledge_fts` | FTS5 виртуальная таблица для BM25-поиска |
 | `ai_feedback_pending` | Ожидающий фидбек на AI-подсказку (expires_at) |
 | `solution_patterns` | Паттерны решений по оборудованию (из /aianalyze) |
+| `optimization_samples` | Образцы для prompt optimizer: тикет + исход + AI/оператор ответы |
+| `prompt_versions` | Версии промптов: candidate / active / rejected + score |
 
 ---
 
@@ -152,6 +161,7 @@ UNASSIGNED_DEPARTMENT        — фильтр отдела для необраб
 ### AI
 ```
 GEMINI_API_KEY         — Google Gemini API key (aistudio.google.com)
+GROQ_API_KEY           — Groq API key (console.groq.com) — основной провайдер
 DEEPGRAM_API_KEY       — Deepgram key для транскрипции аудио (console.deepgram.com)
 ```
 
@@ -179,13 +189,19 @@ HDE отправляет webhook (event: assigned_on_create)
     → db.save_topic() — сохранить маппинг ticket_id ↔ topic_id
     → formatter.format_new_ticket() — сформировать сообщение
     → bot.send_message() — в топик
-    → generate_ticket_summary() — AI-подсказка (если включено)
-      → _detect_equipment() — определить бренд (АТОЛ/Эвотор/...)
-      → get_rag_context() → find_similar() — поиск похожих случаев
-      → find_solution_pattern() — типовые шаги из solution_patterns
-      → Gemini API — генерация подсказки
-      → bot.send_message() — "🧠 Суть (78%): ..." + "💡 Предложенный ответ: ..."
-      → db.save_feedback_pending() — сохранить для кнопок 👍/👎
+    → _post_ticket_history() — история тикета + AI-подсказка
+      → get_ticket_posts() + get_ticket_comments() — посты и внутренние комментарии
+      → format_ticket_history() — единый формат, 🔒 для комментариев коллег
+      → generate_ticket_summary() — AI-подсказка (если включено)
+        → _detect_equipment() — определить бренд (АТОЛ/Эвотор/...)
+        → get_rag_context() → find_similar() — поиск похожих случаев
+        → find_solution_pattern() — типовые шаги из solution_patterns
+        → Groq API (llama-3.3-70b) → Gemini fallback — генерация подсказки
+        → bot.send_message(disable_notification=True) × 3:
+            "🧠 Суть (78%): ..."  [👍 Верно | 👎 Неверно]
+            "💬 Ответ клиенту: ..."  [👍 | ✏️ | 👎 | 📤 | 💬]
+            "📋 Памятка: ..."  [👍 Полезно | 👎 Бесполезно]
+        → db.save_feedback_pending() — сохранить для кнопок
 ```
 
 ### 2. Ответ клиента (HDE → Telegram)
@@ -285,14 +301,24 @@ Confidence score показывается в сообщении если >= 40%:
 🧠 Суть (78%): АТОЛ 30Ф — ошибка связи с ОФД
 ```
 
-### System prompt (специализация)
+### AI-ответ: три сообщения
 
-Промпт заточен под специалиста 2-й линии по кассовому оборудованию:
-- Роль: "подсказываю СПЕЦИАЛИСТУ, не пишу ответ клиенту"
+Каждый новый тикет получает три тихих сообщения (disable_notification=True):
+
+| Сообщение | Формат | Кнопки |
+|---|---|---|
+| 🧠 Суть (N%) | Диагноз: бренд + проблема | 👍 Верно / 👎 Неверно |
+| 💬 Ответ клиенту | Готовый ответ/вопрос/инструкция для клиента | 👍 / ✏️ / 👎 / 📤 Ответить / 💬 Комментарий |
+| 📋 Памятка | Чеклист + шаги решения для специалиста | 👍 Полезно / 👎 Бесполезно |
+
+### System prompt
+
+Промпт под специалиста 2-й линии по кассовому оборудованию:
 - Добавляет блок с брендом оборудования (если определён)
-- Добавляет типовые шаги решения из `solution_patterns` (если есть)
+- Добавляет типовые шаги из `solution_patterns` (если есть)
 - Добавляет похожие случаи из knowledge base (RAG)
-- Формат ответа: `Суть:` + `Ответ:` через `→`
+- Инструкции для «Клиенту»: писать как живой сотрудник поддержки, без шаблонных фраз
+- Активный промпт берётся из `prompt_versions` (status='active') при наличии
 
 ### solution_patterns — база паттернов
 
@@ -324,7 +350,8 @@ Confidence score показывается в сообщении если >= 40%:
 | `/aiimport` | Импортировать решённые тикеты из HDE в базу знаний |
 | `/aibackfill` | Переиндексировать прошлые тикеты |
 | `/aireindex` | Пересчитать все эмбеддинги |
-| `/aianalyze` | Извлечь паттерны решений из базы знаний через Gemini |
+| `/aianalyze` | Извлечь паттерны решений из базы знаний |
+| `/aioptimize` | Запустить prompt optimizer вручную (без ожидания ночи) |
 | `/digest` | Сгенерировать утренний дайджест |
 
 ---
@@ -374,8 +401,28 @@ pytest tests/ -q
 
 ---
 
-## Что планируется дальше
+## Prompt Optimizer
 
-- **Knowledge Management** — дедупликация базы, expiry, `/aimetrics`
+Ночная система автоматического улучшения промпта. Запускается в 23:00 UTC (02:00 МСК).
+
+```
+scheduler.py: 23:00 UTC → optimizer/agent.py: run_optimizer()
+  1. Загрузить optimization_samples (последние 30 дней, минимум 10)
+  2. Вычислить baseline score на текущем промпте
+  3. Запросить мутации у llama + mixtral через Groq, Gemini как fallback
+  4. Оценить каждую мутацию на реальных образцах
+  5. Победитель: max(score) > baseline + 0.03
+  6. Сохранить кандидатов в prompt_versions (status='candidate')
+  7. Отправить отчёт оператору с прогресс-баром и кнопками
+     [✅ Применить] [❌ Отклонить] [📊 Подробнее]
+```
+
+`optimization_samples` пополняется автоматически через implicit feedback: когда оператор отправляет ответ в HDE, бот сравнивает его с AI-предложением (difflib ratio) и записывает исход (sent / accepted / corrected / rejected).
+
+---
+
+## Что планируется
+
+- **Teamly integration** — импорт статей из корпоративной базы знаний
 - **Quick Replies** — кнопки с шаблонными ответами
 - **HDE Status Updates** — смена статуса/приоритета тикета из Telegram

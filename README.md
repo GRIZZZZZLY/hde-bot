@@ -22,13 +22,17 @@ Telegram-бот для специалиста 2-й линии поддержки
 - Поддержка текста, вложений и альбомов в /send и /note
 
 **AI-подсказки**
-- При каждом новом тикете генерирует подсказку для специалиста через Gemini
-- Определяет бренд оборудования (АТОЛ, Эвотор, Штрих-М, Viki, эквайринг)
+- При каждом новом тикете три тихих сообщения (без уведомлений):
+  - `🧠 Суть (78%)` — диагноз и бренд оборудования
+  - `💬 Ответ клиенту` — готовый ответ/вопрос/инструкция для клиента
+  - `📋 Памятка` — чеклист и шаги решения для специалиста
+- Основной провайдер: Groq (llama-3.3-70b), Gemini как fallback
 - Ищет похожие решённые случаи (RAG: cosine + BM25 + RRF)
-- Показывает confidence score: `🧠 Суть (78%): АТОЛ 30Ф — ошибка ОФД`
-- Подсказывает типовые шаги решения из базы паттернов
+- Подсказывает типовые шаги из базы паттернов
+- Внутренние комментарии коллег (1я линия) включены в контекст
 - Кнопки прямой отправки в HDE: `📤 Ответить клиенту` / `💬 Комментарий`
 - Учится на ответах оператора (implicit feedback)
+- Ночной prompt optimizer: каждую ночь проверяет можно ли улучшить промпт
 
 **Прочее**
 - SLA-таймер: личное уведомление за 10 минут до истечения
@@ -81,7 +85,8 @@ HDE_OWNER_ID=           # ID сотрудника в HDE (чьи тикеты о
 WEBHOOK_HOST=           # https://your-domain.com
 
 # AI (опционально, но рекомендуется)
-GEMINI_API_KEY=         # https://aistudio.google.com/apikey
+GROQ_API_KEY=           # https://console.groq.com (основной AI провайдер)
+GEMINI_API_KEY=         # https://aistudio.google.com/apikey (fallback)
 DEEPGRAM_API_KEY=       # https://console.deepgram.com (транскрипция аудио)
 ```
 
@@ -117,6 +122,7 @@ python -m bot.main
 | `/aistatus` | Статистика AI и базы знаний |
 | `/aiknowledge запрос` | Поиск по базе знаний |
 | `/aireindex` | Пересчитать эмбеддинги |
+| `/aioptimize` | Запустить ночной оптимизатор промпта вручную |
 
 ---
 
@@ -172,8 +178,8 @@ bot/
   db.py                 — SQLite: схема и все CRUD функции
   topic_manager.py      — обработка webhook, жизненный цикл топиков
   hde_api.py            — HDE REST API client
-  ai_summary.py         — Gemini AI-подсказки
-  scheduler.py          — SLA, delayed delete, digest
+  ai_summary.py         — AI-подсказки (Groq primary, Gemini fallback)
+  scheduler.py          — SLA, delayed delete, digest, optimizer trigger
   operator_replies.py   — /note, /send, /delete
   handlers/
     commands.py         — все команды бота
@@ -181,6 +187,13 @@ bot/
   knowledge/
     indexer.py          — векторные эмбеддинги
     store.py            — поиск: cosine + BM25 + RRF
+    wiki/
+      builder.py        — построение wiki из паттернов
+  optimizer/
+    agent.py            — главный цикл оптимизации
+    evaluator.py        — оценка кандидатов на датасете
+    mutations.py        — промпты для генерации мутаций
+    llm_router.py       — multi-LLM роутер (Gemini, Groq)
   reporting/
     runner.py           — ежедневный отчёт
 
@@ -214,3 +227,4 @@ pytest tests/ -q
 - **Knowledge Management** — дедупликация, expiry, `/aimetrics`
 - **Quick Replies** — кнопки с шаблонами ответов
 - **HDE Status Updates** — смена статуса тикета из Telegram
+- **AI Speed** — убрать задержку Gemini 429, переключить генерацию на Groq
