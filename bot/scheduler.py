@@ -67,14 +67,14 @@ async def _maybe_send_report_button(bot: Bot) -> None:
         return
     if _report_button_sent == today or _last_report_date == today:
         return
-    yesterday = now.date() - timedelta(days=1)
-    if await db.is_report_sent(yesterday):
+    last_wd = last_work_day()
+    if await db.is_report_sent(last_wd):
         return
     _report_button_sent = today
-    yesterday = (now.date() - timedelta(days=1)).strftime("%d.%m.%Y")
+    last_wd_str = last_wd.strftime("%d.%m.%Y")
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
-            text=f"📊 Сформировать отчёт за {yesterday}",
+            text=f"📊 Сформировать отчёт за {last_wd_str}",
             callback_data="report:run_yesterday",
         ),
         InlineKeyboardButton(
@@ -104,14 +104,14 @@ async def _maybe_auto_run_report(bot: Bot) -> None:
         return
     if _last_report_date == today:
         return
-    yesterday = now.date() - timedelta(days=1)
-    if await db.is_report_sent(yesterday):
+    last_wd = last_work_day()
+    if await db.is_report_sent(last_wd):
         _last_report_date = today
         return
     _last_report_date = today
     try:
-        result = await run_report()
-        await db.mark_report_sent(yesterday)
+        result = await run_report(last_wd)
+        await db.mark_report_sent(last_wd)
         await bot.send_message(config.personal_chat_id, result, parse_mode="HTML")
     except Exception as exc:
         logger.exception("Daily report failed: %s", exc)
@@ -124,15 +124,15 @@ async def _maybe_auto_run_report(bot: Bot) -> None:
 
 
 async def process_scheduled_actions(bot: Bot) -> None:
-    from .work_schedule import is_work_day, is_work_time, was_yesterday_work_day
+    from .work_schedule import is_work_day, is_work_time, last_work_day, was_yesterday_work_day
 
     # Digest fires on any work day (morning briefing)
     if is_work_day():
         await _maybe_send_digest(bot)
 
-    # Report only makes sense if yesterday was a work day — otherwise
-    # the operator had no activity and HDE won't list them at all.
-    if was_yesterday_work_day():
+    # Report button fires on any work day — uses last_work_day() so Monday
+    # correctly prompts for Friday's report, not Sunday.
+    if is_work_day():
         await _maybe_send_report_button(bot)
         await _maybe_auto_run_report(bot)
 

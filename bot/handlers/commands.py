@@ -189,7 +189,8 @@ async def cmd_report(message: Message, command: CommandObject) -> None:
 
     # Check if target date was a work day
     from ..config import config
-    target = report_date if report_date else date.today() - timedelta(days=1)
+    from ..work_schedule import last_work_day
+    target = report_date if report_date else last_work_day()
     target_weekday = target.weekday()
     if target_weekday not in config.work_days:
         await message.answer(
@@ -203,9 +204,7 @@ async def cmd_report(message: Message, command: CommandObject) -> None:
         result = await run_report(report_date)
         from ..scheduler import mark_report_done_today
         mark_report_done_today()
-        from datetime import timedelta
-        actual_date = report_date if report_date else date.today() - timedelta(days=1)
-        await mark_report_sent(actual_date)
+        await mark_report_sent(target)
     except Exception as exc:
         result = f"❌ <b>Ошибка:</b>\n<code>{exc}</code>"
     try:

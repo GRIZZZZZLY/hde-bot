@@ -43,6 +43,24 @@ def was_yesterday_work_day() -> bool:
     return yesterday_msk.weekday() in config.work_days
 
 
+def last_work_day():
+    """Return the most recent past work day (MSK) as a date. Never returns today.
+
+    On Monday returns Friday (or Thursday if Friday is not a work day).
+    Useful for the daily report: finds the last day there was actual work.
+    """
+    from .config import config
+    from datetime import date as _date
+
+    candidate = (datetime.now(_UTC).astimezone(_MSK) - timedelta(days=1)).date()
+    for _ in range(14):
+        if candidate.weekday() in config.work_days:
+            return candidate
+        candidate -= timedelta(days=1)
+    # fallback — should never reach here with a sane work_days config
+    return (datetime.now(_UTC).astimezone(_MSK) - timedelta(days=1)).date()
+
+
 def is_work_time() -> bool:
     """Return True when the bot should send real-time notifications (day AND hour)."""
     from .config import config
