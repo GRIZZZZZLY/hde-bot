@@ -315,7 +315,7 @@ class HDEApiClient:
         """Assign ticket to the given HDE user id."""
         url = f"{self.base_url}/tickets/{ticket_id}/"
         async with aiohttp.ClientSession(auth=self.auth) as session:
-            async with session.put(url, data={"owner_id": str(owner_id)}) as response:
+            async with session.put(url, json={"owner_id": int(owner_id)}) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
                     message = self._extract_error_message(data) or f"HDE API error {response.status}"

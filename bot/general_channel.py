@@ -79,7 +79,7 @@ async def _send(bot: Bot, text: str, ticket_id: str) -> int | None:
         return None
 
 
-async def _edit(bot: Bot, message_id: int, text: str) -> None:
+async def _edit(bot: Bot, message_id: int, text: str, ticket_id: str) -> None:
     assert config.general_topic_id is not None
     try:
         await bot.edit_message_text(
@@ -88,6 +88,7 @@ async def _edit(bot: Bot, message_id: int, text: str) -> None:
             text=text,
             parse_mode="HTML",
             disable_web_page_preview=True,
+            reply_markup=_take_keyboard(ticket_id),
         )
     except TelegramAPIError as exc:
         logger.error("Failed to edit General notification %d: %s", message_id, exc)
@@ -220,7 +221,7 @@ async def on_ticket_updated(bot: Bot, payload: dict) -> None:
         ticket_name=new_name,
         link=_payload_str(payload, "link"),
     )
-    await _edit(bot, existing["message_id"], text)
+    await _edit(bot, existing["message_id"], text, ticket_id)
     await db.save_general_message(ticket_id, existing["message_id"], new_name)
     logger.info("Edited General notification for ticket %s", ticket_id)
 
