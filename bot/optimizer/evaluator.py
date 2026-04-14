@@ -46,6 +46,18 @@ async def combined_score(
     similarity_scores: list[float] = []
 
     for sample in eval_set:
+        outcome = sample.get("outcome", "rejected")
+        weight = _OUTCOME_WEIGHTS.get(outcome, 0.0)
+        ref_text = sample.get("op_answer") or sample.get("ai_answer", "")
+
+        if not ref_text:
+            # No reference text to compare against — trust the operator's signal directly.
+            # accepted/sent samples were approved, rejected were not. No generation needed.
+            direct = 1.0 if outcome in ("accepted", "sent") else 0.0
+            acceptance_scores.append(direct * weight)
+            continue
+
+        # Has reference text — generate and measure similarity
         try:
             generated = await generate(
                 sample.get("history", ""),
@@ -56,18 +68,14 @@ async def combined_score(
             logger.warning("Evaluator generate failed for sample %s: %s", sample.get("ticket_id"), exc)
             continue
 
-        outcome = sample.get("outcome", "rejected")
-        weight = _OUTCOME_WEIGHTS.get(outcome, 0.0)
-
-        # Acceptance: does generated answer look like what operator approved?
-        op_answer = sample.get("op_answer") or sample.get("ai_answer", "")
+        # Acceptance: does generated answer resemble what operator approved/sent?
         ratio = difflib.SequenceMatcher(
-            None, generated.lower(), op_answer.lower()
-        ).ratio() if op_answer else 0.0
+            None, generated.lower(), ref_text.lower()
+        ).ratio()
         accepted = 1.0 if ratio >= 0.65 else 0.0
         acceptance_scores.append(accepted * weight)
 
-        # Similarity (only for 'corrected' — op_answer is the ground truth)
+        # Similarity ground-truth (only for 'corrected' — op_answer is what operator wrote)
         if outcome == "corrected" and sample.get("op_answer"):
             sim = difflib.SequenceMatcher(
                 None, generated.lower(), sample["op_answer"].lower()
