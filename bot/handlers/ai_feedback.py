@@ -101,6 +101,19 @@ async def cb_ai_good(callback: CallbackQuery) -> None:
         quality="good",
     )
     logger.info("Saved good example for ticket %s", pending["ticket_id"])
+    # Save for prompt optimizer
+    try:
+        from .. import db as _db_module
+        await _db_module.save_optimization_sample(
+            ticket_id=pending.get("ticket_id", ""),
+            title=pending.get("title", ""),
+            history=pending.get("history", ""),
+            ai_answer=pending.get("answer_text", ""),
+            op_answer=None,
+            outcome="accepted",
+        )
+    except Exception:
+        pass
     # Update wiki article (non-fatal)
     try:
         from ..wiki.builder import build_or_update_wiki_article
