@@ -52,7 +52,7 @@ def _format_general_message(display_id: str, ticket_name: str, link: str) -> str
 
 def _take_keyboard(ticket_id: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🙋 Забрать", callback_data=f"take:{ticket_id}"),
+        InlineKeyboardButton(text="🤙 Забрать", callback_data=f"take:{ticket_id}"),
     ]])
 
 
