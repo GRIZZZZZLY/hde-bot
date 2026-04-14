@@ -7,7 +7,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.types import BotCommand, ErrorEvent, Update
 
 from .config import config
-from .db import init_db
+from .db import init_db, migrate_feedback_samples
 from .handlers.commands import router as commands_router
 from .handlers.ai_feedback import router as ai_feedback_router
 from .hde_webhook import hde_webhook_handler
@@ -63,6 +63,9 @@ async def _run_hde_server(bot: Bot, stop_event: asyncio.Event) -> None:
 
 async def _main_async() -> None:
     await init_db()
+    migrated = await migrate_feedback_samples()
+    if migrated:
+        logger.info("Migration: backfilled %d past 👍 records into optimization_samples", migrated)
 
     bot = Bot(token=config.bot_token, session=RetrySession())
     dp = _build_dispatcher(bot)

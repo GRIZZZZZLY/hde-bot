@@ -434,6 +434,45 @@ async def init_db() -> None:
         await db.commit()
 
 
+async def migrate_feedback_samples() -> int:
+    """One-time migration: backfill optimization_samples from past 👍 feedback.
+
+    Finds knowledge_items with source='feedback' / quality='good' that don't
+    yet have a matching optimization_samples row. Returns the number added.
+    Called once at startup — idempotent (skips already-migrated tickets).
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("""
+            SELECT ki.ticket_id, ki.title, ki.content, ki.created_at
+            FROM knowledge_items ki
+            WHERE ki.source = 'feedback' AND ki.quality = 'good'
+            AND NOT EXISTS (
+                SELECT 1 FROM optimization_samples os
+                WHERE os.ticket_id = ki.ticket_id AND os.outcome = 'accepted'
+            )
+        """) as cur:
+            rows = await cur.fetchall()
+
+        count = 0
+        for row in rows:
+            title = row["title"] or ""
+            content = row["content"] or ""
+            prefix = f"Тема: {title}\n\n"
+            history = content[len(prefix):] if content.startswith(prefix) else content
+            await db.execute(
+                "INSERT INTO optimization_samples "
+                "(ticket_id, title, history, ai_answer, op_answer, outcome, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (row["ticket_id"] or "", title, history, "", None, "accepted", row["created_at"]),
+            )
+            count += 1
+
+        if count:
+            await db.commit()
+        return count
+
+
 async def _ensure_ticket_topic_columns(db: aiosqlite.Connection) -> None:
     columns = await _table_columns(db, "ticket_topics")
     for name, ddl in TICKET_TOPIC_COLUMNS.items():
