@@ -9,6 +9,7 @@ import logging
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from . import db
 from .config import config
@@ -49,7 +50,13 @@ def _format_general_message(display_id: str, ticket_name: str, link: str) -> str
     return "\n".join(parts)
 
 
-async def _send(bot: Bot, text: str) -> int | None:
+def _take_keyboard(ticket_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="🙋 Забрать", callback_data=f"take:{ticket_id}"),
+    ]])
+
+
+async def _send(bot: Bot, text: str, ticket_id: str) -> int | None:
     """Send a message to the General topic. Returns message_id or None on failure."""
     assert config.general_topic_id is not None
     try:
@@ -61,6 +68,7 @@ async def _send(bot: Bot, text: str) -> int | None:
             text=text,
             parse_mode="HTML",
             disable_web_page_preview=True,
+            reply_markup=_take_keyboard(ticket_id),
         )
         if config.general_topic_id != 1:
             kwargs["message_thread_id"] = config.general_topic_id
@@ -133,7 +141,7 @@ async def on_assigned_on_create(bot: Bot, payload: dict) -> None:
         ticket_name=_payload_str(payload, "ticket_name"),
         link=_payload_str(payload, "link"),
     )
-    message_id = await _send(bot, text)
+    message_id = await _send(bot, text, ticket_id)
     if message_id:
         await db.save_general_message(ticket_id, message_id, _payload_str(payload, "ticket_name"))
         logger.info("Posted General notification for ticket %s (msg_id=%d)", ticket_id, message_id)
@@ -173,7 +181,7 @@ async def on_owner_changed(bot: Bot, payload: dict) -> None:
             ticket_name=_payload_str(payload, "ticket_name"),
             link=_payload_str(payload, "link"),
         )
-        message_id = await _send(bot, text)
+        message_id = await _send(bot, text, ticket_id)
         if message_id:
             await db.save_general_message(ticket_id, message_id, _payload_str(payload, "ticket_name"))
             logger.info("Posted General notification on re-unassign for ticket %s", ticket_id)

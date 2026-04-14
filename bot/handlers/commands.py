@@ -214,6 +214,53 @@ async def cmd_report(message: Message, command: CommandObject) -> None:
     await message.answer(result, parse_mode="HTML")
 
 
+@router.callback_query(F.data.startswith("take:"))
+async def cb_take_ticket(callback: CallbackQuery) -> None:
+    """Inline button: assign unassigned ticket to me."""
+    from ..hde_api import HDEApiClient, HDEApiError
+    from ..config import config
+    from .. import db
+
+    ticket_id = callback.data.split(":", 1)[1]
+
+    # Prevent double-tap: remove button immediately
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+
+    if not config.hde_owner_id:
+        await callback.answer("HDE_OWNER_ID не задан", show_alert=True)
+        return
+
+    try:
+        api = HDEApiClient()
+        await api.assign_ticket(ticket_id, config.hde_owner_id)
+    except HDEApiError as exc:
+        await callback.answer(f"Ошибка HDE: {exc}", show_alert=True)
+        # Restore button on failure
+        from ..general_channel import _take_keyboard
+        try:
+            await callback.message.edit_reply_markup(reply_markup=_take_keyboard(ticket_id))
+        except Exception:
+            pass
+        return
+
+    owner_name = config.hde_owner_name or "Оператор"
+    try:
+        await callback.message.edit_text(
+            f"✅ <b>Забрал {owner_name}</b>\n\n{callback.message.text or ''}",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        pass
+
+    # Remove DB record so on_owner_changed webhook skips deletion
+    await db.delete_general_message(ticket_id)
+    await callback.answer(f"Тикет {ticket_id} назначен на тебя")
+
+
 @router.callback_query(F.data == "report:cancel")
 async def cb_report_cancel(callback: CallbackQuery) -> None:
     """Inline button: dismiss the report reminder without running the report."""
