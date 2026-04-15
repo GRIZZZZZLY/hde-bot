@@ -382,3 +382,26 @@ def format_refresh_result(
     if not created and not renamed and not deleted and not cleaned_pending:
         lines.append("✨ Всё актуально, расхождений нет")
     return "\n".join(lines)
+
+
+def format_client_history(
+    client_name: str,
+    total: int,
+    recent_titles: list[str],
+    last_ticket_date: Optional[str],
+) -> str:
+    """Format client past-tickets summary for display in a topic.
+
+    Returns empty string when total == 0 (caller should skip sending).
+    """
+    if total == 0:
+        return ""
+
+    titles_block = "\n".join(f"• {_escape(t)}" for t in recent_titles) if recent_titles else ""
+    last_line = f"\n🕐 Последнее: {_escape(last_ticket_date)}" if last_ticket_date else ""
+
+    return (
+        f"🏢 <b>Клиент: {_escape(client_name)}</b> — {total} обращений\n\n"
+        f"📋 Последние темы:\n{titles_block}"
+        f"{last_line}"
+    )

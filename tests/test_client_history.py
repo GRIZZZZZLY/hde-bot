@@ -63,3 +63,41 @@ async def test_get_client_tickets_respects_limit():
         result = await client.get_client_tickets(client_id=42, limit=5)
 
     assert len(result) == 5
+
+
+def test_format_client_history_basic():
+    from bot.formatter import format_client_history
+    result = format_client_history(
+        client_name="Мария Иванова",
+        total=7,
+        recent_titles=["Не работает TouchScreen", "Сбросились настройки", "TeamViewer"],
+        last_ticket_date="3 дня назад",
+    )
+    assert "Мария Иванова" in result
+    assert "7 обращений" in result
+    assert "Не работает TouchScreen" in result
+    assert "TeamViewer" in result
+    assert "3 дня назад" in result
+
+
+def test_format_client_history_empty_returns_empty():
+    from bot.formatter import format_client_history
+    result = format_client_history(
+        client_name="Иван",
+        total=0,
+        recent_titles=[],
+        last_ticket_date=None,
+    )
+    assert result == ""
+
+
+def test_format_client_history_single_ticket():
+    from bot.formatter import format_client_history
+    result = format_client_history(
+        client_name="Петр",
+        total=1,
+        recent_titles=["Принтер не печатает"],
+        last_ticket_date="сегодня",
+    )
+    assert "Принтер не печатает" in result
+    assert "сегодня" in result
