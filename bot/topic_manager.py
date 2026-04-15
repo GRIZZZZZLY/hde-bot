@@ -319,6 +319,8 @@ async def _post_ticket_history(
     # Merge posts and comments, sort by date_created ascending
     all_posts = sorted(posts + comments, key=lambda p: p.date_created)
 
+    await _post_client_history(bot, topic_id, ticket_id)
+
     if not all_posts:
         logger.info("No posts for ticket %s, skipping history+summary", ticket_id)
         return

@@ -170,3 +170,27 @@ async def test_post_client_history_swallows_api_error():
         await _post_client_history(mock_bot, topic_id=101, ticket_id="999")  # must not raise
 
     mock_bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_post_ticket_history_calls_client_history():
+    """_post_ticket_history calls _post_client_history at the end."""
+    import bot.topic_manager as tm
+
+    mock_bot = MagicMock()
+    mock_bot.send_message = AsyncMock()
+
+    with patch.object(tm, "_post_client_history", AsyncMock()) as mock_ch, \
+         patch("bot.hde_api.HDEApiClient") as mock_api_cls, \
+         patch("bot.topic_manager.config") as mock_cfg:
+        mock_cfg.has_hde_api_credentials.return_value = True
+        mock_cfg.group_chat_id = -100
+        mock_api = MagicMock()
+        mock_api.get_ticket_info = AsyncMock(return_value=MagicMock())
+        mock_api.get_ticket_posts = AsyncMock(return_value=[])
+        mock_api.get_ticket_comments = AsyncMock(return_value=[])
+        mock_api_cls.return_value = mock_api
+
+        await tm._post_ticket_history(mock_bot, ticket_id="123", topic_id=101)
+
+    mock_ch.assert_called_once_with(mock_bot, 101, "123")
