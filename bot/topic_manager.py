@@ -994,8 +994,8 @@ def _pre_sla_minutes_left(record: "db.TicketTopic") -> int:
     if deadline is None:
         return config.pre_sla_warning_minutes
     sla_deadline = deadline + timedelta(minutes=config.pre_sla_warning_minutes)
-    remaining = (utcnow() - sla_deadline).total_seconds() / 60
-    return max(1, round(config.pre_sla_warning_minutes - remaining))
+    remaining = (sla_deadline - utcnow()).total_seconds() / 60
+    return max(1, round(remaining))
 
 
 def _pre_sla_destination(record: "db.TicketTopic") -> tuple[int, int | None]:
