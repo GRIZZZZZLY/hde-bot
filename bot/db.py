@@ -73,6 +73,7 @@ TICKET_TOPIC_COLUMNS = {
     "last_staff_reply_at": "TEXT",
     "pre_sla_notify_at": "TEXT",
     "pre_sla_sent_at": "TEXT",
+    "pre_sla_message_id": "INTEGER",
     "hde_link": "TEXT DEFAULT ''",
     "updated_at": "TEXT",
     "deleted_at": "TEXT",
@@ -94,6 +95,7 @@ UPDATABLE_FIELDS = {
     "last_staff_reply_at",
     "pre_sla_notify_at",
     "pre_sla_sent_at",
+    "pre_sla_message_id",
     "hde_link",
     "deleted_at",
     "last_assigned_at",
@@ -117,6 +119,7 @@ class TicketTopic:
     last_staff_reply_at: Optional[str]
     pre_sla_notify_at: Optional[str]
     pre_sla_sent_at: Optional[str]
+    pre_sla_message_id: Optional[int]
     hde_link: str
     created_at: str
     updated_at: str
@@ -554,6 +557,7 @@ def _row_to_topic(row: aiosqlite.Row) -> TicketTopic:
         last_staff_reply_at=row["last_staff_reply_at"],
         pre_sla_notify_at=row["pre_sla_notify_at"],
         pre_sla_sent_at=row["pre_sla_sent_at"],
+        pre_sla_message_id=row["pre_sla_message_id"],
         hde_link=row["hde_link"] or "",
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -702,6 +706,7 @@ async def set_topic_pending_delete(ticket_id: str, delete_after_at: str) -> None
         delete_after_at=delete_after_at,
         pre_sla_notify_at=None,
         pre_sla_sent_at=None,
+        pre_sla_message_id=None,
     )
 
 
@@ -722,6 +727,7 @@ async def mark_topic_deleted(ticket_id: str) -> None:
         delete_after_at=None,
         pre_sla_notify_at=None,
         pre_sla_sent_at=None,
+        pre_sla_message_id=None,
         deleted_at=to_storage(utcnow()),
     )
     if record is not None:
@@ -734,6 +740,7 @@ async def schedule_pre_sla(ticket_id: str, notify_at: str) -> None:
         ticket_id,
         pre_sla_notify_at=notify_at,
         pre_sla_sent_at=None,
+        pre_sla_message_id=None,
     )
 
 
@@ -742,13 +749,15 @@ async def clear_pre_sla(ticket_id: str) -> None:
         ticket_id,
         pre_sla_notify_at=None,
         pre_sla_sent_at=None,
+        pre_sla_message_id=None,
     )
 
 
-async def mark_pre_sla_sent(ticket_id: str, sent_at: Optional[str] = None) -> None:
+async def mark_pre_sla_sent(ticket_id: str, message_id: int, sent_at: Optional[str] = None) -> None:
     await update_topic(
         ticket_id,
         pre_sla_sent_at=sent_at or to_storage(utcnow()),
+        pre_sla_message_id=message_id,
     )
 
 
@@ -766,6 +775,25 @@ async def list_due_pre_sla(now_value: str) -> list[TicketTopic]:
             ORDER BY pre_sla_notify_at ASC
             """,
             (now_value,),
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [_row_to_topic(row) for row in rows]
+
+
+async def list_active_pre_sla() -> list[TicketTopic]:
+    """Тикеты, у которых pre-SLA уже отправлен и ждёт обновления счётчика."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT *
+            FROM ticket_topics
+            WHERE topic_state = 'active'
+              AND pre_sla_notify_at IS NOT NULL
+              AND pre_sla_sent_at IS NOT NULL
+              AND pre_sla_message_id IS NOT NULL
+            ORDER BY pre_sla_notify_at ASC
+            """,
         ) as cursor:
             rows = await cursor.fetchall()
     return [_row_to_topic(row) for row in rows]
@@ -1111,6 +1139,63 @@ async def count_general_messages() -> int:
         ) as cursor:
             row = await cursor.fetchone()
     return row[0] if row else 0
+
+
+# ---------------------------------------------------------------------------
+# Pending General notifications (tickets that arrived outside work hours)
+# ---------------------------------------------------------------------------
+
+async def _ensure_pending_general_table(db_conn) -> None:
+    await db_conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pending_general_tickets (
+            ticket_id   TEXT PRIMARY KEY,
+            display_id  TEXT DEFAULT '',
+            ticket_name TEXT DEFAULT '',
+            link        TEXT DEFAULT '',
+            created_at  TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
+
+
+async def save_pending_general(
+    ticket_id: str, display_id: str, ticket_name: str, link: str
+) -> None:
+    """Queue an unassigned ticket for General notification at work-start flush."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_pending_general_table(db)
+        await db.execute(
+            """
+            INSERT OR REPLACE INTO pending_general_tickets
+                (ticket_id, display_id, ticket_name, link)
+            VALUES (?, ?, ?, ?)
+            """,
+            (ticket_id, display_id, ticket_name, link),
+        )
+        await db.commit()
+
+
+async def list_pending_general() -> list[dict]:
+    """Return all pending General notifications ordered by created_at."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        await _ensure_pending_general_table(db)
+        async with db.execute(
+            "SELECT ticket_id, display_id, ticket_name, link FROM pending_general_tickets ORDER BY created_at"
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def delete_pending_general(ticket_id: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await _ensure_pending_general_table(db)
+        await db.execute(
+            "DELETE FROM pending_general_tickets WHERE ticket_id = ?",
+            (ticket_id,),
+        )
+        await db.commit()
 
 
 async def is_report_sent(report_date: "date") -> bool:
