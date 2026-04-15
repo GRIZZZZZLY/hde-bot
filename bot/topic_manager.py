@@ -24,6 +24,8 @@ from .formatter import (
     format_assignment_message,
     format_client_history,
     format_client_reply,
+    format_pre_sla_alert_general,
+    format_pre_sla_alert_topic,
     format_ticket_history,
     format_ticket_renamed,
     format_unassigned_message,
@@ -612,6 +614,7 @@ async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) 
         return
 
     if record.is_pending_delete:
+        await _try_delete_pre_sla_message(bot, record)
         await db.update_topic(
             ticket_id,
             unique_id=_display_id(payload),
@@ -624,6 +627,7 @@ async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) 
             hde_link=_payload_value(payload, "link"),
             pre_sla_notify_at=None,
             pre_sla_sent_at=None,
+            pre_sla_message_id=None,
         )
         logger.info("Ticket %s already pending delete; skipping duplicate close", ticket_id)
         return
@@ -648,6 +652,7 @@ async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) 
         logger.error("Failed to close topic %d for ticket %s: %s", record.topic_id, record.ticket_id, exc)
 
     await db.delete_reply_draft(record.topic_id)
+    await _try_delete_pre_sla_message(bot, record)
     await db.update_topic(
         ticket_id,
         unique_id=_display_id(payload),
@@ -662,6 +667,7 @@ async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) 
         delete_after_at=delete_after,
         pre_sla_notify_at=None,
         pre_sla_sent_at=None,
+        pre_sla_message_id=None,
     )
 
 
@@ -925,6 +931,7 @@ async def handle_staff_reply(bot: Bot, payload: dict) -> None:
         return
 
     reply_at = parse_datetime(payload.get("last_post_date")) or utcnow()
+    await _try_delete_pre_sla_message(bot, record)
     await db.update_topic(
         ticket_id,
         unique_id=_display_id(payload),
@@ -938,6 +945,7 @@ async def handle_staff_reply(bot: Bot, payload: dict) -> None:
         last_staff_reply_at=to_storage(reply_at),
         pre_sla_notify_at=None,
         pre_sla_sent_at=None,
+        pre_sla_message_id=None,
     )
 
     # Implicit feedback: compare AI suggestion with what operator actually sent
@@ -959,6 +967,7 @@ async def handle_ticket_closed(bot: Bot, payload: dict) -> None:
         logger.info("Ticket %s already pending delete, skipping duplicate ticket_closed", ticket_id)
         return
 
+    await _try_delete_pre_sla_message(bot, record)
     await db.update_topic(
         ticket_id,
         unique_id=_display_id(payload),
@@ -971,26 +980,102 @@ async def handle_ticket_closed(bot: Bot, payload: dict) -> None:
         hde_link=_payload_value(payload, "link"),
         pre_sla_notify_at=None,
         pre_sla_sent_at=None,
+        pre_sla_message_id=None,
     )
 
     await _delete_topic_now(bot, record)
     logger.info("Ticket %s completed, topic %d deleted immediately", ticket_id, record.topic_id)
 
 
-async def send_pre_sla_alert(bot: Bot, record: db.TicketTopic) -> None:
-    await bot.send_message(
-        chat_id=config.personal_chat_id,
-        text=format_pre_sla_alert(
-            display_id=record.unique_id,
+def _pre_sla_minutes_left(record: "db.TicketTopic") -> int:
+    """Вычисляет реальные минуты до SLA на основе pre_sla_notify_at + warning_minutes."""
+    from datetime import timedelta
+    deadline = parse_datetime(record.pre_sla_notify_at)
+    if deadline is None:
+        return config.pre_sla_warning_minutes
+    sla_deadline = deadline + timedelta(minutes=config.pre_sla_warning_minutes)
+    remaining = (utcnow() - sla_deadline).total_seconds() / 60
+    return max(1, round(config.pre_sla_warning_minutes - remaining))
+
+
+def _pre_sla_destination(record: "db.TicketTopic") -> tuple[int, int | None]:
+    """Возвращает (chat_id, thread_id) для pre-SLA сообщения.
+
+    Если тикет назначен — топик тикета.
+    Если нет исполнителя — General (general_topic_id).
+    Fallback: если General не настроен, шлём в топик тикета.
+    """
+    has_owner = bool(record.owner_id.strip())
+    if has_owner:
+        return config.group_chat_id, record.topic_id
+    if config.general_topic_id is not None:
+        return config.group_chat_id, config.general_topic_id
+    return config.group_chat_id, record.topic_id
+
+
+def _pre_sla_text(record: "db.TicketTopic", minutes_left: int) -> str:
+    has_owner = bool(record.owner_id.strip())
+    if has_owner:
+        return format_pre_sla_alert_topic(
+            minutes_left=minutes_left,
             ticket_name=record.ticket_name,
-            company_name=record.company_name,
-            minutes_left=config.pre_sla_warning_minutes,
             link=record.hde_link,
-        ),
+        )
+    return format_pre_sla_alert_general(
+        minutes_left=minutes_left,
+        ticket_name=record.ticket_name,
+        company_name=record.company_name,
+        link=record.hde_link,
+    )
+
+
+async def send_pre_sla_alert(bot: Bot, record: db.TicketTopic) -> None:
+    minutes_left = _pre_sla_minutes_left(record)
+    chat_id, thread_id = _pre_sla_destination(record)
+    text = _pre_sla_text(record, minutes_left)
+
+    msg = await bot.send_message(
+        chat_id=chat_id,
+        message_thread_id=thread_id,
+        text=text,
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
-    await db.mark_pre_sla_sent(record.ticket_id)
+    await db.mark_pre_sla_sent(record.ticket_id, message_id=msg.message_id)
+
+
+async def update_pre_sla_alert(bot: Bot, record: db.TicketTopic) -> None:
+    """Удаляет старое pre-SLA сообщение и присылает новое с актуальным счётчиком."""
+    chat_id, thread_id = _pre_sla_destination(record)
+
+    if record.pre_sla_message_id:
+        try:
+            await bot.delete_message(chat_id=chat_id, message_id=record.pre_sla_message_id)
+        except TelegramAPIError:
+            pass
+
+    minutes_left = _pre_sla_minutes_left(record)
+    text = _pre_sla_text(record, minutes_left)
+
+    msg = await bot.send_message(
+        chat_id=chat_id,
+        message_thread_id=thread_id,
+        text=text,
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+    await db.mark_pre_sla_sent(record.ticket_id, message_id=msg.message_id)
+
+
+async def _try_delete_pre_sla_message(bot: Bot, record: db.TicketTopic) -> None:
+    """Удаляет pre-SLA сообщение из Telegram если оно было отправлено."""
+    if not record.pre_sla_message_id:
+        return
+    chat_id, _ = _pre_sla_destination(record)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=record.pre_sla_message_id)
+    except TelegramAPIError:
+        pass
 
 
 async def delete_pending_topic(bot: Bot, record: db.TicketTopic) -> bool:
