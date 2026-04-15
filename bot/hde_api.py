@@ -138,6 +138,37 @@ class HDEApiClient:
             owner_name=owner_name,
         )
 
+    async def get_client_tickets(self, client_id: int, limit: int = 10) -> list[dict]:
+        """Return up to `limit` tickets for the given client (requester), newest first.
+
+        Returns raw ticket dicts with keys: id, subject, status, date_created.
+        """
+        url = f"{self.base_url}/tickets/"
+        params = {
+            "user_list": str(client_id),
+            "order_by": "id",
+            "order_dir": "desc",
+            "page": "1",
+        }
+        async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with session.get(url, params=params) as response:
+                data = await self._read_response(response)
+                if response.status >= 400:
+                    raise HDEApiError(
+                        self._extract_error_message(data) or f"HDE API error {response.status}"
+                    )
+        items = data.get("data", []) if isinstance(data, dict) else []
+        return [
+            {
+                "id": item.get("id"),
+                "subject": item.get("subject") or item.get("name") or "",
+                "status": item.get("status", ""),
+                "date_created": item.get("date_created", ""),
+            }
+            for item in items
+            if isinstance(item, dict)
+        ][:limit]
+
     async def get_ticket_posts(self, ticket_id: str, limit: int = 20) -> list[HDEPost]:
         """Return up to *limit* posts (newest first from API, returned oldest-first)."""
         url = f"{self.base_url}/tickets/{ticket_id}/posts/"
