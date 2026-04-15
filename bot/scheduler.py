@@ -12,13 +12,14 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from . import db
 from .config import config
-from .time_utils import to_storage, utcnow
-from .topic_manager import delete_pending_topic, send_pre_sla_alert
+from .time_utils import to_storage, utcnow, parse_datetime
+from .topic_manager import delete_pending_topic, send_pre_sla_alert, update_pre_sla_alert
 
 logger = logging.getLogger(__name__)
 
-_last_digest_date: Optional[str] = None   # "YYYY-MM-DD" UTC date
-_last_report_date: Optional[str] = None   # "YYYY-MM-DD" UTC date — set when report runs
+_last_digest_date: Optional[str] = None         # "YYYY-MM-DD" UTC date
+_last_general_flush_date: Optional[str] = None  # "YYYY-MM-DD" UTC date
+_last_report_date: Optional[str] = None         # "YYYY-MM-DD" UTC date — set when report runs
 _report_button_sent: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when button is sent
 _last_knowledge_expiry_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when weekly expiry runs
 _last_optimization_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when nightly optimizer runs
@@ -52,6 +53,22 @@ async def _maybe_send_digest(bot: Bot) -> None:
     _last_digest_date = today
     from .digest import send_morning_digest
     await send_morning_digest(bot)
+
+
+async def _maybe_flush_general(bot: Bot) -> None:
+    global _last_general_flush_date
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    if now.hour != config.digest_send_hour_utc:
+        return
+    if _last_general_flush_date == today:
+        return
+    _last_general_flush_date = today
+    from .general_channel import flush_overnight_general
+    try:
+        await flush_overnight_general(bot)
+    except Exception as exc:
+        logger.warning("Overnight General flush failed: %s", exc)
 
 
 async def _maybe_send_report_button(bot: Bot) -> None:
@@ -126,9 +143,10 @@ async def _maybe_auto_run_report(bot: Bot) -> None:
 async def process_scheduled_actions(bot: Bot) -> None:
     from .work_schedule import is_work_day, is_work_time, last_work_day, was_yesterday_work_day
 
-    # Digest fires on any work day (morning briefing)
+    # Digest + overnight General flush fire on any work day at digest hour
     if is_work_day():
         await _maybe_send_digest(bot)
+        await _maybe_flush_general(bot)
 
     # Report button fires on any work day — uses last_work_day() so Monday
     # correctly prompts for Friday's report, not Sunday.
@@ -173,6 +191,19 @@ async def process_scheduled_actions(bot: Bot) -> None:
             await send_pre_sla_alert(bot, record)
         except TelegramAPIError as exc:
             logger.error("Failed to send pre-SLA alert for ticket %s: %s", record.ticket_id, exc)
+
+    for record in await db.list_active_pre_sla():
+        if record.pre_sla_sent_at:
+            last_update = parse_datetime(record.pre_sla_sent_at)
+            if last_update and (utcnow() - last_update).total_seconds() < 55:
+                continue
+        try:
+            await update_pre_sla_alert(bot, record)
+        except TelegramAPIError as exc:
+            logger.error(
+                "Failed to update pre-SLA countdown for ticket %s: %s",
+                record.ticket_id, exc,
+            )
 
     for record in await db.list_due_deletions(now_value):
         await delete_pending_topic(bot, record)
