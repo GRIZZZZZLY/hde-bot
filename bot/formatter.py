@@ -115,17 +115,30 @@ def format_unassigned_message(display_id: str, link: str) -> str:
     )
 
 
-def format_pre_sla_alert(
-    display_id: str,
-    ticket_name: str,
-    company_name: str,
+def format_pre_sla_alert_topic(
     minutes_left: int,
+    ticket_name: str,
     link: str,
 ) -> str:
     return (
-        f"🔥 <b>Тикет сгорит через {minutes_left} минут</b> 🔥\n"
+        f"🔥 SLA через {minutes_left} мин 🔥\n"
         "──────────────\n"
         f"📝 {_escape(ticket_name)}\n"
+        f'🔗 <a href="{_escape(link)}">Открыть в HDE</a>'
+    )
+
+
+def format_pre_sla_alert_general(
+    minutes_left: int,
+    ticket_name: str,
+    company_name: str,
+    link: str,
+) -> str:
+    return (
+        f"🆘 SLA через {minutes_left} минут — тикет не назначен!\n"
+        "──────────────\n"
+        f"📝 {_escape(ticket_name)}\n"
+        f"🏢 {_escape(company_name)}\n"
         f'🔗 <a href="{_escape(link)}">Открыть в HDE</a>'
     )
 

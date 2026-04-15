@@ -24,7 +24,6 @@ from .formatter import (
     format_assignment_message,
     format_client_history,
     format_client_reply,
-    format_pre_sla_alert,
     format_ticket_history,
     format_ticket_renamed,
     format_unassigned_message,
