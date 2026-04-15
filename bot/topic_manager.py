@@ -24,7 +24,6 @@ from .formatter import (
     format_assignment_message,
     format_client_reply,
     format_pre_sla_alert,
-    format_ticket_closed,
     format_ticket_history,
     format_ticket_renamed,
     format_unassigned_message,
@@ -937,12 +936,6 @@ async def handle_ticket_closed(bot: Bot, payload: dict) -> None:
         pre_sla_notify_at=None,
         pre_sla_sent_at=None,
     )
-
-    if _is_work_time():
-        try:
-            await _send_topic_message(bot, record.topic_id, format_ticket_closed())
-        except TelegramAPIError as exc:
-            logger.error("Failed to send closed message to topic %d: %s", record.topic_id, exc)
 
     await _delete_topic_now(bot, record)
     logger.info("Ticket %s completed, topic %d deleted immediately", ticket_id, record.topic_id)
