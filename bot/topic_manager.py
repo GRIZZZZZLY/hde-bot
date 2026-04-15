@@ -1033,6 +1033,13 @@ async def _post_client_history(bot: Bot, topic_id: int, ticket_id: str) -> None:
             last_ticket_date=last_date,
         )
         if text:
-            await _send_topic_message(bot, topic_id, text)
+            await bot.send_message(
+                chat_id=config.group_chat_id,
+                message_thread_id=topic_id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                disable_notification=True,
+            )
     except Exception as exc:
         logger.warning("Client history failed for ticket %s: %s", ticket_id, exc)
