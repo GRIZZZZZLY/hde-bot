@@ -80,9 +80,22 @@ async def get_operator_report_data(
 
 async def _login(page: Page, base_url: str, login: str, password: str) -> None:
     logger.info("Logging in to %s", base_url)
-    await page.goto(base_url, wait_until="load", timeout=30_000)
+    await page.goto(base_url, wait_until="domcontentloaded", timeout=30_000)
 
-    await page.locator('input[type="email"], input[type="text"]').first.fill(login)
+    _LOGIN_FIELD = (
+        'input[type="email"], input[type="text"], '
+        'input[name="email"], input[name="username"], input[name="login"]'
+    )
+    try:
+        await page.wait_for_selector(_LOGIN_FIELD, timeout=20_000)
+    except Exception:
+        raise RuntimeError(
+            f"Login form not found at {page.url}. "
+            "The page may have redirected or the HDE login page structure changed. "
+            "Check the error screenshot in artifacts/screenshots/."
+        )
+
+    await page.locator(_LOGIN_FIELD).first.fill(login)
     await page.locator('input[type="password"]').fill(password)
 
     async with page.expect_navigation(wait_until="load", timeout=20_000):
