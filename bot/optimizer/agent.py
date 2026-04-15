@@ -225,8 +225,19 @@ async def _send_report(
     baseline_int = round(baseline * 100)
     winner_int = round(winner_score * 100)
 
-    old_snippet = current_instructions[:150].replace("\n", " ")
-    new_snippet = winner_content[:150].replace("\n", " ")
+    old_lines = current_instructions.splitlines()
+    new_lines = winner_content.splitlines()
+    # Find first line that differs for a meaningful snippet
+    old_snippet = new_snippet = ""
+    for ol, nl in zip(old_lines, new_lines):
+        if ol.strip() != nl.strip():
+            old_snippet = ol.strip()[:120]
+            new_snippet = nl.strip()[:120]
+            break
+    if not old_snippet:
+        # No line-level diff found — fall back to start of each
+        old_snippet = " ".join(old_lines[:3])[:120]
+        new_snippet = " ".join(new_lines[:3])[:120]
 
     text = (
         "\U0001f9ea <b>Ночная оптимизация промпта</b>\n\n"
@@ -234,9 +245,10 @@ async def _send_report(
         f"\u26a1 Сейчас: {baseline_int} баллов\n\n"
         f"\U0001f947 Победитель: <b>{escape(winner_model)}</b>\n"
         f"\U0001f4c8 Результат: {winner_int} баллов (+{improvement_pct}%)\n\n"
-        f"\U0001f4dd <b>Предложенное изменение:</b>\n"
-        f"— было: <i>«{escape(old_snippet)}...»</i>\n"
-        f"+ стало: <i>«{escape(new_snippet)}...»</i>"
+        f"\U0001f4dd <b>Первое отличие:</b>\n"
+        f"— <i>{escape(old_snippet)}</i>\n"
+        f"+ <i>{escape(new_snippet)}</i>\n\n"
+        f"Нажми <b>📊 Подробнее</b> чтобы увидеть оба промпта целиком."
     )
 
     builder = InlineKeyboardBuilder()

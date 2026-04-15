@@ -1157,26 +1157,43 @@ async def cb_opt_reject(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("opt:detail:"))
 async def cb_opt_detail(callback: CallbackQuery) -> None:
-    from ..db import get_optimization_samples
+    from html import escape
+    from ..db import get_prompt_version, get_optimization_samples
+    from ..ai_summary import get_active_format_instructions
     await callback.answer()
     try:
+        version_id = int(callback.data.split(":")[-1])
+        version = await get_prompt_version(version_id)
+        if not version:
+            await callback.message.answer("❌ Версия промпта не найдена.")
+            return
+
+        current = await get_active_format_instructions()
+        new_text = version["content"]
+
+        # Sample breakdown
         samples = await get_optimization_samples(days=30)
-        total = len(samples)
         by_outcome: dict[str, int] = {}
         for s in samples:
             by_outcome[s["outcome"]] = by_outcome.get(s["outcome"], 0) + 1
 
-        lines = [
-            "📊 <b>Детали оптимизации</b>",
-            f"Всего сэмплов: {total}",
-        ]
-        for outcome, count in sorted(by_outcome.items()):
-            lines.append(f"  • {outcome}: {count}")
-
-        await callback.message.answer(
-            "\n".join(lines),
-            parse_mode="HTML",
+        outcome_line = "  ".join(
+            f"{o}: {c}" for o, c in sorted(by_outcome.items())
         )
+
+        # Send full old prompt
+        old_msg = f"📄 <b>Текущий промпт:</b>\n\n<pre>{escape(current[:3800])}</pre>"
+        await callback.message.answer(old_msg, parse_mode="HTML")
+
+        # Send full new prompt
+        score_str = f"{round(version['score'] * 100)} баллов" if version.get("score") else "—"
+        new_msg = (
+            f"✨ <b>Предложенный промпт</b> ({escape(version['proposed_by'])}, {score_str}):\n\n"
+            f"<pre>{escape(new_text[:3800])}</pre>\n\n"
+            f"📊 Сэмплы: {len(samples)} ({outcome_line})"
+        )
+        await callback.message.answer(new_msg, parse_mode="HTML")
+
     except Exception as exc:
         await callback.message.answer(f"❌ Ошибка: {exc}")
 

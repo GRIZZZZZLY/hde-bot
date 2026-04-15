@@ -1739,6 +1739,18 @@ async def get_active_prompt() -> str | None:
     return row["content"] if row else None
 
 
+async def get_prompt_version(version_id: int) -> dict | None:
+    """Return a single prompt version row by id."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, content, score, proposed_by, status, created_at FROM prompt_versions WHERE id=?",
+            (version_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    return dict(row) if row else None
+
+
 async def save_prompt_version(content: str, score: float | None, proposed_by: str) -> int:
     """Save a candidate prompt version. Returns its id."""
     async with aiosqlite.connect(DB_PATH) as db:
