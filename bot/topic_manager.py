@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Optional
 
 _ticket_locks: dict[str, asyncio.Lock] = {}
@@ -22,6 +22,7 @@ from .client_media import detect_telegram_media_kind, download_client_attachment
 from .config import config
 from .formatter import (
     format_assignment_message,
+    format_client_history,
     format_client_reply,
     format_pre_sla_alert,
     format_ticket_history,
@@ -93,6 +94,40 @@ def _parse_minutes(value: object) -> Optional[int]:
         return int(str(value))
     except (TypeError, ValueError):
         return None
+
+
+def _relative_date(date_str: str | None) -> str | None:
+    """Convert HDE date string to Russian relative label.
+
+    Handles: 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DDTHH:MM:SS', 'DD.MM.YYYY HH:MM', 'YYYY-MM-DD'.
+    Returns None if unparseable.
+    """
+    if not date_str:
+        return None
+    formats = ["%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%d.%m.%Y %H:%M", "%Y-%m-%d"]
+    dt = None
+    for fmt in formats:
+        try:
+            dt = datetime.strptime(date_str[:19], fmt)
+            break
+        except ValueError:
+            continue
+    if dt is None:
+        return None
+    delta = (utcnow().date() - dt.date()).days
+    if delta == 0:
+        return "сегодня"
+    if delta == 1:
+        return "вчера"
+    if 2 <= delta <= 4:
+        return f"{delta} дня назад"
+    if delta < 7:
+        return f"{delta} дней назад"
+    if delta < 30:
+        weeks = delta // 7
+        return f"{weeks} нед. назад"
+    months = delta // 30
+    return f"{months} мес. назад"
 
 
 def _now_storage() -> str:
@@ -970,3 +1005,32 @@ async def sync_ticket_topic(bot: Bot, payload: dict) -> db.TicketTopic:
     ticket_id = _payload_value(payload, "ticket_id")
     async with _ticket_lock(ticket_id):
         return await _ensure_active_topic(bot, payload, announce_assignment=False)
+
+
+async def _post_client_history(bot: Bot, topic_id: int, ticket_id: str) -> None:
+    """Fetch client's past tickets from HDE and post a summary to the topic.
+
+    Silently skips on any error or if no past tickets exist.
+    """
+    try:
+        from .hde_api import HDEApiClient
+        client = HDEApiClient()
+        info = await client.get_ticket_info(ticket_id)
+        if not info or not info.client_id:
+            return
+        tickets = await client.get_client_tickets(info.client_id, limit=10)
+        past = [t for t in tickets if str(t.get("id", "")) != str(ticket_id)]
+        if not past:
+            return
+        recent_titles = [t["subject"] for t in past[:5] if t.get("subject")]
+        last_date = _relative_date(past[0].get("date_created"))
+        text = format_client_history(
+            client_name=info.client_name,
+            total=len(past),
+            recent_titles=recent_titles,
+            last_ticket_date=last_date,
+        )
+        if text:
+            await _send_topic_message(bot, topic_id, text)
+    except Exception as exc:
+        logger.warning("Client history failed for ticket %s: %s", ticket_id, exc)

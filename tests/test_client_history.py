@@ -101,3 +101,72 @@ def test_format_client_history_single_ticket():
     )
     assert "Принтер не печатает" in result
     assert "сегодня" in result
+
+
+@pytest.mark.asyncio
+async def test_post_client_history_sends_message():
+    """_post_client_history sends formatted message to topic when past tickets exist."""
+    mock_bot = MagicMock()
+    mock_bot.send_message = AsyncMock()
+
+    mock_info = MagicMock()
+    mock_info.client_id = 42
+    mock_info.client_name = "Мария Иванова"
+
+    mock_tickets = [
+        {"id": 5, "subject": "Принтер", "status": "closed", "date_created": "2026-04-10 10:00"},
+        {"id": 4, "subject": "TeamViewer", "status": "closed", "date_created": "2026-04-09 10:00"},
+        {"id": 3, "subject": "Настройки", "status": "closed", "date_created": "2026-04-08 10:00"},
+    ]
+
+    mock_client = MagicMock()
+    mock_client.get_ticket_info = AsyncMock(return_value=mock_info)
+    mock_client.get_client_tickets = AsyncMock(return_value=mock_tickets)
+
+    with patch("bot.hde_api.HDEApiClient", return_value=mock_client):
+        from bot.topic_manager import _post_client_history
+        await _post_client_history(mock_bot, topic_id=101, ticket_id="999")
+
+    mock_bot.send_message.assert_called_once()
+    call_kwargs = mock_bot.send_message.call_args.kwargs
+    assert "Мария Иванова" in call_kwargs["text"]
+    assert "3 обращений" in call_kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_post_client_history_skips_when_no_past_tickets():
+    """_post_client_history sends nothing if all tickets are the current one."""
+    mock_bot = MagicMock()
+    mock_bot.send_message = AsyncMock()
+
+    mock_info = MagicMock()
+    mock_info.client_id = 42
+    mock_info.client_name = "Петр"
+
+    mock_tickets = [{"id": 999, "subject": "Current", "status": "open", "date_created": ""}]
+
+    mock_client = MagicMock()
+    mock_client.get_ticket_info = AsyncMock(return_value=mock_info)
+    mock_client.get_client_tickets = AsyncMock(return_value=mock_tickets)
+
+    with patch("bot.hde_api.HDEApiClient", return_value=mock_client):
+        from bot.topic_manager import _post_client_history
+        await _post_client_history(mock_bot, topic_id=101, ticket_id="999")
+
+    mock_bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_post_client_history_swallows_api_error():
+    """_post_client_history does not raise when HDE API fails."""
+    mock_bot = MagicMock()
+    mock_bot.send_message = AsyncMock()
+
+    mock_client = MagicMock()
+    mock_client.get_ticket_info = AsyncMock(side_effect=Exception("HDE down"))
+
+    with patch("bot.hde_api.HDEApiClient", return_value=mock_client):
+        from bot.topic_manager import _post_client_history
+        await _post_client_history(mock_bot, topic_id=101, ticket_id="999")  # must not raise
+
+    mock_bot.send_message.assert_not_called()
