@@ -157,17 +157,17 @@ class HDEApiClient:
                     raise HDEApiError(
                         self._extract_error_message(data) or f"HDE API error {response.status}"
                     )
-        items = data.get("data", []) if isinstance(data, dict) else []
-        return [
-            {
-                "id": item.get("id"),
-                "subject": item.get("subject") or item.get("name") or "",
-                "status": item.get("status", ""),
-                "date_created": item.get("date_created", ""),
-            }
-            for item in items
-            if isinstance(item, dict)
-        ][:limit]
+                items = data.get("data", []) if isinstance(data, dict) else []
+                return [
+                    {
+                        "id": item.get("id"),
+                        "subject": item.get("subject") or item.get("name") or "",
+                        "status": item.get("status", ""),
+                        "date_created": item.get("date_created", ""),
+                    }
+                    for item in items
+                    if isinstance(item, dict)
+                ][:limit]
 
     async def get_ticket_posts(self, ticket_id: str, limit: int = 20) -> list[HDEPost]:
         """Return up to *limit* posts (newest first from API, returned oldest-first)."""
