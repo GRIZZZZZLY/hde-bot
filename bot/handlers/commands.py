@@ -1210,6 +1210,63 @@ async def cb_opt_detail(callback: CallbackQuery) -> None:
         await callback.message.answer(f"❌ Ошибка: {exc}")
 
 
+@router.message(Command("promptrollback"))
+async def cmd_promptrollback(message: Message) -> None:
+    from html import escape
+    from ..db import list_prompt_versions
+    from ..config import config as _cfg
+    if message.from_user and message.from_user.id not in _cfg.operator_telegram_user_ids:
+        return
+
+    versions = await list_prompt_versions(limit=8)
+    if not versions:
+        await message.answer("❌ Нет сохранённых версий промпта.")
+        return
+
+    lines = ["📋 <b>Версии промпта</b> (новейшие сверху):\n"]
+    buttons = []
+    for v in versions:
+        status_icon = "✅" if v["status"] == "active" else ("🔄" if v["status"] == "candidate" else "⬛")
+        score_str = f"{round(v['score'] * 100)}%" if v.get("score") else "—"
+        date_str = (v.get("created_at") or "")[:16]
+        preview = escape((v["content"] or "")[:80].replace("\n", " "))
+        lines.append(
+            f"{status_icon} <b>#{v['id']}</b> · {score_str} · {date_str}\n"
+            f"<i>{preview}…</i>"
+        )
+        if v["status"] != "active":
+            buttons.append([InlineKeyboardButton(
+                text=f"⬅️ Применить #{v['id']}",
+                callback_data=f"rollback:apply:{v['id']}",
+            )])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+    await message.answer("\n\n".join(lines), parse_mode="HTML", reply_markup=kb)
+
+
+@router.callback_query(F.data.startswith("rollback:apply:"))
+async def cb_rollback_apply(callback: CallbackQuery) -> None:
+    from ..db import apply_prompt_version, get_prompt_version
+    from ..ai_summary import invalidate_prompt_cache
+    await callback.answer()
+    try:
+        version_id = int(callback.data.split(":")[-1])
+        version = await get_prompt_version(version_id)
+        if not version:
+            await callback.answer("❌ Версия не найдена", show_alert=True)
+            return
+        await apply_prompt_version(version_id)
+        invalidate_prompt_cache()
+        score_str = f"{round(version['score'] * 100)}%" if version.get("score") else "—"
+        await callback.message.edit_text(
+            callback.message.text + f"\n\n✅ <b>Применена версия #{version_id}</b> (score: {score_str})",
+            parse_mode="HTML",
+            reply_markup=None,
+        )
+    except Exception as exc:
+        await callback.answer(f"❌ Ошибка: {exc}", show_alert=True)
+
+
 @router.message()
 async def cache_topic_media(message: Message) -> None:
     await cache_incoming_topic_media(message)

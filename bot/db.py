@@ -78,6 +78,7 @@ TICKET_TOPIC_COLUMNS = {
     "updated_at": "TEXT",
     "deleted_at": "TEXT",
     "last_assigned_at": "TEXT",
+    "ai_summary_sent_at": "TEXT",
 }
 
 UPDATABLE_FIELDS = {
@@ -99,6 +100,7 @@ UPDATABLE_FIELDS = {
     "hde_link",
     "deleted_at",
     "last_assigned_at",
+    "ai_summary_sent_at",
 }
 
 
@@ -125,6 +127,7 @@ class TicketTopic:
     updated_at: str
     deleted_at: Optional[str]
     last_assigned_at: Optional[str]
+    ai_summary_sent_at: Optional[str]
 
     @property
     def is_active(self) -> bool:
@@ -793,6 +796,24 @@ async def list_active_pre_sla() -> list[TicketTopic]:
               AND pre_sla_sent_at IS NOT NULL
               AND pre_sla_message_id IS NOT NULL
             ORDER BY pre_sla_notify_at ASC
+            """,
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [_row_to_topic(row) for row in rows]
+
+
+async def list_topics_missing_summary() -> list[TicketTopic]:
+    """Активные топики где клиент писал, но AI саммари ещё не отправлялось."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT *
+            FROM ticket_topics
+            WHERE topic_state = 'active'
+              AND last_client_reply_at IS NOT NULL
+              AND ai_summary_sent_at IS NULL
+            ORDER BY last_client_reply_at ASC
             """,
         ) as cursor:
             rows = await cursor.fetchall()
@@ -1867,3 +1888,16 @@ async def reject_all_prompt_candidates() -> None:
             "UPDATE prompt_versions SET status='rejected' WHERE status='candidate'"
         )
         await db.commit()
+
+
+async def list_prompt_versions(limit: int = 8) -> list[dict]:
+    """Return last *limit* prompt versions newest-first."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, content, score, proposed_by, status, created_at FROM prompt_versions"
+            " ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
