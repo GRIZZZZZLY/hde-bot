@@ -68,17 +68,21 @@ def is_report_configured() -> bool:
         or os.getenv("HDE_API_KEY", "").strip()
     )
     google_key = _get_google_service_account_file(required=False)
-    return all(
-        (
-            bool(os.getenv("HDE_API_BASE_URL", "").strip()),
-            bool(os.getenv("HDE_API_EMAIL", "").strip()),
-            bool(os.getenv("HDE_OWNER_NAME", "").strip()),
-            password_ok,
-            bool(os.getenv("GOOGLE_SPREADSHEET_ID", "").strip()),
-            bool(google_key),
-            Path(google_key).exists(),
-        )
-    )
+
+    checks = {
+        "HDE_API_BASE_URL": bool(os.getenv("HDE_API_BASE_URL", "").strip()),
+        "HDE_API_EMAIL": bool(os.getenv("HDE_API_EMAIL", "").strip()),
+        "HDE_OWNER_NAME": bool(os.getenv("HDE_OWNER_NAME", "").strip()),
+        "HDE_REPORT_PASSWORD/HDE_API_KEY": password_ok,
+        "GOOGLE_SPREADSHEET_ID": bool(os.getenv("GOOGLE_SPREADSHEET_ID", "").strip()),
+        "GOOGLE_SERVICE_ACCOUNT_FILE (set)": bool(google_key),
+        "GOOGLE_SERVICE_ACCOUNT_FILE (exists)": bool(google_key) and Path(google_key).exists(),
+    }
+    missing = [k for k, v in checks.items() if not v]
+    if missing:
+        logger.warning("Report not configured, missing: %s", ", ".join(missing))
+        return False
+    return True
 
 
 async def run_report(report_date: date | None = None) -> str:

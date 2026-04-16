@@ -86,6 +86,7 @@ async def _maybe_send_report_button(bot: Bot) -> None:
         return
     last_wd = last_work_day()
     if await db.is_report_sent(last_wd):
+        logger.info("Report for %s already sent, skipping button", last_wd)
         return
     _report_button_sent = today
     last_wd_str = last_wd.strftime("%d.%m.%Y")
