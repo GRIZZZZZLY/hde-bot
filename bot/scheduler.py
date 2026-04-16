@@ -23,6 +23,7 @@ _last_report_date: Optional[str] = None         # "YYYY-MM-DD" UTC date — set 
 _report_button_sent: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when button is sent
 _last_knowledge_expiry_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when weekly expiry runs
 _last_optimization_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when nightly optimizer runs
+_last_media_gc_hour: Optional[str] = None  # "YYYY-MM-DD HH" — set when hourly media GC runs
 _ALLOWED_UPDATES = ["message", "callback_query"]
 
 KNOWLEDGE_EXPIRY_DAYS = 180
@@ -157,9 +158,21 @@ async def process_scheduled_actions(bot: Bot) -> None:
         await _maybe_send_report_button(bot)
         await _maybe_auto_run_report(bot)
 
+    # Hourly media cache GC — remove topic_media_cache rows older than 1h
+    global _last_media_gc_hour
+    now = datetime.now(timezone.utc)
+    gc_key = now.strftime("%Y-%m-%d %H")
+    if _last_media_gc_hour != gc_key:
+        _last_media_gc_hour = gc_key
+        try:
+            deleted = await db.gc_stale_media_cache(hours=1)
+            if deleted:
+                logger.info("Media cache GC: removed %d stale rows", deleted)
+        except Exception as exc:
+            logger.warning("Media cache GC failed: %s", exc)
+
     # Weekly knowledge expiry (Sunday 00:xx UTC)
     global _last_knowledge_expiry_date
-    now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     if now.weekday() == 6 and now.hour == 0:
         if _last_knowledge_expiry_date != today:

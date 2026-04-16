@@ -904,8 +904,9 @@ async def cmd_aianalyze(message: Message) -> None:
         """Try to analyze a batch with Groq. Returns parsed list or None on failure."""
         if not _config.groq_api_key:
             return None
+        from ..llm_semaphore import LLM_SEMAPHORE  # noqa: PLC0415
         try:
-            async with session.post(
+            async with LLM_SEMAPHORE, session.post(
                 _GROQ_URL,
                 json={
                     "model": _GROQ_MODEL,
@@ -954,9 +955,10 @@ async def cmd_aianalyze(message: Message) -> None:
                     "contents": [{"parts": [{"text": full_prompt}]}],
                     "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2000},
                 }
+                from ..llm_semaphore import LLM_SEMAPHORE as _LLM_SEM  # noqa: PLC0415
                 for attempt in range(2):
                     try:
-                        async with session.post(
+                        async with _LLM_SEM, session.post(
                             (
                                 "https://generativelanguage.googleapis.com/v1beta/models/"
                                 "gemini-2.0-flash:generateContent"

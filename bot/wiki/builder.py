@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import aiohttp
 
 from ..config import config
+from ..llm_semaphore import LLM_SEMAPHORE
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +63,7 @@ async def _call_gemini(
         "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2000},
     }
     try:
-        async with session.post(
+        async with LLM_SEMAPHORE, session.post(
             _GEMINI_URL,
             json=payload,
             params={"key": config.gemini_api_key},

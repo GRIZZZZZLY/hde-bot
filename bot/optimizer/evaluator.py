@@ -4,6 +4,7 @@ from __future__ import annotations
 import difflib
 import logging
 import random
+import re
 from typing import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,41 @@ _OUTCOME_WEIGHTS = {
 # Max samples to replay (limits API cost: 20 samples × 3 candidates = 60 Gemini calls)
 _MAX_EVAL_SAMPLES = 20
 
+# Anti-degradation thresholds — penalise "lazy" short/structurally broken answers
+_MIN_LENGTH_RATIO = 0.3           # generated must be ≥30% of reference length
+_LENGTH_PENALTY = 0.5             # multiplier when length gate fails
+_MIN_JACCARD = 0.3                # word-set overlap with reference
+_JACCARD_PENALTY = 0.7            # multiplier when jaccard gate fails
+_CLIENT_SECTION_RE = re.compile(r"клиенту\s*:", re.IGNORECASE)
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
 GenerateFn = Callable[[str, str, str], Awaitable[str]]
+
+
+def _word_set(text: str) -> set[str]:
+    return {w.lower() for w in _WORD_RE.findall(text) if len(w) > 2}
+
+
+def _quality_multiplier(generated: str, ref_text: str) -> float:
+    """Return multiplier in [0, 1] penalising lazy/broken answers.
+
+    Zero if structural check fails (no "Клиенту:" section).
+    Otherwise combines length-gate and jaccard-gate penalties.
+    """
+    if not _CLIENT_SECTION_RE.search(generated):
+        return 0.0
+
+    mult = 1.0
+    if ref_text and len(generated) < _MIN_LENGTH_RATIO * len(ref_text):
+        mult *= _LENGTH_PENALTY
+
+    ref_words = _word_set(ref_text)
+    if ref_words:
+        gen_words = _word_set(generated)
+        overlap = len(gen_words & ref_words) / len(ref_words)
+        if overlap < _MIN_JACCARD:
+            mult *= _JACCARD_PENALTY
+    return mult
 
 
 async def combined_score(
@@ -73,14 +108,15 @@ async def combined_score(
             None, generated.lower(), ref_text.lower()
         ).ratio()
         accepted = 1.0 if ratio >= 0.65 else 0.0
-        acceptance_scores.append(accepted * weight)
+        quality = _quality_multiplier(generated, ref_text)
+        acceptance_scores.append(accepted * weight * quality)
 
         # Similarity ground-truth (only for 'corrected' — op_answer is what operator wrote)
         if outcome == "corrected" and sample.get("op_answer"):
             sim = difflib.SequenceMatcher(
                 None, generated.lower(), sample["op_answer"].lower()
             ).ratio()
-            similarity_scores.append(sim)
+            similarity_scores.append(sim * quality)
 
     if not acceptance_scores:
         return 0.0
@@ -113,7 +149,8 @@ async def _generate_answer(history: str, title: str, format_instructions: str) -
         "https://generativelanguage.googleapis.com/v1beta/models/"
         "gemini-2.5-flash:generateContent"
     )
-    async with aiohttp.ClientSession() as session:
+    from ..llm_semaphore import LLM_SEMAPHORE  # local import: avoid cycle
+    async with LLM_SEMAPHORE, aiohttp.ClientSession() as session:
         async with session.post(
             url,
             params={"key": config.gemini_api_key},

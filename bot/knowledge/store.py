@@ -1,7 +1,9 @@
 """Vector store: save and retrieve knowledge items by cosine similarity."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 import numpy as np
 
@@ -13,6 +15,51 @@ from ..db import (
 )
 
 logger = logging.getLogger(__name__)
+
+# --- In-memory embedding cache (Priority 3) ---
+# Reloads all embeddings from SQLite at most once per _CACHE_TTL seconds.
+# Invariant: cache holds pre-parsed np.ndarray — avoids np.frombuffer on every query.
+_CACHE_TTL = 60.0
+_cache_rows: list[tuple[int, str, np.ndarray, str]] | None = None
+_cache_loaded_at: float = 0.0
+_cache_lock = asyncio.Lock()
+
+
+async def _load_embeddings_cached() -> list[tuple[int, str, np.ndarray, str]]:
+    """Return cached (id, content, ndarray, company_id) rows; reload if stale."""
+    global _cache_rows, _cache_loaded_at
+    now = time.monotonic()
+    if _cache_rows is not None and (now - _cache_loaded_at) < _CACHE_TTL:
+        return _cache_rows
+
+    async with _cache_lock:
+        # Double-check after acquiring lock
+        now = time.monotonic()
+        if _cache_rows is not None and (now - _cache_loaded_at) < _CACHE_TTL:
+            return _cache_rows
+
+        raw_rows = await list_all_knowledge_embeddings()
+        parsed: list[tuple[int, str, np.ndarray, str]] = []
+        for row_id, content, emb_bytes, item_company_id in raw_rows:
+            try:
+                emb = bytes_to_embedding(emb_bytes)
+            except Exception:
+                logger.warning("Skipping corrupted embedding row_id=%s", row_id, exc_info=True)
+                continue
+            parsed.append((row_id, content, emb, item_company_id))
+        _cache_rows = parsed
+        _cache_loaded_at = now
+        return _cache_rows
+
+
+def invalidate_embeddings_cache() -> None:
+    """Force the next find_similar call to reload embeddings from SQLite.
+
+    Call after bulk imports or when staleness matters more than TTL.
+    """
+    global _cache_rows, _cache_loaded_at
+    _cache_rows = None
+    _cache_loaded_at = 0.0
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -43,18 +90,13 @@ async def find_similar(
     When query_text provided: merges cosine + BM25 via RRF.
     When company_id provided: same-company items get an extra RRF boost.
     """
-    rows = await list_all_knowledge_embeddings()
+    rows = await _load_embeddings_cached()
     if not rows:
         return []
 
-    # Cosine scoring
+    # Cosine scoring (embeddings are pre-parsed np.ndarrays in the cache)
     cosine_scored: list[tuple[float, int, str, str]] = []
-    for row_id, content, emb_bytes, item_company_id in rows:
-        try:
-            emb = bytes_to_embedding(emb_bytes)
-        except Exception:
-            logger.warning("Skipping corrupted embedding row_id=%s", row_id, exc_info=True)
-            continue
+    for row_id, content, emb, item_company_id in rows:
         score = cosine_similarity(query_embedding, emb)
         cosine_scored.append((score, row_id, content, item_company_id))
     cosine_scored.sort(key=lambda x: x[0], reverse=True)
@@ -131,4 +173,5 @@ async def save_and_index(
         company_id=company_id,
         company_name=company_name,
     )
+    invalidate_embeddings_cache()
     return item_id

@@ -183,16 +183,79 @@ async def test_combined_score_perfect_acceptance():
     """If all generated answers match op_answer — score near 1."""
     from bot.optimizer.evaluator import combined_score
 
+    ref = "Клиенту: проверьте подключение принтера по USB и перезапустите кассу."
     samples = [
         {"history": "История", "title": "Тест", "ai_answer": "Ответ AI",
-         "op_answer": "Ответ оператора", "outcome": "accepted", "confidence": 80},
+         "op_answer": ref, "outcome": "accepted", "confidence": 80},
     ]
 
     async def fake_generate(history, title, fmt):
-        return "Ответ оператора"  # perfect match
+        return ref  # perfect match with "Клиенту:" section
 
     score = await combined_score(samples, "инструкция", _generate_fn=fake_generate)
     assert score > 0.7
+
+
+@pytest.mark.asyncio
+async def test_combined_score_zero_when_no_client_section():
+    """Structural check: no 'Клиенту:' section → score = 0 (prevents lazy outputs)."""
+    from bot.optimizer.evaluator import combined_score
+
+    ref = "Клиенту: проверьте подключение принтера по USB и перезапустите кассу."
+    samples = [
+        {"history": "История", "title": "Тест", "ai_answer": "AI",
+         "op_answer": ref, "outcome": "sent", "confidence": 90},
+    ]
+
+    async def fake_generate(history, title, fmt):
+        return ref.replace("Клиенту:", "").strip()  # same words but no structural marker
+
+    score = await combined_score(samples, "инструкция", _generate_fn=fake_generate)
+    assert score == 0.0
+
+
+@pytest.mark.asyncio
+async def test_combined_score_length_gate_penalizes_short():
+    """Length gate: generated <30% of reference length → penalty 0.5."""
+    from bot.optimizer.evaluator import combined_score
+
+    ref = "Клиенту: " + ("проверьте подключение принтера и перезапустите кассу " * 10)
+    samples = [
+        {"history": "История", "title": "Тест", "ai_answer": "AI",
+         "op_answer": ref, "outcome": "sent", "confidence": 90},
+    ]
+
+    async def fake_generate_short(history, title, fmt):
+        return "Клиенту: ок"
+
+    async def fake_generate_full(history, title, fmt):
+        return ref
+
+    short_score = await combined_score(samples, "инструкция", _generate_fn=fake_generate_short)
+    full_score = await combined_score(samples, "инструкция", _generate_fn=fake_generate_full)
+    assert short_score < full_score
+
+
+@pytest.mark.asyncio
+async def test_combined_score_jaccard_gate_penalizes_offtopic():
+    """Jaccard gate: low word overlap with reference → penalty 0.7."""
+    from bot.optimizer.evaluator import combined_score
+
+    ref = "Клиенту: проверьте подключение принтера USB и перезапустите кассу атол"
+    samples = [
+        {"history": "История", "title": "Тест", "ai_answer": "AI",
+         "op_answer": ref, "outcome": "sent", "confidence": 90},
+    ]
+
+    async def fake_offtopic(history, title, fmt):
+        return "Клиенту: обратитесь поставщику бумаги магазина праздника салюта петарды"
+
+    async def fake_ontopic(history, title, fmt):
+        return ref
+
+    off = await combined_score(samples, "инструкция", _generate_fn=fake_offtopic)
+    on = await combined_score(samples, "инструкция", _generate_fn=fake_ontopic)
+    assert off < on
 
 
 @pytest.mark.asyncio

@@ -175,6 +175,7 @@ async def _send_client_attachments(bot: Bot, topic_id: int, payload: dict) -> No
 
     photo_video_media: list[tuple[str, BufferedInputFile]] = []
     single_items: list[tuple[str, BufferedInputFile]] = []
+    photo_blobs: list[tuple[bytes, str]] = []  # (content, filename) for Vision
 
     for ref in attachment_refs:
         try:
@@ -187,6 +188,8 @@ async def _send_client_attachments(bot: Bot, topic_id: int, payload: dict) -> No
         input_file = BufferedInputFile(attachment.content, filename=attachment.filename)
         if kind in {"photo", "video"}:
             photo_video_media.append((kind, input_file))
+            if kind == "photo":
+                photo_blobs.append((attachment.content, attachment.filename))
         else:
             single_items.append((kind, input_file))
 
@@ -238,6 +241,52 @@ async def _send_client_attachments(bot: Bot, topic_id: int, payload: dict) -> No
                 message_thread_id=topic_id,
                 document=media,
             )
+
+    if photo_blobs:
+        await _describe_and_post_photos(bot, topic_id, photo_blobs, payload)
+
+
+async def _describe_and_post_photos(
+    bot: Bot,
+    topic_id: int,
+    photos: list[tuple[bytes, str]],
+    payload: dict,
+) -> None:
+    """Describe photos via Vision and post a single 🔍 summary message to the topic."""
+    from .vision import describe_image  # local import: keep vision lazy
+
+    tasks = [describe_image(content, filename) for content, filename in photos]
+    try:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    except Exception as exc:
+        logger.warning("vision: gather failed for ticket %s: %s", _payload_value(payload, "ticket_id"), exc)
+        return
+
+    descriptions: list[str] = []
+    for r in results:
+        if isinstance(r, str) and r.strip():
+            descriptions.append(r.strip())
+
+    if not descriptions:
+        return
+
+    ticket_id = str(_payload_value(payload, "ticket_id") or "")
+    if ticket_id:
+        try:
+            await db.append_photo_descriptions(ticket_id, descriptions)
+        except Exception as exc:
+            logger.warning("vision: failed to persist descriptions for ticket %s: %s", ticket_id, exc)
+
+    if len(descriptions) == 1:
+        text = f"🔍 На фото: {descriptions[0]}"
+    else:
+        lines = "\n".join(f"{i}. {d}" for i, d in enumerate(descriptions, 1))
+        text = f"🔍 На фото:\n{lines}"
+
+    try:
+        await _send_topic_message(bot, topic_id, text)
+    except Exception as exc:
+        logger.warning("vision: failed to post description for ticket %s: %s", ticket_id, exc)
 
 
 async def _create_topic(bot: Bot, payload: dict) -> int:
@@ -904,8 +953,9 @@ async def _maybe_update_pattern(title: str, staff_text: str, ticket_id: str) -> 
         "Только JSON. Если шагов нет — верни {}.\n\n"
         f"Тема: {title}\nОтвет специалиста: {staff_text[:600]}"
     )
+    from .llm_semaphore import LLM_SEMAPHORE  # noqa: PLC0415
     try:
-        async with _aiohttp.ClientSession() as session:
+        async with LLM_SEMAPHORE, _aiohttp.ClientSession() as session:
             async with session.post(
                 (
                     "https://generativelanguage.googleapis.com/v1beta/models/"

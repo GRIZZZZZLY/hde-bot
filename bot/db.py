@@ -79,6 +79,7 @@ TICKET_TOPIC_COLUMNS = {
     "deleted_at": "TEXT",
     "last_assigned_at": "TEXT",
     "ai_summary_sent_at": "TEXT",
+    "photo_descriptions": "TEXT DEFAULT ''",
 }
 
 UPDATABLE_FIELDS = {
@@ -101,6 +102,7 @@ UPDATABLE_FIELDS = {
     "deleted_at",
     "last_assigned_at",
     "ai_summary_sent_at",
+    "photo_descriptions",
 }
 
 
@@ -128,6 +130,7 @@ class TicketTopic:
     deleted_at: Optional[str]
     last_assigned_at: Optional[str]
     ai_summary_sent_at: Optional[str]
+    photo_descriptions: str = ""
 
     @property
     def is_active(self) -> bool:
@@ -357,10 +360,13 @@ async def init_db() -> None:
         ]
         for canonical, variants in _norm_updates:
             for variant in variants:
-                await db.execute(
-                    "UPDATE solution_patterns SET equipment = ? WHERE equipment = ?",
-                    (canonical, variant),
-                )
+                try:
+                    await db.execute(
+                        "UPDATE solution_patterns SET equipment = ? WHERE equipment = ?",
+                        (canonical, variant),
+                    )
+                except Exception:
+                    pass  # table created later in init_db — migration no-op on fresh DB
 
         # Populate FTS index for existing items (first-time migration, idempotent)
         try:
@@ -567,6 +573,7 @@ def _row_to_topic(row: aiosqlite.Row) -> TicketTopic:
         deleted_at=row["deleted_at"],
         last_assigned_at=row["last_assigned_at"],
         ai_summary_sent_at=row["ai_summary_sent_at"] if "ai_summary_sent_at" in row.keys() else None,
+        photo_descriptions=row["photo_descriptions"] if "photo_descriptions" in row.keys() else "",
     )
 
 
@@ -699,6 +706,30 @@ async def update_topic(ticket_id: str, **fields: Any) -> None:
             WHERE ticket_id = ?
             """,
             values,
+        )
+        await db.commit()
+
+
+async def append_photo_descriptions(ticket_id: str, descriptions: list[str]) -> None:
+    """Append Vision-generated photo descriptions to the topic (newline-joined).
+
+    Used by knowledge indexing to include image content in embeddings.
+    No-op if descriptions is empty or ticket is unknown.
+    """
+    if not descriptions:
+        return
+    addition = "\n".join(d.strip() for d in descriptions if d and d.strip())
+    if not addition:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE ticket_topics
+            SET photo_descriptions = TRIM(COALESCE(photo_descriptions, '') || CHAR(10) || ?, CHAR(10)),
+                updated_at = datetime('now')
+            WHERE ticket_id = ?
+            """,
+            (addition, ticket_id),
         )
         await db.commit()
 
@@ -1022,6 +1053,22 @@ async def delete_topic_media_cache(topic_id: int) -> None:
             (topic_id,),
         )
         await db.commit()
+
+
+async def gc_stale_media_cache(hours: int = 1) -> int:
+    """Delete topic_media_cache rows older than N hours. Returns deleted row count.
+
+    Media groups arrive within seconds — rows older than an hour are guaranteed
+    irrelevant for reply-stitching and otherwise accumulate until topic deletion.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM topic_media_cache WHERE created_at < datetime('now', ?)",
+            (f"-{int(hours)} hours",),
+        )
+        deleted = cursor.rowcount or 0
+        await db.commit()
+    return deleted
 
 
 async def save_sent_message(

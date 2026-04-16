@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 
 from .config import config
+from .llm_semaphore import LLM_SEMAPHORE
 
 if TYPE_CHECKING:
     from .hde_api import HDEPost, HDETicketInfo
@@ -59,7 +60,7 @@ async def _call_groq_for_summary(system_text: str, history: str, ticket_id: str)
         logger.info("Groq fallback skipped: GROQ_API_KEY not set")
         return None
     try:
-        async with aiohttp.ClientSession() as session:
+        async with LLM_SEMAPHORE, aiohttp.ClientSession() as session:
             async with session.post(
                 _GROQ_URL,
                 json={
@@ -455,7 +456,7 @@ async def generate_ticket_summary(
 
                 for attempt in range(3):
                     try:
-                        async with session.post(
+                        async with LLM_SEMAPHORE, session.post(
                             _GEMINI_URL,
                             json=payload,
                             params={"key": config.gemini_api_key},

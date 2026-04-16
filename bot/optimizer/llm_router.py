@@ -7,6 +7,8 @@ from typing import Protocol, runtime_checkable
 
 import aiohttp
 
+from ..llm_semaphore import LLM_SEMAPHORE
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,7 +36,7 @@ class GeminiClient:
             "contents": [{"role": "user", "parts": [{"text": user}]}],
             "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1000},
         }
-        async with aiohttp.ClientSession() as session:
+        async with LLM_SEMAPHORE, aiohttp.ClientSession() as session:
             async with session.post(
                 self._url,
                 params={"key": self.api_key},
@@ -72,7 +74,7 @@ class GroqClient:
             "temperature": 0.7,
             "max_tokens": 1000,
         }
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with LLM_SEMAPHORE, httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 self._URL,
                 headers={"Authorization": f"Bearer {self.api_key}"},
