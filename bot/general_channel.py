@@ -262,7 +262,40 @@ async def on_owner_changed(bot: Bot, payload: dict) -> None:
 async def on_ticket_updated(bot: Bot, payload: dict) -> None:
     if config.general_topic_id is None:
         return
+    from .work_schedule import is_work_time
     ticket_id = _payload_str(payload, "ticket_id")
+    owner_name = _payload_str(payload, "owner_name")
+    department = _payload_str(payload, "department")
+    logger.info(
+        "general_channel.on_ticket_updated: ticket=%s owner_name=%r department=%r target_dept=%r",
+        ticket_id, owner_name, department, config.unassigned_department,
+    )
+
+    # New unassigned ticket arriving via ticket_updated (HDE doesn't send assigned_on_create)
+    if not _is_our_operator(payload) and _is_unassigned(owner_name, department, config.unassigned_department):
+        existing_msg = await db.get_general_message(ticket_id)
+        if existing_msg is None:
+            if not is_work_time():
+                await db.save_pending_general(
+                    ticket_id=ticket_id,
+                    display_id=_display_id(payload),
+                    ticket_name=_payload_str(payload, "ticket_name"),
+                    link=_payload_str(payload, "link"),
+                )
+                _overnight_pending_ids.add(ticket_id)
+                logger.info("Queued General notification for ticket %s (ticket_updated, outside work hours)", ticket_id)
+            else:
+                text = _format_general_message(
+                    display_id=_display_id(payload),
+                    ticket_name=_payload_str(payload, "ticket_name"),
+                    link=_payload_str(payload, "link"),
+                )
+                message_id = await _send(bot, text, ticket_id)
+                if message_id:
+                    await db.save_general_message(ticket_id, message_id, _payload_str(payload, "ticket_name"))
+                    logger.info("Posted General notification for ticket %s (via ticket_updated)", ticket_id)
+            return
+
     existing = await db.get_general_message(ticket_id)
     if existing is None:
         return
