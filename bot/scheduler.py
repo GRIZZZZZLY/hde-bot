@@ -75,6 +75,7 @@ async def _maybe_send_report_button(bot: Bot) -> None:
     """At REPORT_SEND_HOUR_UTC: send an inline button to personal chat."""
     global _report_button_sent
     from .reporting.runner import is_report_configured
+    from .work_schedule import last_work_day
     if not is_report_configured():
         return
     now = datetime.now(timezone.utc)
@@ -113,6 +114,7 @@ async def _maybe_auto_run_report(bot: Bot) -> None:
     """At REPORT_SEND_HOUR_UTC + 1: auto-run if button was not pressed."""
     global _last_report_date
     from .reporting.runner import is_report_configured, run_report
+    from .work_schedule import last_work_day
     if not is_report_configured():
         return
     now = datetime.now(timezone.utc)
