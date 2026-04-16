@@ -101,6 +101,7 @@ async def run_optimizer(bot: Bot) -> None:
     router = LLMRouter(
         gemini_api_key=config.gemini_api_key,
         groq_api_key=config.groq_api_key,
+        openrouter_api_key=config.openrouter_api_key,
     )
     try:
         mutations, mut_errors = await router.complete_all(system=system_prompt, user=user_prompt)

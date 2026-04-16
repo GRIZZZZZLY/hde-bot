@@ -114,8 +114,9 @@ async def test_llm_router_complete_all_returns_responses():
     router = LLMRouter.__new__(LLMRouter)
     router.clients = {"gemini": AsyncMock(complete=fake_complete)}
 
-    results = await router.complete_all(system="system", user="user")
+    results, errors = await router.complete_all(system="system", user="user")
     assert results == {"gemini": "fake response"}
+    assert errors == {}
 
 
 @pytest.mark.asyncio
@@ -306,7 +307,11 @@ async def test_run_optimizer_skips_when_too_few_samples():
             await run_optimizer(bot_mock)
 
     mock_report.assert_not_called()
-    bot_mock.send_message.assert_not_called()
+    # Progress bar is still sent (UX feedback), but it must indicate the skip.
+    progress_msg = bot_mock.send_message.return_value
+    last_edit = progress_msg.edit_text.call_args
+    assert last_edit is not None
+    assert "ропущ" in last_edit.args[0] or "ропущ" in last_edit.kwargs.get("text", "")
 
 
 # --- callbacks ---

@@ -85,10 +85,48 @@ class GroqClient:
         return data["choices"][0]["message"]["content"].strip()
 
 
+class OpenRouterClient:
+    """Thin wrapper around OpenRouter OpenAI-compatible API."""
+
+    _URL = "https://openrouter.ai/api/v1/chat/completions"
+
+    def __init__(self, model: str, api_key: str) -> None:
+        self.model = model
+        self.api_key = api_key
+
+    async def complete(self, system: str, user: str) -> str:
+        if not self.api_key:
+            raise ValueError("OPENROUTER_API_KEY is not set — cannot use OpenRouterClient")
+        import httpx
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "temperature": 0.7,
+            "max_tokens": 1000,
+        }
+        async with LLM_SEMAPHORE, httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                self._URL,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        return data["choices"][0]["message"]["content"].strip()
+
+
 class LLMRouter:
     """Routes mutation requests to all available LLM clients in parallel."""
 
-    def __init__(self, gemini_api_key: str, groq_api_key: str) -> None:
+    def __init__(
+        self,
+        gemini_api_key: str,
+        groq_api_key: str,
+        openrouter_api_key: str = "",
+    ) -> None:
         self.clients: dict[str, LLMClient] = {
             "gemini": GeminiClient(model="gemini-2.5-flash", api_key=gemini_api_key),
             # Use smaller/faster Groq models for mutations to avoid rate limits.
@@ -96,6 +134,11 @@ class LLMRouter:
             "llama": GroqClient(model="llama-3.1-8b-instant", api_key=groq_api_key),
             "gemma": GroqClient(model="gemma2-9b-it", api_key=groq_api_key),
         }
+        if openrouter_api_key:
+            self.clients["gemma4"] = OpenRouterClient(
+                model="google/gemma-4-31b-it:free",
+                api_key=openrouter_api_key,
+            )
 
     async def complete_all(
         self, system: str, user: str
