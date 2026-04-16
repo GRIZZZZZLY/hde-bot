@@ -19,6 +19,8 @@ from .config import config
 _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
 # Tracks unique ticket IDs saved to pending since last flush (in-memory, resets on restart)
 _overnight_pending_ids: set[str] = set()
+# Prevents duplicate General notifications when ticket_updated + owner_changed arrive concurrently
+_currently_posting: set[str] = set()
 
 def _is_our_operator(payload: dict) -> bool:
     """Return True if the current owner in this payload is our operator."""
@@ -230,15 +232,23 @@ async def on_owner_changed(bot: Bot, payload: dict) -> None:
     if is_now_unassigned:
         if existing:
             return  # already posted
-        text = _format_general_message(
-            display_id=_display_id(payload),
-            ticket_name=_payload_str(payload, "ticket_name"),
-            link=_payload_str(payload, "link"),
-        )
-        message_id = await _send(bot, text, ticket_id)
-        if message_id:
-            await db.save_general_message(ticket_id, message_id, _payload_str(payload, "ticket_name"))
-            logger.info("Posted General notification on re-unassign for ticket %s", ticket_id)
+        if ticket_id in _currently_posting:
+            return  # being handled by concurrent ticket_updated
+        _currently_posting.add(ticket_id)
+        try:
+            existing_recheck = await db.get_general_message(ticket_id)
+            if existing_recheck is None:
+                text = _format_general_message(
+                    display_id=_display_id(payload),
+                    ticket_name=_payload_str(payload, "ticket_name"),
+                    link=_payload_str(payload, "link"),
+                )
+                message_id = await _send(bot, text, ticket_id)
+                if message_id:
+                    await db.save_general_message(ticket_id, message_id, _payload_str(payload, "ticket_name"))
+                    logger.info("Posted General notification on re-unassign for ticket %s", ticket_id)
+        finally:
+            _currently_posting.discard(ticket_id)
     else:
         if existing is None:
             return
@@ -273,28 +283,33 @@ async def on_ticket_updated(bot: Bot, payload: dict) -> None:
 
     # New unassigned ticket arriving via ticket_updated (HDE doesn't send assigned_on_create)
     if not _is_our_operator(payload) and _is_unassigned(owner_name, department, config.unassigned_department):
-        existing_msg = await db.get_general_message(ticket_id)
-        if existing_msg is None:
-            if not is_work_time():
-                await db.save_pending_general(
-                    ticket_id=ticket_id,
-                    display_id=_display_id(payload),
-                    ticket_name=_payload_str(payload, "ticket_name"),
-                    link=_payload_str(payload, "link"),
-                )
-                _overnight_pending_ids.add(ticket_id)
-                logger.info("Queued General notification for ticket %s (ticket_updated, outside work hours)", ticket_id)
-            else:
-                text = _format_general_message(
-                    display_id=_display_id(payload),
-                    ticket_name=_payload_str(payload, "ticket_name"),
-                    link=_payload_str(payload, "link"),
-                )
-                message_id = await _send(bot, text, ticket_id)
-                if message_id:
-                    await db.save_general_message(ticket_id, message_id, _payload_str(payload, "ticket_name"))
-                    logger.info("Posted General notification for ticket %s (via ticket_updated)", ticket_id)
-            return
+        if ticket_id not in _currently_posting:
+            _currently_posting.add(ticket_id)
+            try:
+                existing_msg = await db.get_general_message(ticket_id)
+                if existing_msg is None:
+                    if not is_work_time():
+                        await db.save_pending_general(
+                            ticket_id=ticket_id,
+                            display_id=_display_id(payload),
+                            ticket_name=_payload_str(payload, "ticket_name"),
+                            link=_payload_str(payload, "link"),
+                        )
+                        _overnight_pending_ids.add(ticket_id)
+                        logger.info("Queued General notification for ticket %s (ticket_updated, outside work hours)", ticket_id)
+                    else:
+                        text = _format_general_message(
+                            display_id=_display_id(payload),
+                            ticket_name=_payload_str(payload, "ticket_name"),
+                            link=_payload_str(payload, "link"),
+                        )
+                        message_id = await _send(bot, text, ticket_id)
+                        if message_id:
+                            await db.save_general_message(ticket_id, message_id, _payload_str(payload, "ticket_name"))
+                            logger.info("Posted General notification for ticket %s (via ticket_updated)", ticket_id)
+            finally:
+                _currently_posting.discard(ticket_id)
+        return
 
     existing = await db.get_general_message(ticket_id)
     if existing is None:
