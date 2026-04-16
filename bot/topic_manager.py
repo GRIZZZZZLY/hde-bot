@@ -288,6 +288,126 @@ async def _rename_topic_if_needed(
             logger.error("Failed to announce rename for topic %d: %s", record.topic_id, exc)
 
 
+async def _generate_summary_with_retry(
+    posts,
+    info,
+    *,
+    ticket_title: str = "",
+    ticket_id: str = "",
+    company_id: str = "",
+    attempts: int = 3,
+    pause: float = 30.0,
+):
+    """Call generate_ticket_summary up to *attempts* times with *pause* seconds between tries."""
+    from .ai_summary import generate_ticket_summary
+    for attempt in range(1, attempts + 1):
+        result = await generate_ticket_summary(
+            posts, info,
+            ticket_title=ticket_title,
+            ticket_id=ticket_id,
+            company_id=company_id,
+        )
+        if result is not None:
+            return result
+        if attempt < attempts:
+            logger.info(
+                "AI summary attempt %d/%d failed for ticket %s, retrying in %.0fs",
+                attempt, attempts, ticket_id, pause,
+            )
+            await asyncio.sleep(pause)
+    logger.warning("AI summary failed after %d attempts for ticket %s", attempts, ticket_id)
+    return None
+
+
+async def retry_missing_ai_summaries(bot: Bot) -> int:
+    """Find topics that never got an AI summary and retry. Returns number of summaries sent."""
+    from .hde_api import HDEApiClient, HDEApiError
+    from .handlers.ai_feedback import suit_feedback_kb, answer_feedback_kb, memo_feedback_kb, register_feedback_pending
+    from html import escape as _html_escape
+
+    records = await db.list_topics_missing_summary()
+    sent = 0
+    for record in records:
+        ticket_id = record.ticket_id
+        topic_id = record.topic_id
+        try:
+            client = HDEApiClient()
+            info = await client.get_ticket_info(ticket_id)
+            posts = await client.get_ticket_posts(ticket_id)
+            try:
+                comments = await client.get_ticket_comments(ticket_id)
+            except HDEApiError:
+                comments = []
+        except HDEApiError as exc:
+            logger.warning("retry_missing_ai_summaries: can't fetch ticket %s: %s", ticket_id, exc)
+            continue
+        except Exception as exc:
+            logger.error("retry_missing_ai_summaries: unexpected error for ticket %s: %s", ticket_id, exc)
+            continue
+
+        from .ai_summary import _build_history_text
+        all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+        result = await _generate_summary_with_retry(
+            all_posts, info,
+            ticket_title=record.ticket_name or "",
+            ticket_id=ticket_id,
+            company_id="",
+        )
+        if result is None:
+            continue
+
+        suit_line, client_line, memo_line, confidence_pct = result
+        try:
+            suit_label = (
+                f"🧠 <b>Суть ({confidence_pct}%):</b>"
+                if confidence_pct >= 40
+                else "🧠 <b>Суть:</b>"
+            )
+            await bot.send_message(
+                chat_id=config.group_chat_id,
+                message_thread_id=topic_id,
+                text=f"{suit_label} {_html_escape(suit_line)}",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                disable_notification=True,
+                reply_markup=suit_feedback_kb(),
+            )
+            if client_line:
+                await bot.send_message(
+                    chat_id=config.group_chat_id,
+                    message_thread_id=topic_id,
+                    text=f"💬 <b>Ответ клиенту:</b>\n<i>«{_html_escape(client_line)}»</i>",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                    disable_notification=True,
+                    reply_markup=answer_feedback_kb(),
+                )
+            if memo_line:
+                await bot.send_message(
+                    chat_id=config.group_chat_id,
+                    message_thread_id=topic_id,
+                    text=f"📋 <b>Памятка:</b>\n{_html_escape(memo_line)}",
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                    disable_notification=True,
+                    reply_markup=memo_feedback_kb(),
+                )
+            plain_history = _build_history_text(all_posts, info)
+            await register_feedback_pending(
+                topic_id=topic_id,
+                ticket_id=ticket_id,
+                history=plain_history,
+                title=record.ticket_name or "",
+                answer_text=client_line,
+            )
+            await db.update_topic(ticket_id, ai_summary_sent_at=to_storage(utcnow()))
+            sent += 1
+        except TelegramAPIError as exc:
+            logger.warning("retry_missing_ai_summaries: failed to post summary to topic %d: %s", topic_id, exc)
+
+    return sent
+
+
 async def _post_ticket_history(
     bot: Bot,
     ticket_id: str,
@@ -330,7 +450,7 @@ async def _post_ticket_history(
     from .ai_summary import generate_ticket_summary, _build_history_text
     from .handlers.ai_feedback import suit_feedback_kb, answer_feedback_kb, memo_feedback_kb, register_feedback_pending
     gen_task = asyncio.create_task(
-        generate_ticket_summary(
+        _generate_summary_with_retry(
             all_posts, info,
             ticket_title=ticket_title,
             ticket_id=ticket_id,
@@ -415,6 +535,7 @@ async def _post_ticket_history(
             title=ticket_title,
             answer_text=client_line,
         )
+        await db.update_topic(ticket_id, ai_summary_sent_at=to_storage(utcnow()))
     except TelegramAPIError as exc:
         logger.warning("Failed to post AI summary to topic %d: %s", topic_id, exc)
 

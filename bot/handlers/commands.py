@@ -1079,6 +1079,18 @@ async def cmd_refresh(message: Message) -> None:
         pass
     await message.answer(error_text or result_text, parse_mode="HTML")
 
+    # Retry AI summaries for topics that missed them
+    from ..topic_manager import retry_missing_ai_summaries
+    try:
+        sent = await retry_missing_ai_summaries(message.bot)
+        if sent:
+            await message.answer(
+                f"🧠 <b>AI саммари отправлено:</b> {sent} топик(ов)",
+                parse_mode="HTML",
+            )
+    except Exception as exc:
+        logger.warning("retry_missing_ai_summaries failed: %s", exc)
+
 
 @router.edited_message(F.message_thread_id.is_not(None))
 async def on_edited_message(message: Message) -> None:
