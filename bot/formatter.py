@@ -120,8 +120,9 @@ def format_pre_sla_alert_topic(
     ticket_name: str,
     link: str,
 ) -> str:
+    time_label = "меньше 1 мин" if minutes_left == 0 else f"{minutes_left} мин"
     return (
-        f"🔥 SLA через {minutes_left} мин 🔥\n"
+        f"🔥 SLA через {time_label} 🔥\n"
         "──────────────\n"
         f"📝 {_escape(ticket_name)}\n"
         f'🔗 <a href="{_escape(link)}">Открыть в HDE</a>'
@@ -134,8 +135,9 @@ def format_pre_sla_alert_general(
     company_name: str,
     link: str,
 ) -> str:
+    time_label = "меньше 1 минуты" if minutes_left == 0 else f"{minutes_left} минут"
     return (
-        f"🆘 SLA через {minutes_left} минут — тикет не назначен!\n"
+        f"🆘 SLA через {time_label} — тикет не назначен!\n"
         "──────────────\n"
         f"📝 {_escape(ticket_name)}\n"
         f"🏢 {_escape(company_name)}\n"

@@ -988,13 +988,14 @@ async def handle_ticket_closed(bot: Bot, payload: dict) -> None:
 
 
 def _pre_sla_minutes_left(record: "db.TicketTopic") -> int:
-    """Вычисляет реальные минуты до SLA на основе pre_sla_notify_at + warning_minutes."""
+    """Вычисляет целые минуты до SLA (floor, как в HDE). 0 = меньше 1 минуты."""
+    import math
     deadline = parse_datetime(record.pre_sla_notify_at)
     if deadline is None:
         return config.pre_sla_warning_minutes
     sla_deadline = deadline + timedelta(minutes=config.pre_sla_warning_minutes)
     remaining = (sla_deadline - utcnow()).total_seconds() / 60
-    return max(1, round(remaining))
+    return max(0, math.floor(remaining))
 
 
 def _pre_sla_destination(record: "db.TicketTopic") -> tuple[int, int | None]:
