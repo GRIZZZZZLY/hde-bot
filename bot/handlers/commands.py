@@ -913,10 +913,12 @@ async def cmd_aianalyze(message: Message) -> None:
                     return v
         return None
 
-    async def _try_openrouter_batch(session, prompt_text: str) -> list | None:
-        """Try to analyze a batch with OpenRouter Gemma 4 31B. Returns parsed list or None."""
+    async def _try_openrouter_batch(
+        session, prompt_text: str
+    ) -> tuple[list | None, str | None]:
+        """Returns (patterns, reason). reason is short error string or None on success/skip."""
         if not _config.openrouter_api_key:
-            return None
+            return None, "no_key"
         from ..llm_semaphore import LLM_SEMAPHORE  # noqa: PLC0415
         try:
             async with LLM_SEMAPHORE, session.post(
@@ -933,18 +935,25 @@ async def cmd_aianalyze(message: Message) -> None:
                 if resp.status != 200:
                     body = await resp.text()
                     logger.warning("aianalyze OpenRouter HTTP %s: %s", resp.status, body[:200])
-                    return None
+                    return None, f"HTTP {resp.status}"
                 data = await resp.json()
                 raw = data["choices"][0]["message"]["content"].strip()
-                return _parse_json_list(raw)
+                parsed = _parse_json_list(raw)
+                if parsed is None:
+                    return None, "parse error"
+                return parsed, None
+        except _asyncio.TimeoutError:
+            return None, "timeout"
         except Exception as exc:
             logger.warning("aianalyze OpenRouter batch failed: %s", exc)
-            return None
+            return None, type(exc).__name__
 
-    async def _try_groq_batch(session, prompt_text: str) -> list | None:
-        """Try to analyze a batch with Groq. Returns parsed list or None on failure."""
+    async def _try_groq_batch(
+        session, prompt_text: str
+    ) -> tuple[list | None, str | None]:
+        """Returns (patterns, reason). reason is short error string or None on success/skip."""
         if not _config.groq_api_key:
-            return None
+            return None, "no_key"
         from ..llm_semaphore import LLM_SEMAPHORE  # noqa: PLC0415
         try:
             async with LLM_SEMAPHORE, session.post(
@@ -961,86 +970,158 @@ async def cmd_aianalyze(message: Message) -> None:
                 if resp.status != 200:
                     body = await resp.text()
                     logger.warning("aianalyze Groq HTTP %s: %s", resp.status, body[:200])
-                    return None
+                    return None, f"HTTP {resp.status}"
                 data = await resp.json()
                 raw = data["choices"][0]["message"]["content"].strip()
-                return _parse_json_list(raw)
+                parsed = _parse_json_list(raw)
+                if parsed is None:
+                    return None, "parse error"
+                return parsed, None
+        except _asyncio.TimeoutError:
+            return None, "timeout"
         except Exception as exc:
             logger.warning("aianalyze Groq batch failed: %s", exc)
-            return None
+            return None, type(exc).__name__
+
+    # Per-model batch counters for the final report.
+    model_stats = {"gemma4": 0, "groq": 0, "gemini": 0, "failed": 0}
+    # Dedupe fallback notifications: same (from_model, reason) in a row → silent.
+    last_fallback_notified: tuple[str, str] | None = None
+
+    async def _notify_fallback(
+        batch_num: int, from_model: str, reason: str, to_model: str
+    ) -> None:
+        nonlocal last_fallback_notified
+        key = (from_model, reason)
+        if key == last_fallback_notified:
+            return
+        last_fallback_notified = key
+        try:
+            await message.answer(
+                f"⚠️ Батч {batch_num}: {from_model} → {reason}.\n"
+                f"Переключаюсь на {to_model}."
+            )
+        except Exception:
+            pass
+
+    async def _notify_all_failed(batch_num: int, reasons: dict[str, str]) -> None:
+        nonlocal last_fallback_notified
+        key = ("all", "|".join(f"{k}:{v}" for k, v in reasons.items()))
+        if key == last_fallback_notified:
+            return
+        last_fallback_notified = key
+        parts = [f"{m}: {r}" for m, r in reasons.items()]
+        try:
+            await message.answer(
+                f"❌ Батч {batch_num}: все 3 модели упали — пропущено.\n"
+                f"Причины: {'; '.join(parts)}"
+            )
+        except Exception:
+            pass
 
     async with aiohttp.ClientSession() as session:
         for i in range(0, len(items), batch_size):
             batch = items[i : i + batch_size]
             batch_ids = [row[0] for row in batch]
+            batch_num = i // batch_size + 1
             batch_text = ""
             for idx, (_, title, content) in enumerate(batch, 1):
                 batch_text += f"\n[{idx}] {title}\n{content[:400]}\n"
 
             full_prompt = _ANALYZE_PROMPT + batch_text
+            patterns = None
+            reasons: dict[str, str] = {}
 
             # --- OpenRouter Gemma 4 31B first ---
-            patterns = await _try_openrouter_batch(session, full_prompt)
+            patterns, or_reason = await _try_openrouter_batch(session, full_prompt)
+            if patterns is not None:
+                model_stats["gemma4"] += 1
+                last_fallback_notified = None  # reset dedupe on success
+            else:
+                reasons["Gemma 4"] = or_reason or "unknown"
+                await _notify_fallback(
+                    batch_num, "Gemma 4", or_reason or "unknown", "Groq llama-3.3-70b"
+                )
 
-            # --- Groq llama-3.3-70b fallback ---
-            if patterns is None:
-                patterns = await _try_groq_batch(session, full_prompt)
+                # --- Groq llama-3.3-70b fallback ---
+                patterns, gq_reason = await _try_groq_batch(session, full_prompt)
+                if patterns is not None:
+                    model_stats["groq"] += 1
+                    last_fallback_notified = None
+                else:
+                    reasons["Groq"] = gq_reason or "unknown"
+                    await _notify_fallback(
+                        batch_num, "Groq", gq_reason or "unknown", "Gemini 2.5 Flash"
+                    )
 
-            # --- Gemini 2.5 Flash fallback ---
-            if patterns is None:
-                payload = {
-                    "contents": [{"parts": [{"text": full_prompt}]}],
-                    "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2000},
-                }
-                from ..llm_semaphore import LLM_SEMAPHORE as _LLM_SEM  # noqa: PLC0415
-                for attempt in range(2):
-                    try:
-                        async with _LLM_SEM, session.post(
-                            (
-                                "https://generativelanguage.googleapis.com/v1beta/models/"
-                                "gemini-2.5-flash:generateContent"
-                            ),
-                            json=payload,
-                            params={"key": _config.gemini_api_key},
-                            timeout=aiohttp.ClientTimeout(total=60),
-                        ) as resp:
-                            if resp.status == 429:
-                                if attempt == 0:
-                                    logger.warning(
-                                        "aianalyze batch %d: 429 rate limit, waiting %ss",
-                                        i, int(_RETRY_DELAY),
-                                    )
-                                    try:
-                                        await status_msg.edit_text(
-                                            f"⏳ Обработано {i}/{len(items)} — ожидаю сброса лимита Gemini (~1 мин)..."
+                    # --- Gemini 2.5 Flash fallback ---
+                    gemini_reason: str | None = None
+                    payload = {
+                        "contents": [{"parts": [{"text": full_prompt}]}],
+                        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2000},
+                    }
+                    from ..llm_semaphore import LLM_SEMAPHORE as _LLM_SEM  # noqa: PLC0415
+                    for attempt in range(2):
+                        try:
+                            async with _LLM_SEM, session.post(
+                                (
+                                    "https://generativelanguage.googleapis.com/v1beta/models/"
+                                    "gemini-2.5-flash:generateContent"
+                                ),
+                                json=payload,
+                                params={"key": _config.gemini_api_key},
+                                timeout=aiohttp.ClientTimeout(total=60),
+                            ) as resp:
+                                if resp.status == 429:
+                                    if attempt == 0:
+                                        logger.warning(
+                                            "aianalyze batch %d: 429 rate limit, waiting %ss",
+                                            i, int(_RETRY_DELAY),
                                         )
-                                    except Exception:
-                                        pass
-                                    await _asyncio.sleep(_RETRY_DELAY)
-                                    continue
-                                logger.warning("aianalyze batch %d: 429 on retry, skipping", i)
-                                skipped += len(batch)
+                                        try:
+                                            await status_msg.edit_text(
+                                                f"⏳ Обработано {i}/{len(items)} — "
+                                                f"ожидаю сброса лимита Gemini (~1 мин)..."
+                                            )
+                                        except Exception:
+                                            pass
+                                        await _asyncio.sleep(_RETRY_DELAY)
+                                        continue
+                                    gemini_reason = "HTTP 429 (retry exhausted)"
+                                    break
+                                if resp.status != 200:
+                                    body = await resp.text()
+                                    logger.warning(
+                                        "aianalyze batch %d: Gemini HTTP %s: %s",
+                                        i, resp.status, body[:300],
+                                    )
+                                    gemini_reason = f"HTTP {resp.status}"
+                                    break
+                                data = await resp.json()
+                                raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                                patterns = _parse_json_list(raw)
+                                if patterns is None:
+                                    gemini_reason = "parse error"
                                 break
-                            if resp.status != 200:
-                                body = await resp.text()
-                                logger.warning(
-                                    "aianalyze batch %d: Gemini HTTP %s: %s",
-                                    i, resp.status, body[:300],
-                                )
-                                skipped += len(batch)
-                                break
-                            data = await resp.json()
-                            raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                            patterns = _parse_json_list(raw)
+                        except _asyncio.TimeoutError:
+                            gemini_reason = "timeout"
                             break
-                    except Exception as exc:
-                        logger.warning("aianalyze batch %d Gemini failed: %s", i, exc)
-                        skipped += len(batch)
-                        break
+                        except Exception as exc:
+                            logger.warning("aianalyze batch %d Gemini failed: %s", i, exc)
+                            gemini_reason = type(exc).__name__
+                            break
+
+                    if patterns is not None:
+                        model_stats["gemini"] += 1
+                        last_fallback_notified = None
+                    else:
+                        reasons["Gemini"] = gemini_reason or "unknown"
 
             if patterns is None:
-                # Both Groq and Gemini failed for this batch — don't mark as analyzed
+                # All 3 models failed for this batch — don't mark as analyzed.
                 skipped += len(batch)
+                model_stats["failed"] += 1
+                await _notify_all_failed(batch_num, reasons)
             else:
                 for p in patterns:
                     eq = normalize_equipment(p.get("equipment"))
@@ -1075,11 +1156,19 @@ async def cmd_aianalyze(message: Message) -> None:
     elapsed = int(_time.monotonic() - t_start)
     counts = await count_solution_patterns_by_equipment()
     lines = [f"• {eq} — {cnt} паттернов" for eq, cnt in counts.items()]
+    total_batches = sum(model_stats.values())
+    model_breakdown_lines = [
+        f"• Gemma 4 31B (OpenRouter): {model_stats['gemma4']}/{total_batches} батчей",
+        f"• Groq llama-3.3-70b: {model_stats['groq']}/{total_batches} батчей",
+        f"• Gemini 2.5 Flash: {model_stats['gemini']}/{total_batches} батчей",
+        f"• Упали все 3: {model_stats['failed']}/{total_batches} батчей",
+    ]
     report = (
         f"✅ Анализ завершён за {elapsed} сек.\n"
         f"Обработано тикетов: {len(items)}\n"
         f"Создано паттернов: {created}\n"
         f"Пропущено (дубли/ошибки): {skipped}\n\n"
+        "🤖 Распределение по моделям:\n" + "\n".join(model_breakdown_lines) + "\n\n"
         "По оборудованию:\n" + "\n".join(lines) + "\n\n"
         "Запусти /aianalyze снова чтобы обновить."
     )
