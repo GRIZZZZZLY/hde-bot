@@ -856,8 +856,8 @@ async def cmd_aianalyze(message: Message) -> None:
     import time as _time
     import re as _re
 
-    if not _config.gemini_api_key and not _config.groq_api_key:
-        await message.answer("❌ Ни GEMINI_API_KEY, ни GROQ_API_KEY не настроены")
+    if not _config.gemini_api_key and not _config.groq_api_key and not _config.openrouter_api_key:
+        await message.answer("❌ Ни GEMINI_API_KEY, ни GROQ_API_KEY, ни OPENROUTER_API_KEY не настроены")
         return
 
     # Load only items not yet analyzed
@@ -895,10 +895,51 @@ async def cmd_aianalyze(message: Message) -> None:
     )
 
     import asyncio as _asyncio
-    _RATE_DELAY = 8.0    # seconds between requests — Gemini 2.0 Flash free-tier ~8 RPM
+    _RATE_DELAY = 8.0    # seconds between requests — Gemini 2.5 Flash free-tier ~8 RPM
     _RETRY_DELAY = 120.0  # seconds to wait after a 429 before retrying the same batch
     _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
     _GROQ_MODEL = "llama-3.3-70b-versatile"
+    _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+    _OPENROUTER_MODEL = "google/gemma-4-31b-it:free"
+
+    def _parse_json_list(raw: str) -> list | None:
+        raw = _re.sub(r"^```[^\n]*\n?", "", raw).rstrip("`").strip()
+        result = _json.loads(raw)
+        if isinstance(result, list):
+            return result
+        if isinstance(result, dict):
+            for v in result.values():
+                if isinstance(v, list):
+                    return v
+        return None
+
+    async def _try_openrouter_batch(session, prompt_text: str) -> list | None:
+        """Try to analyze a batch with OpenRouter Gemma 4 31B. Returns parsed list or None."""
+        if not _config.openrouter_api_key:
+            return None
+        from ..llm_semaphore import LLM_SEMAPHORE  # noqa: PLC0415
+        try:
+            async with LLM_SEMAPHORE, session.post(
+                _OPENROUTER_URL,
+                json={
+                    "model": _OPENROUTER_MODEL,
+                    "messages": [{"role": "user", "content": prompt_text}],
+                    "temperature": 0.1,
+                    "max_tokens": 2000,
+                },
+                headers={"Authorization": f"Bearer {_config.openrouter_api_key}"},
+                timeout=aiohttp.ClientTimeout(total=45),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.warning("aianalyze OpenRouter HTTP %s: %s", resp.status, body[:200])
+                    return None
+                data = await resp.json()
+                raw = data["choices"][0]["message"]["content"].strip()
+                return _parse_json_list(raw)
+        except Exception as exc:
+            logger.warning("aianalyze OpenRouter batch failed: %s", exc)
+            return None
 
     async def _try_groq_batch(session, prompt_text: str) -> list | None:
         """Try to analyze a batch with Groq. Returns parsed list or None on failure."""
@@ -923,15 +964,7 @@ async def cmd_aianalyze(message: Message) -> None:
                     return None
                 data = await resp.json()
                 raw = data["choices"][0]["message"]["content"].strip()
-                raw = _re.sub(r"^```[^\n]*\n?", "", raw).rstrip("`").strip()
-                result = _json.loads(raw)
-                if isinstance(result, list):
-                    return result
-                if isinstance(result, dict):
-                    for v in result.values():
-                        if isinstance(v, list):
-                            return v
-                return None
+                return _parse_json_list(raw)
         except Exception as exc:
             logger.warning("aianalyze Groq batch failed: %s", exc)
             return None
@@ -946,10 +979,14 @@ async def cmd_aianalyze(message: Message) -> None:
 
             full_prompt = _ANALYZE_PROMPT + batch_text
 
-            # --- Groq first ---
-            patterns = await _try_groq_batch(session, full_prompt)
+            # --- OpenRouter Gemma 4 31B first ---
+            patterns = await _try_openrouter_batch(session, full_prompt)
 
-            # --- Gemini fallback ---
+            # --- Groq llama-3.3-70b fallback ---
+            if patterns is None:
+                patterns = await _try_groq_batch(session, full_prompt)
+
+            # --- Gemini 2.5 Flash fallback ---
             if patterns is None:
                 payload = {
                     "contents": [{"parts": [{"text": full_prompt}]}],
@@ -961,7 +998,7 @@ async def cmd_aianalyze(message: Message) -> None:
                         async with _LLM_SEM, session.post(
                             (
                                 "https://generativelanguage.googleapis.com/v1beta/models/"
-                                "gemini-2.0-flash:generateContent"
+                                "gemini-2.5-flash:generateContent"
                             ),
                             json=payload,
                             params={"key": _config.gemini_api_key},
@@ -994,8 +1031,7 @@ async def cmd_aianalyze(message: Message) -> None:
                                 break
                             data = await resp.json()
                             raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                            raw = _re.sub(r"^```[^\n]*\n?", "", raw).rstrip("`").strip()
-                            patterns = _json.loads(raw)
+                            patterns = _parse_json_list(raw)
                             break
                     except Exception as exc:
                         logger.warning("aianalyze batch %d Gemini failed: %s", i, exc)
