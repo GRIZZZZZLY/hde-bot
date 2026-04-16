@@ -566,6 +566,7 @@ def _row_to_topic(row: aiosqlite.Row) -> TicketTopic:
         updated_at=row["updated_at"],
         deleted_at=row["deleted_at"],
         last_assigned_at=row["last_assigned_at"],
+        ai_summary_sent_at=row["ai_summary_sent_at"] if "ai_summary_sent_at" in row.keys() else None,
     )
 
 
