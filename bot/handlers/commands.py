@@ -985,17 +985,22 @@ async def cmd_aianalyze(message: Message) -> None:
 
     # Per-model batch counters for the final report.
     model_stats = {"gemma4": 0, "groq": 0, "gemini": 0, "failed": 0}
-    # Dedupe fallback notifications: same (from_model, reason) in a row → silent.
-    last_fallback_notified: tuple[str, str] | None = None
+    # Session-wide dedupe: each (from_model, reason) pair is announced at most once per run.
+    notified_keys: set[tuple[str, str]] = set()
+    # Circuit-breaker: abort after N consecutive "all 3 failed" batches.
+    consecutive_all_failed = 0
+    _CIRCUIT_BREAKER_THRESHOLD = 3
+    # Adaptive pause: bump to 60s after an all-failed batch, reset to 8s on next success.
+    _BACKOFF_DELAY = 60.0
+    current_delay = _RATE_DELAY
 
     async def _notify_fallback(
         batch_num: int, from_model: str, reason: str, to_model: str
     ) -> None:
-        nonlocal last_fallback_notified
         key = (from_model, reason)
-        if key == last_fallback_notified:
+        if key in notified_keys:
             return
-        last_fallback_notified = key
+        notified_keys.add(key)
         try:
             await message.answer(
                 f"⚠️ Батч {batch_num}: {from_model} → {reason}.\n"
@@ -1005,11 +1010,10 @@ async def cmd_aianalyze(message: Message) -> None:
             pass
 
     async def _notify_all_failed(batch_num: int, reasons: dict[str, str]) -> None:
-        nonlocal last_fallback_notified
-        key = ("all", "|".join(f"{k}:{v}" for k, v in reasons.items()))
-        if key == last_fallback_notified:
+        key = ("all", "|".join(f"{k}:{v}" for k, v in sorted(reasons.items())))
+        if key in notified_keys:
             return
-        last_fallback_notified = key
+        notified_keys.add(key)
         parts = [f"{m}: {r}" for m, r in reasons.items()]
         try:
             await message.answer(
@@ -1036,7 +1040,6 @@ async def cmd_aianalyze(message: Message) -> None:
             patterns, or_reason = await _try_openrouter_batch(session, full_prompt)
             if patterns is not None:
                 model_stats["gemma4"] += 1
-                last_fallback_notified = None  # reset dedupe on success
             else:
                 reasons["Gemma 4"] = or_reason or "unknown"
                 await _notify_fallback(
@@ -1047,7 +1050,6 @@ async def cmd_aianalyze(message: Message) -> None:
                 patterns, gq_reason = await _try_groq_batch(session, full_prompt)
                 if patterns is not None:
                     model_stats["groq"] += 1
-                    last_fallback_notified = None
                 else:
                     reasons["Groq"] = gq_reason or "unknown"
                     await _notify_fallback(
@@ -1113,7 +1115,6 @@ async def cmd_aianalyze(message: Message) -> None:
 
                     if patterns is not None:
                         model_stats["gemini"] += 1
-                        last_fallback_notified = None
                     else:
                         reasons["Gemini"] = gemini_reason or "unknown"
 
@@ -1121,8 +1122,22 @@ async def cmd_aianalyze(message: Message) -> None:
                 # All 3 models failed for this batch — don't mark as analyzed.
                 skipped += len(batch)
                 model_stats["failed"] += 1
+                consecutive_all_failed += 1
+                current_delay = _BACKOFF_DELAY
                 await _notify_all_failed(batch_num, reasons)
+                if consecutive_all_failed >= _CIRCUIT_BREAKER_THRESHOLD:
+                    try:
+                        await message.answer(
+                            f"🛑 Прерываю /aianalyze: {_CIRCUIT_BREAKER_THRESHOLD} батча подряд "
+                            "не прошли ни через одну модель (похоже, дневные лимиты исчерпаны). "
+                            "Попробуйте позже — квоты обычно сбрасываются в 00:00 UTC."
+                        )
+                    except Exception:
+                        pass
+                    break
             else:
+                consecutive_all_failed = 0
+                current_delay = _RATE_DELAY
                 for p in patterns:
                     eq = normalize_equipment(p.get("equipment"))
                     pt = (p.get("problem_type") or "").strip()
@@ -1139,8 +1154,8 @@ async def cmd_aianalyze(message: Message) -> None:
                 # Mark these items as analyzed so they're skipped next run
                 await mark_knowledge_items_analyzed(batch_ids)
 
-            # Rate-limit pause between every batch (Gemini fallback needs it)
-            await _asyncio.sleep(_RATE_DELAY)
+            # Adaptive rate-limit pause: bumped to _BACKOFF_DELAY after all-failed batch.
+            await _asyncio.sleep(current_delay)
 
             # Update progress every 50 items
             processed = min(i + batch_size, len(items))
