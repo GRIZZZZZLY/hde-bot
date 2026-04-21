@@ -35,7 +35,6 @@ _report_button_sent: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when 
 _thursday_evening_done: Optional[str] = None  # "YYYY-MM-DD" MSK date — Thu evening auto-run flag
 _weekly_summary_done: Optional[str] = None  # "YYYY-MM-DD" MSK date — Sunday summary flag
 _last_knowledge_expiry_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when weekly expiry runs
-_last_optimization_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when nightly optimizer runs
 _last_media_gc_hour: Optional[str] = None  # "YYYY-MM-DD HH" — set when hourly media GC runs
 _ALLOWED_UPDATES = ["message", "callback_query"]
 
@@ -276,17 +275,8 @@ async def process_scheduled_actions(bot: Bot) -> None:
             except Exception as exc:
                 logger.warning("Weekly knowledge expiry failed: %s", exc)
 
-    # Nightly prompt optimization — daily at 23:00 UTC (02:00 MSK)
-    if now.hour == 23 and now.minute < 1:
-        global _last_optimization_date
-        if _last_optimization_date != today:
-            _last_optimization_date = today
-            try:
-                from .optimizer.agent import run_optimizer
-                asyncio.create_task(run_optimizer(bot))
-                logger.info("Scheduled prompt optimizer for tonight")
-            except Exception as exc:
-                logger.warning("Failed to schedule optimizer: %s", exc)
+    # Nightly prompt optimizer disabled: the hand-tuned _FORMAT_INSTRUCTIONS is
+    # the source of truth. Manual runs still available via /aioptimize.
 
     # Pre-SLA and pending deletions require both work day AND work hours
     if not is_work_time():
