@@ -27,7 +27,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from .google_sheets import append_operator_row
+from .google_sheets import append_operator_row, read_weekly_tickets
 from .hde_playwright import get_operator_report_data
 
 load_dotenv()
@@ -145,4 +145,51 @@ async def run_report(report_date: date | None = None) -> str:
         f"👤 Оператор: <b>{data.operator}</b>\n"
         f"🎫 Закрыто заявок: <b>{data.tickets}</b>\n"
         f"⏱️ Среднее время выполнения: <b>{data.avg_time}</b>"
+    )
+
+
+async def run_weekly_summary(today: date | None = None) -> str:
+    """Build weekly summary for the previous work week (prev Sunday..Thursday).
+
+    Reads the Google Sheet directly — no HDE scraping. Intended to fire on
+    Sunday mornings. Display range goes from prev Sunday through *today*
+    (also Sunday), per product spec.
+    """
+    if today is None:
+        today = date.today()
+    start_date = today - timedelta(days=7)   # prev Sunday
+    end_date = today - timedelta(days=3)     # prev Thursday
+    display_end = today
+
+    spreadsheet_id = _get("GOOGLE_SPREADSHEET_ID")
+    worksheet_name = os.getenv("GOOGLE_WORKSHEET_NAME", "Ввод данных_2026")
+    operator_name = _get("HDE_OWNER_NAME")
+    sheet_name_in_a = os.getenv("GOOGLE_SHEET_NAME_IN_A", operator_name)
+    service_account_file = _get_google_service_account_file()
+    service_account_path = Path(service_account_file)
+    if not service_account_path.exists():
+        raise RuntimeError(
+            f"Google service account file not found: {service_account_path}"
+        )
+
+    loop = asyncio.get_running_loop()
+    summary = await loop.run_in_executor(
+        None,
+        read_weekly_tickets,
+        str(service_account_path),
+        spreadsheet_id,
+        worksheet_name,
+        sheet_name_in_a,
+        start_date,
+        end_date,
+        display_end,
+    )
+
+    avg = (summary.total_tickets // summary.work_days) if summary.work_days else 0
+    range_str = f"{summary.start_date.strftime('%d.%m')}–{summary.display_end.strftime('%d.%m')}"
+    return (
+        f"📊 <b>Итоги прошлой рабочей недели ({range_str})</b>\n\n"
+        f"🎫 Закрыто тикетов: <b>{summary.total_tickets}</b>\n"
+        f"📅 Рабочих дней: <b>{summary.work_days}</b>\n"
+        f"📈 В среднем в день: <b>{avg}</b>"
     )
