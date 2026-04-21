@@ -52,17 +52,13 @@ KNOWLEDGE_EXPIRY_DAYS = 180
 
 
 def mark_report_done_today() -> None:
-    """Mark today's report as done so the auto-run scheduler skips it."""
+    """Mark today's report as done so the auto-run scheduler skips it.
+
+    Sets the in-memory guard only. DB persistence is the caller's
+    responsibility — they know which report_date to stamp.
+    """
     global _last_report_date
     _last_report_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    import asyncio as _asyncio
-    from datetime import date as _date
-    try:
-        loop = _asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(db.mark_report_sent(_date.today()))
-    except Exception:
-        pass
 
 
 async def _maybe_send_digest(bot: Bot) -> None:
