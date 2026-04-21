@@ -67,12 +67,15 @@ async def register_feedback_pending(
     history: str,
     title: str,
     answer_text: str = "",
+    ai_full_text: str = "",
 ) -> None:
     """Store pending feedback state so correction handler can pick it up."""
     expires_at = (
         datetime.now(timezone.utc) + timedelta(hours=_TTL_HOURS)
     ).isoformat()
-    await save_ai_feedback_pending(topic_id, ticket_id, history, title, expires_at, answer_text)
+    await save_ai_feedback_pending(
+        topic_id, ticket_id, history, title, expires_at, answer_text, ai_full_text
+    )
 
 
 # ── Callbacks ────────────────────────────────────────────────────────────────
@@ -108,7 +111,7 @@ async def cb_ai_good(callback: CallbackQuery) -> None:
             ticket_id=pending.get("ticket_id", ""),
             title=pending.get("title", ""),
             history=pending.get("history", ""),
-            ai_answer=pending.get("answer_text", ""),
+            ai_answer=pending.get("ai_full_text") or pending.get("answer_text", ""),
             op_answer=None,
             outcome="accepted",
         )
@@ -277,7 +280,7 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
             ticket_id=pending.get("ticket_id", ""),
             title=pending.get("title", ""),
             history=pending.get("history", ""),
-            ai_answer=pending.get("answer_text", ""),
+            ai_answer=pending.get("ai_full_text") or pending.get("answer_text", ""),
             op_answer=None,
             outcome="sent",
         )
@@ -305,6 +308,19 @@ async def capture_correction(message: Message) -> None:
         title=pending["title"],
         quality="corrected",
     )
+    # Save for prompt optimizer — corrected outcome with operator's real text
+    try:
+        from .. import db as _db_module
+        await _db_module.save_optimization_sample(
+            ticket_id=pending.get("ticket_id", ""),
+            title=pending.get("title", ""),
+            history=pending.get("history", ""),
+            ai_answer=pending.get("ai_full_text") or pending.get("answer_text", ""),
+            op_answer=correction_text,
+            outcome="corrected",
+        )
+    except Exception:
+        pass
     # Update wiki article (non-fatal)
     try:
         from ..wiki.builder import build_or_update_wiki_article

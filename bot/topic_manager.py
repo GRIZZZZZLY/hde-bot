@@ -442,12 +442,18 @@ async def retry_missing_ai_summaries(bot: Bot) -> int:
                     reply_markup=memo_feedback_kb(),
                 )
             plain_history = _build_history_text(all_posts, info)
+            ai_full_text = (
+                f"Суть: {suit_line}\n"
+                f"Клиенту: {client_line}\n"
+                f"Памятка: {memo_line or '—'}"
+            )
             await register_feedback_pending(
                 topic_id=topic_id,
                 ticket_id=ticket_id,
                 history=plain_history,
                 title=record.ticket_name or "",
                 answer_text=client_line,
+                ai_full_text=ai_full_text,
             )
             await db.update_topic(ticket_id, ai_summary_sent_at=to_storage(utcnow()))
             sent += 1
@@ -577,12 +583,18 @@ async def _post_ticket_history(
                 reply_markup=memo_feedback_kb(),
             )
         plain_history = _build_history_text(all_posts, info)
+        ai_full_text = (
+            f"Суть: {suit_line}\n"
+            f"Клиенту: {client_line}\n"
+            f"Памятка: {memo_line or '—'}"
+        )
         await register_feedback_pending(
             topic_id=topic_id,
             ticket_id=ticket_id,
             history=plain_history,
             title=ticket_title,
             answer_text=client_line,
+            ai_full_text=ai_full_text,
         )
         await db.update_topic(ticket_id, ai_summary_sent_at=to_storage(utcnow()))
     except TelegramAPIError as exc:

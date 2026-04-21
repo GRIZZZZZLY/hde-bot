@@ -384,12 +384,13 @@ async def init_db() -> None:
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS ai_feedback_pending (
-                topic_id    INTEGER PRIMARY KEY,
-                ticket_id   TEXT NOT NULL,
-                history     TEXT NOT NULL,
-                title       TEXT NOT NULL DEFAULT '',
-                answer_text TEXT NOT NULL DEFAULT '',
-                expires_at  TEXT NOT NULL
+                topic_id     INTEGER PRIMARY KEY,
+                ticket_id    TEXT NOT NULL,
+                history      TEXT NOT NULL,
+                title        TEXT NOT NULL DEFAULT '',
+                answer_text  TEXT NOT NULL DEFAULT '',
+                ai_full_text TEXT NOT NULL DEFAULT '',
+                expires_at   TEXT NOT NULL
             )
             """
         )
@@ -397,6 +398,12 @@ async def init_db() -> None:
         try:
             await db.execute(
                 "ALTER TABLE ai_feedback_pending ADD COLUMN answer_text TEXT NOT NULL DEFAULT ''"
+            )
+        except Exception:
+            pass  # column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE ai_feedback_pending ADD COLUMN ai_full_text TEXT NOT NULL DEFAULT ''"
             )
         except Exception:
             pass  # column already exists
@@ -1411,15 +1418,16 @@ async def save_ai_feedback_pending(
     title: str,
     expires_at: str,
     answer_text: str = "",
+    ai_full_text: str = "",
 ) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
             """
             INSERT OR REPLACE INTO ai_feedback_pending
-                (topic_id, ticket_id, history, title, answer_text, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (topic_id, ticket_id, history, title, answer_text, ai_full_text, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (topic_id, ticket_id, history, title, answer_text, expires_at),
+            (topic_id, ticket_id, history, title, answer_text, ai_full_text, expires_at),
         )
         await db.commit()
 
@@ -1428,7 +1436,7 @@ async def get_ai_feedback_pending(topic_id: int) -> Optional[dict]:
     """Return pending correction state or None if expired/missing."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT ticket_id, history, title, answer_text, expires_at "
+            "SELECT ticket_id, history, title, answer_text, ai_full_text, expires_at "
             "FROM ai_feedback_pending WHERE topic_id = ?",
             (topic_id,),
         ) as cur:
@@ -1436,11 +1444,17 @@ async def get_ai_feedback_pending(topic_id: int) -> Optional[dict]:
     if row is None:
         return None
     from datetime import datetime, timezone
-    expires = datetime.fromisoformat(row[4])
+    expires = datetime.fromisoformat(row[5])
     if datetime.now(timezone.utc) > expires:
         await delete_ai_feedback_pending(topic_id)
         return None
-    return {"ticket_id": row[0], "history": row[1], "title": row[2], "answer_text": row[3]}
+    return {
+        "ticket_id": row[0],
+        "history": row[1],
+        "title": row[2],
+        "answer_text": row[3],
+        "ai_full_text": row[4] or row[3],
+    }
 
 
 async def delete_ai_feedback_pending(topic_id: int) -> None:
