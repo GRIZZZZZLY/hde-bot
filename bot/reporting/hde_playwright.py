@@ -16,7 +16,9 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from playwright.async_api import Page, async_playwright
+import asyncio
+
+from playwright.async_api import Page, TimeoutError as PWTimeoutError, async_playwright
 
 logger = logging.getLogger(__name__)
 
@@ -38,9 +40,56 @@ async def get_operator_report_data(
     screenshots_dir: Path,
     headless: bool = True,
 ) -> OperatorReportData:
-    """Log in to HDE once, fetch both reports and return combined data."""
+    """Log in to HDE once, fetch both reports and return combined data.
+
+    Retries the whole flow once on Playwright timeout — HDE occasionally stalls
+    during peak hours (observed at 19:00 MSK) and a single retry is usually
+    enough to recover.
+    """
     screenshots_dir.mkdir(parents=True, exist_ok=True)
 
+    last_exc: Exception | None = None
+    for attempt in (1, 2):
+        try:
+            return await _fetch_once(
+                base_url, login, password, report_date,
+                operator_name, screenshots_dir, headless,
+            )
+        except PWTimeoutError as exc:
+            last_exc = exc
+            if attempt == 1:
+                logger.warning(
+                    "HDE report attempt %d timed out (%s) — retrying in 5s",
+                    attempt, exc,
+                )
+                await asyncio.sleep(5)
+                continue
+            raise RuntimeError(f"HDE report failed: {exc}") from exc
+        except RuntimeError as exc:
+            # _fetch_once already wrapped Playwright failures; unwrap to check if
+            # the root cause was a timeout (it re-raises the original message).
+            if "Timeout" in str(exc) and attempt == 1:
+                last_exc = exc
+                logger.warning(
+                    "HDE report attempt %d failed (%s) — retrying in 5s",
+                    attempt, exc,
+                )
+                await asyncio.sleep(5)
+                continue
+            raise
+    assert last_exc is not None
+    raise RuntimeError(f"HDE report failed: {last_exc}") from last_exc
+
+
+async def _fetch_once(
+    base_url: str,
+    login: str,
+    password: str,
+    report_date: date,
+    operator_name: str,
+    screenshots_dir: Path,
+    headless: bool,
+) -> OperatorReportData:
     async with async_playwright() as playwright:
         try:
             browser = await playwright.chromium.launch(headless=headless)
@@ -69,8 +118,11 @@ async def get_operator_report_data(
 
         except Exception as exc:
             screenshot = screenshots_dir / f"error_{report_date.isoformat()}.png"
-            await page.screenshot(path=str(screenshot), full_page=True)
-            logger.error("Saved Playwright error screenshot to %s", screenshot)
+            try:
+                await page.screenshot(path=str(screenshot), full_page=True)
+                logger.error("Saved Playwright error screenshot to %s", screenshot)
+            except Exception:
+                pass
             raise RuntimeError(f"HDE report failed: {exc}") from exc
         finally:
             await browser.close()
@@ -98,7 +150,7 @@ async def _login(page: Page, base_url: str, login: str, password: str) -> None:
     await page.locator(_LOGIN_FIELD).first.fill(login)
     await page.locator('input[type="password"]').fill(password)
 
-    async with page.expect_navigation(wait_until="load", timeout=20_000):
+    async with page.expect_navigation(wait_until="load", timeout=45_000):
         await page.locator('button:has-text("Войти"), button[type="submit"]').click()
 
     if await page.locator('button:has-text("Войти")').count() > 0:
