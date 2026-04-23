@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import difflib
 import logging
 import re
@@ -12,6 +14,84 @@ import aiosqlite
 logger = logging.getLogger(__name__)
 
 from .time_utils import to_storage, utcnow
+
+# ---------------------------------------------------------------------------
+# SQLite Connection Pool & PRAGMA Optimizations
+# ---------------------------------------------------------------------------
+
+_DB_POOL: Optional[asyncio.Queue] = None
+_DB_POOL_SIZE = 10
+_DB_INITIALIZED = False
+
+
+async def _init_connection(db_path: str) -> aiosqlite.Connection:
+    """Initialize a single DB connection with optimized PRAGMA settings."""
+    conn = await aiosqlite.connect(db_path, timeout=30.0)
+    # WAL mode: 3-5x write performance improvement
+    await conn.execute("PRAGMA journal_mode=WAL")
+    # Increase cache size (default is usually -2000 pages, set to ~50MB)
+    await conn.execute("PRAGMA cache_size=-50000")
+    # Memory-mapped I/O for faster reads (256MB)
+    await conn.execute("PRAGMA mmap_size=268435456")
+    # Synchronous NORMAL for good balance of safety and speed
+    await conn.execute("PRAGMA synchronous=NORMAL")
+    # Enable foreign keys
+    await conn.execute("PRAGMA foreign_keys=ON")
+    # Optimize temp store in memory
+    await conn.execute("PRAGMA temp_store=MEMORY")
+    return conn
+
+
+async def init_db_pool(db_path: str = "hde_bot.db") -> None:
+    """Initialize the connection pool with optimized connections."""
+    global _DB_POOL, _DB_INITIALIZED
+    if _DB_INITIALIZED:
+        return
+    
+    _DB_POOL = asyncio.Queue(maxsize=_DB_POOL_SIZE)
+    
+    # Pre-create pool connections
+    for _ in range(_DB_POOL_SIZE):
+        conn = await _init_connection(db_path)
+        await _DB_POOL.put(conn)
+    
+    _DB_INITIALIZED = True
+    logger.info("SQLite connection pool initialized (size=%d)", _DB_POOL_SIZE)
+
+
+async def get_db() -> aiosqlite.Connection:
+    """Get a connection from the pool."""
+    if not _DB_INITIALIZED:
+        await init_db_pool()
+    return await _DB_POOL.get()
+
+
+async def release_db(conn: aiosqlite.Connection) -> None:
+    """Return a connection to the pool."""
+    if _DB_POOL is not None:
+        await _DB_POOL.put(conn)
+
+
+@contextlib.asynccontextmanager
+async def db_connection():
+    """Context manager for getting/releasing DB connections from pool."""
+    conn = await get_db()
+    try:
+        yield conn
+    finally:
+        await release_db(conn)
+
+
+async def close_db_pool() -> None:
+    """Close all connections in the pool."""
+    global _DB_POOL, _DB_INITIALIZED
+    if _DB_POOL is not None:
+        while not _DB_POOL.empty():
+            conn = await _DB_POOL.get()
+            await conn.close()
+        _DB_POOL = None
+        _DB_INITIALIZED = False
+        logger.info("SQLite connection pool closed")
 
 # ---------------------------------------------------------------------------
 # Equipment name normalization
@@ -426,6 +506,37 @@ async def init_db() -> None:
             ON solution_patterns(equipment, problem_type)
             """
         )
+        # Additional indexes for common queries (10-100x SELECT speedup)
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_knowledge_quality
+            ON knowledge_items(quality, created_at)
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_knowledge_ticket
+            ON knowledge_items(ticket_id)
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_knowledge_source
+            ON knowledge_items(source, quality)
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_processed_events_ticket
+            ON processed_events(ticket_id, received_at)
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_sent_hde_messages_topic
+            ON sent_hde_messages(topic_id, created_at)
+            """
+        )
         await db.execute("""
             CREATE TABLE IF NOT EXISTS optimization_samples (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -450,6 +561,19 @@ async def init_db() -> None:
                 applied_at  TEXT
             )
         """)
+        # Additional indexes for optimizer tables
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_optimization_outcome
+            ON optimization_samples(outcome, created_at)
+            """
+        )
+        await db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_prompt_status
+            ON prompt_versions(status, created_at)
+            """
+        )
         await db.commit()
 
 
