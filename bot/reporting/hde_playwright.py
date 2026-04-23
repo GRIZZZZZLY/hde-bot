@@ -184,6 +184,26 @@ async def _set_flatpickr_dates(page: Page, report_date: date) -> None:
         return {from: fromInput && fromInput.value, to: toInput && toInput.value};
     }"""
 
+    # Fallback: write raw value and dispatch change events. Used when flatpickr
+    # setDate silently drops the value (seen on the global report after drag).
+    fallback_js = """([y, m, d, expected]) => {
+        const all = Array.from(document.querySelectorAll("input"))
+            .filter((input) => !!input._flatpickr);
+        const byName = (name) => all.find(i => i.name === name);
+        const fromInput = byName("from_date") || all[0];
+        const toInput   = byName("to_date")   || all[1];
+        const setVal = (inp) => {
+            if (!inp) return null;
+            inp.value = expected;
+            inp.dispatchEvent(new Event('input',  {bubbles: true}));
+            inp.dispatchEvent(new Event('change', {bubbles: true}));
+            return inp.value;
+        };
+        const f = setVal(fromInput);
+        const t = setVal(toInput);
+        return {from: f, to: t};
+    }"""
+
     def _ok(val: str | None) -> bool:
         # value may include time: "10.04.2026 00:00" — check prefix only
         return bool(val and val.startswith(expected))
@@ -198,7 +218,12 @@ async def _set_flatpickr_dates(page: Page, report_date: date) -> None:
         )
         await page.wait_for_timeout(wait_ms)
         result = await page.evaluate(js, [y, m, d])
-    else:
+
+    if not _ok(result.get("from")) or not _ok(result.get("to")):
+        logger.warning(
+            "Flatpickr setDate failed after retries — falling back to raw value injection"
+        )
+        result = await page.evaluate(fallback_js, [y, m, d, expected])
         if not _ok(result.get("from")) or not _ok(result.get("to")):
             raise RuntimeError(
                 f"Failed to set flatpickr dates: got from={result.get('from')} "
