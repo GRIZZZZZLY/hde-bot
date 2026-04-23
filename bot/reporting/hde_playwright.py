@@ -55,21 +55,17 @@ async def get_operator_report_data(
                 base_url, login, password, report_date,
                 operator_name, screenshots_dir, headless,
             )
-        except PWTimeoutError as exc:
+        except (PWTimeoutError, RuntimeError) as exc:
+            # Permanent failures — do not retry.
+            msg = str(exc)
+            if (
+                "Chromium is not installed" in msg
+                or "Login failed" in msg
+                or "Login form not found" in msg
+            ):
+                raise
             last_exc = exc
             if attempt == 1:
-                logger.warning(
-                    "HDE report attempt %d timed out (%s) — retrying in 5s",
-                    attempt, exc,
-                )
-                await asyncio.sleep(5)
-                continue
-            raise RuntimeError(f"HDE report failed: {exc}") from exc
-        except RuntimeError as exc:
-            # _fetch_once already wrapped Playwright failures; unwrap to check if
-            # the root cause was a timeout (it re-raises the original message).
-            if "Timeout" in str(exc) and attempt == 1:
-                last_exc = exc
                 logger.warning(
                     "HDE report attempt %d failed (%s) — retrying in 5s",
                     attempt, exc,
@@ -193,13 +189,16 @@ async def _set_flatpickr_dates(page: Page, report_date: date) -> None:
         return bool(val and val.startswith(expected))
 
     result = await page.evaluate(js, [y, m, d])
-    if not _ok(result.get("from")) or not _ok(result.get("to")):
+    for wait_ms in (600, 1200, 2000):
+        if _ok(result.get("from")) and _ok(result.get("to")):
+            break
         logger.warning(
-            "Flatpickr dates did not stick (from=%s to=%s, expected %s) — retrying",
-            result.get("from"), result.get("to"), expected,
+            "Flatpickr dates did not stick (from=%s to=%s, expected %s) — retrying in %dms",
+            result.get("from"), result.get("to"), expected, wait_ms,
         )
-        await page.wait_for_timeout(400)
+        await page.wait_for_timeout(wait_ms)
         result = await page.evaluate(js, [y, m, d])
+    else:
         if not _ok(result.get("from")) or not _ok(result.get("to")):
             raise RuntimeError(
                 f"Failed to set flatpickr dates: got from={result.get('from')} "
