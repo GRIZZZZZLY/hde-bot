@@ -30,6 +30,8 @@ _TRIGGER_WINDOW_MIN = 5  # fire if current MSK time is within [target, target+wi
 
 _last_digest_date: Optional[str] = None         # "YYYY-MM-DD" UTC date
 _last_general_flush_date: Optional[str] = None  # "YYYY-MM-DD" UTC date
+_last_general_reconcile_at: Optional[datetime] = None  # last in-hours reconcile time
+_GENERAL_RECONCILE_INTERVAL_SEC = 7 * 60
 _last_report_date: Optional[str] = None         # "YYYY-MM-DD" UTC date — set when report runs
 _report_button_sent: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when button is sent
 _thursday_evening_done: Optional[str] = None  # "YYYY-MM-DD" MSK date — Thu evening auto-run flag
@@ -88,6 +90,28 @@ async def _maybe_flush_general(bot: Bot) -> None:
         await flush_overnight_general(bot)
     except Exception as exc:
         logger.warning("Overnight General flush failed: %s", exc)
+
+
+async def _maybe_reconcile_general(bot: Bot) -> None:
+    """Run periodic HDE reconciliation during work hours to catch direct-HDE assignments."""
+    global _last_general_reconcile_at
+    if config.general_topic_id is None:
+        return
+    from .work_schedule import is_work_time
+    if not is_work_time():
+        return
+    now = datetime.now(timezone.utc)
+    if (
+        _last_general_reconcile_at is not None
+        and (now - _last_general_reconcile_at).total_seconds() < _GENERAL_RECONCILE_INTERVAL_SEC
+    ):
+        return
+    _last_general_reconcile_at = now
+    from .general_channel import reconcile_with_hde
+    try:
+        await reconcile_with_hde(bot)
+    except Exception as exc:
+        logger.warning("Periodic General reconcile failed: %s", exc)
 
 
 async def _maybe_send_report_button(bot: Bot) -> None:
@@ -224,10 +248,17 @@ async def _maybe_weekly_summary(bot: Bot) -> None:
 async def process_scheduled_actions(bot: Bot) -> None:
     from .work_schedule import is_work_day, is_work_time, last_work_day, was_yesterday_work_day
 
-    # Digest + overnight General flush fire on any work day at digest hour
+    # Digest + overnight General flush fire on any work day at digest hour.
+    # Flush runs FIRST so the digest's unassigned-equipment count reflects the
+    # post-reconcile state (matches the personal summary).
     if is_work_day():
-        await _maybe_send_digest(bot)
         await _maybe_flush_general(bot)
+        await _maybe_send_digest(bot)
+
+    # Periodic HDE↔General reconciliation during work hours: catches direct-HDE
+    # assignments when HDE doesn't fire a usable webhook (or sends one with
+    # empty owner_name). Cheap: 1 list call + delta-only edits every ~7 min.
+    await _maybe_reconcile_general(bot)
 
     # Report schedule:
     #   Mon–Thu 8:30 MSK  → reminder button for previous work day

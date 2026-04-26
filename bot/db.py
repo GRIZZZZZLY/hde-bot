@@ -1217,6 +1217,17 @@ async def count_general_messages() -> int:
     return row[0] if row else 0
 
 
+async def list_general_messages() -> list[dict]:
+    """Return all currently posted General notifications."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT ticket_id, message_id, ticket_name FROM unassigned_general_messages"
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
 # ---------------------------------------------------------------------------
 # Pending General notifications (tickets that arrived outside work hours)
 # ---------------------------------------------------------------------------

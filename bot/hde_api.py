@@ -276,6 +276,94 @@ class HDEApiClient:
 
         return all_tickets
 
+    async def get_unassigned_tickets(self, department_name: str = "") -> list[HDETicket]:
+        """Return open/process tickets without an owner, optionally filtered by department name.
+
+        Filters client-side by checking owner_id and (case-insensitive) department name —
+        the HDE API's `owner_list=0` filter is not consistently honoured across instances.
+        """
+        all_tickets: list[HDETicket] = []
+        target_dept = department_name.strip().lower()
+        page = 1
+
+        while page <= 30:  # safety cap — should never realistically fire
+            url = f"{self.base_url}/tickets/"
+            params = {
+                "owner_list": "0",
+                "status_list": "open,process",
+                "page": str(page),
+            }
+            async with aiohttp.ClientSession(auth=self.auth) as session:
+                async with session.get(url, params=params) as response:
+                    data = await self._read_response(response)
+                    if response.status >= 400:
+                        message = self._extract_error_message(data) or f"HDE API error {response.status}"
+                        raise HDEApiError(message)
+
+            if not isinstance(data, dict):
+                break
+            tickets_data = data.get("data", {})
+            if not tickets_data:
+                break
+            if isinstance(tickets_data, dict):
+                items = list(tickets_data.values())
+            elif isinstance(tickets_data, list):
+                items = tickets_data
+            else:
+                break
+
+            for ticket_raw in items:
+                if not isinstance(ticket_raw, dict):
+                    continue
+                # Defensive owner check (the API filter may not be reliable)
+                owner_id_raw = ticket_raw.get("owner_id")
+                owner_name_raw = (ticket_raw.get("owner_name") or "").strip().lower()
+                has_owner_id = owner_id_raw not in (None, "", 0, "0")
+                has_real_owner_name = bool(owner_name_raw) and "неприсвоен" not in owner_name_raw and "unassigned" not in owner_name_raw
+                if has_owner_id and has_real_owner_name:
+                    continue
+
+                if target_dept:
+                    dept = (
+                        ticket_raw.get("department_name")
+                        or ticket_raw.get("department")
+                        or ""
+                    )
+                    if str(dept).strip().lower() != target_dept:
+                        continue
+
+                ticket_id = str(ticket_raw.get("id", ""))
+                if not ticket_id:
+                    continue
+                unique_id = ticket_raw.get("unique_id") or ticket_id
+                title = ticket_raw.get("title", "") or ""
+                user_name = ticket_raw.get("user_name", "")
+                user_lastname = ticket_raw.get("user_lastname", "")
+                company_name = f"{user_name} {user_lastname}".strip() or "—"
+                sla_date = ticket_raw.get("sla_date") or None
+                link_staff = f"{self.base_url.replace('/api/v2', '')}/tickets/{ticket_id}"
+                all_tickets.append(HDETicket(
+                    ticket_id=ticket_id,
+                    unique_id=unique_id,
+                    title=title,
+                    company_name=company_name,
+                    owner_id=str(owner_id_raw or ""),
+                    sla_date=sla_date,
+                    hde_link=link_staff,
+                    link_staff=link_staff,
+                ))
+
+            meta = data.get("meta", {}) if isinstance(data, dict) else {}
+            total_pages = meta.get("total_pages", 1) if isinstance(meta, dict) else 1
+            pagination = data.get("pagination", {}) if isinstance(data, dict) else {}
+            if isinstance(pagination, dict):
+                total_pages = max(total_pages, pagination.get("total_pages", 1))
+            if page >= total_pages:
+                break
+            page += 1
+
+        return all_tickets
+
     async def get_closed_tickets_page(
         self,
         owner_id: str,

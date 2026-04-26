@@ -314,6 +314,23 @@ async def on_ticket_updated(bot: Bot, payload: dict) -> None:
     existing = await db.get_general_message(ticket_id)
     if existing is None:
         return
+
+    # Ticket has a General message but is no longer unassigned — usually means a
+    # colleague self-assigned it directly in HDE without an owner_changed event.
+    # Mirror on_owner_changed: only delete if a real owner is confirmed in this
+    # payload, otherwise keep the notification (HDE sometimes sends ticket_updated
+    # with an empty owner_name even when the ticket is still in target dept).
+    name = owner_name.strip().lower()
+    has_real_owner = bool(name) and not any(m in name for m in _UNASSIGNED_MARKERS)
+    if has_real_owner or _is_our_operator(payload):
+        await _delete(bot, existing["message_id"])
+        await db.delete_general_message(ticket_id)
+        logger.info(
+            "Deleted General notification on ticket_updated for ticket %s (assigned to %r)",
+            ticket_id, owner_name or "our operator",
+        )
+        return
+
     new_name = _payload_str(payload, "ticket_name")
     if existing["ticket_name"] == new_name:
         return
@@ -340,29 +357,81 @@ async def on_ticket_closed(bot: Bot, payload: dict) -> None:
     logger.info("Deleted General notification on close for ticket %s", ticket_id)
 
 
+async def reconcile_with_hde(bot: Bot) -> None:
+    """Sync General-topic state with HDE: remove stale messages, post missing unassigned tickets.
+
+    Used both by the morning flush and by the periodic in-hours reconcile loop.
+    """
+    if config.general_topic_id is None:
+        return
+    from .hde_api import HDEApiClient, HDEApiError
+    try:
+        client = HDEApiClient()
+    except HDEApiError as exc:
+        logger.warning("HDE reconcile skipped — API not configured: %s", exc)
+        return
+
+    try:
+        unassigned = await client.get_unassigned_tickets(config.unassigned_department)
+    except HDEApiError as exc:
+        logger.warning("HDE reconcile failed to fetch unassigned: %s", exc)
+        return
+    except Exception as exc:
+        logger.exception("HDE reconcile fetch crashed: %s", exc)
+        return
+
+    unassigned_by_id = {t.ticket_id: t for t in unassigned}
+
+    # 1) Remove stale General messages (ticket no longer unassigned/open in HDE)
+    existing = await db.list_general_messages()
+    for row in existing:
+        ticket_id = row["ticket_id"]
+        if ticket_id in unassigned_by_id:
+            continue
+        if ticket_id in _currently_posting:
+            continue  # webhook is mid-flight on this ticket
+        await _delete(bot, row["message_id"])
+        await db.delete_general_message(ticket_id)
+        logger.info("Reconcile: removed stale General message for ticket %s", ticket_id)
+
+    # 2) Post missing General messages (unassigned in HDE but not yet posted)
+    existing_ids = {row["ticket_id"] for row in existing}
+    for ticket in unassigned:
+        if ticket.ticket_id in existing_ids:
+            continue
+        if ticket.ticket_id in _currently_posting:
+            continue  # webhook is mid-flight on this ticket
+        _currently_posting.add(ticket.ticket_id)
+        try:
+            # Re-check inside the guard to avoid racing with a webhook that just saved
+            if await db.get_general_message(ticket.ticket_id):
+                continue
+            text = _format_general_message(
+                display_id=ticket.unique_id,
+                ticket_name=ticket.title,
+                link=ticket.hde_link,
+            )
+            message_id = await _send(bot, text, ticket.ticket_id)
+            if message_id:
+                await db.save_general_message(ticket.ticket_id, message_id, ticket.title)
+                # Drop from pending if it was queued — we just posted it via reconcile
+                await db.delete_pending_general(ticket.ticket_id)
+                logger.info("Reconcile: posted missing General message for ticket %s", ticket.ticket_id)
+        finally:
+            _currently_posting.discard(ticket.ticket_id)
+
+
 async def flush_overnight_general(bot: Bot) -> None:
-    """Send overnight summary to personal chat, then post unassigned tickets to General."""
+    """Reconcile General-topic with HDE, post pending overnight tickets, send personal summary."""
     global _overnight_pending_ids
     if config.general_topic_id is None:
         return
+
     pending = await db.list_pending_general()
+    pending_count = len(pending)
+    overnight_seen = len(_overnight_pending_ids)
 
-    # Stats: use in-memory tracker if available, otherwise fall back to pending count
-    total_received = max(len(_overnight_pending_ids), len(pending))
-    unassigned_count = len(pending)
-    assigned_overnight = total_received - unassigned_count
-
-    summary = _format_overnight_summary(total_received, assigned_overnight, unassigned_count)
-    try:
-        await bot.send_message(config.personal_chat_id, summary, parse_mode="HTML")
-    except Exception as exc:
-        logger.warning("Failed to send overnight summary: %s", exc)
-
-    _overnight_pending_ids.clear()
-
-    if not pending:
-        return
-    logger.info("Flushing %d overnight General notifications", len(pending))
+    # 1) Flush queued overnight tickets — post them to General
     for row in pending:
         ticket_id = row["ticket_id"]
         existing = await db.get_general_message(ticket_id)
@@ -381,3 +450,19 @@ async def flush_overnight_general(bot: Bot) -> None:
             logger.info("Flushed General notification for ticket %s (msg_id=%d)", ticket_id, message_id)
         else:
             logger.error("Failed to flush General notification for ticket %s — kept in pending", ticket_id)
+
+    # 2) Reconcile with HDE — remove phantoms, add tickets the bot missed
+    await reconcile_with_hde(bot)
+
+    # 3) Send personal overnight summary using post-reconcile state
+    final_unassigned = await db.count_general_messages()
+    total_received = max(overnight_seen, pending_count)
+    assigned_overnight = max(0, total_received - pending_count)
+
+    summary = _format_overnight_summary(total_received, assigned_overnight, final_unassigned)
+    try:
+        await bot.send_message(config.personal_chat_id, summary, parse_mode="HTML")
+    except Exception as exc:
+        logger.warning("Failed to send overnight summary: %s", exc)
+
+    _overnight_pending_ids.clear()
