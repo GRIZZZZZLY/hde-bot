@@ -388,10 +388,17 @@ def format_refresh_result(
             lines.append(f"  • {title}")
     if deleted:
         lines.append(f"🗑️ Удалено устаревших: <b>{len(deleted)}</b>")
-        for t in deleted:
-            name = _escape(getattr(t, "ticket_name", "") or getattr(t, "ticket_id", ""))
-            company = _escape(getattr(t, "company_name", ""))
-            lines.append(f"  • {name} — {company}")
+        for item in deleted:
+            if isinstance(item, tuple):
+                name, _ticket_id, link = item
+                name = _escape(name)
+                if link:
+                    lines.append(f'  • {name} · <a href="{link}">Открыть в HDE</a>')
+                else:
+                    lines.append(f"  • {name}")
+            else:
+                name = _escape(getattr(item, "ticket_name", "") or getattr(item, "ticket_id", ""))
+                lines.append(f"  • {name}")
     if cleaned_pending:
         lines.append(f"🧹 Очищено закрытых топиков: <b>{cleaned_pending}</b>")
     if not created and not renamed and not deleted and not cleaned_pending:

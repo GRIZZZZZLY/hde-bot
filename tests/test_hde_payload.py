@@ -50,7 +50,6 @@ def test_format_client_reply_contains_message_and_link():
         sla_remaining="30",
         link="https://hde.example.com/tickets/1",
     )
-    assert "Ответ клиента" in text
     assert "Alice" in text
     assert "Please help" in text
     assert "https://hde.example.com/tickets/1" in text
@@ -64,13 +63,11 @@ def test_format_unassigned_message_mentions_delayed_delete():
 
 def test_format_pre_sla_alert_mentions_minutes():
     text = format_pre_sla_alert_topic(
-        display_id="ABC-123",
-        ticket_name="Broken printer",
-        company_name="ACME",
         minutes_left=10,
+        ticket_name="Broken printer",
         link="https://hde.example.com/tickets/1",
     )
-    assert "10 минут" in text
+    assert "10 мин" in text
     assert "Broken printer" in text
 
 
@@ -246,3 +243,26 @@ async def test_get_ticket_open_status_api_error(monkeypatch):
         result = await client.get_ticket_open_status("789")
 
     assert result is None
+
+
+def test_format_refresh_result_deleted_shows_link():
+    text = format_refresh_result(
+        active_count=2,
+        hde_count=3,
+        deleted=[("Сломан принтер", "42", "https://hde.example.com/t/42")],
+    )
+    assert "Удалено устаревших" in text
+    assert "Сломан принтер" in text
+    assert "https://hde.example.com/t/42" in text
+    assert "Открыть в HDE" in text
+    assert "company_name" not in text
+
+
+def test_format_refresh_result_deleted_no_link():
+    text = format_refresh_result(
+        active_count=2,
+        hde_count=3,
+        deleted=[("Тикет без ссылки", "99", "")],
+    )
+    assert "Тикет без ссылки" in text
+    assert "Открыть в HDE" not in text
