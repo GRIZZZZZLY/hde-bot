@@ -153,7 +153,7 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
             logger.info("refresh: renamed topic for ticket %s → %s", ticket.ticket_id, ticket.title)
 
     # ── Step 2: delete active topics whose tickets are gone from HDE ──────────
-    deleted: list[db.TicketTopic] = []
+    deleted: list[tuple[str, str, str]] = []  # (ticket_name, ticket_id, link)
     for topic in active_topics:
         in_hde = (
             topic.ticket_id in hde_by_ticket_id
@@ -161,6 +161,20 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
             or topic.ticket_id in hde_by_unique_id
         )
         if not in_hde:
+            verify = await client.get_ticket_open_status(topic.ticket_id)
+            if verify is None:
+                logger.warning(
+                    "refresh: skip deletion for ticket %s (HDE verify failed, fail-safe)",
+                    topic.ticket_id,
+                )
+                continue
+            is_deletable, link = verify
+            if not is_deletable:
+                logger.info(
+                    "refresh: skip deletion for ticket %s (status not closed/resolved)",
+                    topic.ticket_id,
+                )
+                continue
             await db.update_topic(
                 topic.ticket_id,
                 topic_state="deleted",
@@ -173,7 +187,7 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
                 )
             except TelegramAPIError as exc:
                 logger.warning("refresh: could not delete topic %d: %s", topic.topic_id, exc)
-            deleted.append(topic)
+            deleted.append((topic.ticket_name or topic.ticket_id, topic.ticket_id, link))
             logger.info("refresh: deleted stale topic %d for ticket %s", topic.topic_id, topic.ticket_id)
 
     # ── Step 3: clean up remaining pending-delete topics ─────────────────────

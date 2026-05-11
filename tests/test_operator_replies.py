@@ -589,6 +589,11 @@ async def test_refresh_marks_stale_topic_deleted(initialized_db, monkeypatch):
 
     monkeypatch.setattr("bot.hde_api.HDEApiClient.get_my_open_tickets", fake_get_tickets)
 
+    async def fake_get_ticket_open_status(self, ticket_id):
+        return (True, "https://hde.example.com/tickets/300")
+
+    monkeypatch.setattr("bot.hde_api.HDEApiClient.get_ticket_open_status", fake_get_ticket_open_status)
+
     close_calls = []
 
     async def fake_delete_topic(self, chat_id, message_thread_id):
@@ -600,7 +605,8 @@ async def test_refresh_marks_stale_topic_deleted(initialized_db, monkeypatch):
     result = await refresh_topics(bot=DummyBot())
 
     assert len(result.deleted) == 1
-    assert result.deleted[0].ticket_id == "TKT-300"
+    _name, ticket_id, _link = result.deleted[0]
+    assert ticket_id == "TKT-300"
     assert result.active_after == 0
 
     topic = await db_module.get_topic("TKT-300")
