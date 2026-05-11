@@ -138,6 +138,27 @@ class HDEApiClient:
             owner_name=owner_name,
         )
 
+    async def get_ticket_open_status(self, ticket_id: str) -> tuple[bool, str] | None:
+        """Return (is_deletable, link_staff) or None on any error (fail-safe).
+
+        is_deletable=True means status in {resolved, closed} → safe to delete topic.
+        Returns None on network/API error → caller must skip deletion.
+        """
+        url = f"{self.base_url}/tickets/{ticket_id}/"
+        try:
+            async with aiohttp.ClientSession(auth=self.auth) as session:
+                async with session.get(url) as response:
+                    data = await self._read_response(response)
+                    if response.status >= 400:
+                        return None
+            raw = data.get("data", data) if isinstance(data, dict) else {}
+            status = raw.get("status", "")
+            link = raw.get("link_staff", "")
+            is_deletable = status in {"resolved", "closed"}
+            return (is_deletable, link)
+        except Exception:
+            return None
+
     async def get_client_tickets(self, client_id: int, limit: int = 10) -> list[dict]:
         """Return up to `limit` tickets for the given client (requester), newest first.
 

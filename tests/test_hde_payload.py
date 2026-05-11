@@ -1,15 +1,20 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from bot.formatter import (
     format_assignment_message,
     format_client_reply,
     format_message_deleted,
     format_message_edited,
     format_morning_digest,
-    format_pre_sla_alert,
+    format_pre_sla_alert_topic,
     format_refresh_result,
     format_unassigned_message,
     make_topic_name,
     priority_emoji,
 )
+from bot.hde_api import HDEApiClient
 from bot.hde_webhook import _build_event_key, _normalize_payload
 
 
@@ -58,7 +63,7 @@ def test_format_unassigned_message_mentions_delayed_delete():
 
 
 def test_format_pre_sla_alert_mentions_minutes():
-    text = format_pre_sla_alert(
+    text = format_pre_sla_alert_topic(
         display_id="ABC-123",
         ticket_name="Broken printer",
         company_name="ACME",
@@ -169,3 +174,75 @@ def test_normalize_payload_department_defaults_to_empty():
         "ticket_id": "TKT-6",
     })
     assert payload["department"] == ""
+
+
+@pytest.mark.asyncio
+async def test_get_ticket_open_status_closed(monkeypatch):
+    async def fake_read_response(self, response):
+        return {"data": {"status": "closed", "link_staff": "https://hde.example.com/t/1"}}
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_sess = MagicMock()
+    mock_sess.get = MagicMock(return_value=mock_resp)
+    mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
+    mock_sess.__aexit__ = AsyncMock(return_value=False)
+
+    monkeypatch.setattr("bot.hde_api.HDEApiClient._read_response", fake_read_response)
+
+    with patch("aiohttp.ClientSession", return_value=mock_sess):
+        client = HDEApiClient()
+        result = await client.get_ticket_open_status("123")
+
+    assert result == (True, "https://hde.example.com/t/1")
+
+
+@pytest.mark.asyncio
+async def test_get_ticket_open_status_open(monkeypatch):
+    async def fake_read_response(self, response):
+        return {"data": {"status": "open", "link_staff": "https://hde.example.com/t/2"}}
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_sess = MagicMock()
+    mock_sess.get = MagicMock(return_value=mock_resp)
+    mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
+    mock_sess.__aexit__ = AsyncMock(return_value=False)
+
+    monkeypatch.setattr("bot.hde_api.HDEApiClient._read_response", fake_read_response)
+
+    with patch("aiohttp.ClientSession", return_value=mock_sess):
+        client = HDEApiClient()
+        result = await client.get_ticket_open_status("456")
+
+    assert result == (False, "https://hde.example.com/t/2")
+
+
+@pytest.mark.asyncio
+async def test_get_ticket_open_status_api_error(monkeypatch):
+    async def fake_read_response(self, response):
+        raise RuntimeError("network error")
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_sess = MagicMock()
+    mock_sess.get = MagicMock(return_value=mock_resp)
+    mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
+    mock_sess.__aexit__ = AsyncMock(return_value=False)
+
+    monkeypatch.setattr("bot.hde_api.HDEApiClient._read_response", fake_read_response)
+
+    with patch("aiohttp.ClientSession", return_value=mock_sess):
+        client = HDEApiClient()
+        result = await client.get_ticket_open_status("789")
+
+    assert result is None
