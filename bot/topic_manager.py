@@ -1212,6 +1212,76 @@ def _pre_sla_text(record: "db.TicketTopic", minutes_left: int) -> str:
     )
 
 
+async def _hde_staff_replied_since(ticket_id: str, since_storage: Optional[str]) -> bool:
+    """Return True if operator posted in HDE after last client reply.
+
+    Fails open (returns False) on any error so pre-SLA is never silently swallowed.
+    Skips check when presla_hde_verify=False or hde_owner_id not configured.
+    """
+    if not config.presla_hde_verify:
+        return False
+    owner_id_str = config.hde_owner_id.strip()
+    if not owner_id_str:
+        return False
+    try:
+        owner_id = int(owner_id_str)
+    except ValueError:
+        return False
+
+    since_dt = parse_datetime(since_storage)
+
+    try:
+        from .hde_api import HDEApiClient
+        client = HDEApiClient()
+        posts = await client.get_ticket_posts(ticket_id, limit=5)
+        # get_ticket_posts returns oldest-first; iterate newest-first
+        for post in reversed(posts):
+            if post.user_id != owner_id:
+                continue
+            if since_dt is None:
+                return True
+            try:
+                from datetime import timezone
+                post_dt = __import__("datetime").datetime.strptime(
+                    post.date_created, "%H:%M:%S %d.%m.%Y"
+                ).replace(tzinfo=timezone.utc)
+            except (ValueError, AttributeError):
+                continue
+            if post_dt > since_dt:
+                return True
+        return False
+    except Exception as exc:
+        logger.warning("pre-SLA HDE verify failed for ticket %s: %s", ticket_id, exc)
+        return False
+
+
+async def send_reassurance_to_client(bot: Bot, record: db.TicketTopic) -> None:
+    """Send reassurance post to client via HDE and notify topic. Idempotent via reassurance_sent_at."""
+    from .hde_api import HDEApiClient, HDEApiError
+    try:
+        client = HDEApiClient()
+        await client.add_post(record.ticket_id, config.reassurance_text)
+    except HDEApiError as exc:
+        logger.warning("Reassurance post failed for ticket %s: %s", record.ticket_id, exc)
+        return  # don't mark sent — retry next tick
+
+    await db.update_topic(record.ticket_id, reassurance_sent_at=to_storage(utcnow()))
+
+    try:
+        await bot.send_message(
+            chat_id=config.group_chat_id,
+            message_thread_id=record.topic_id,
+            text=(
+                "🤖 <b>Автоответ клиенту отправлен</b>\n"
+                f"<i>{config.reassurance_text}</i>"
+            ),
+            parse_mode="HTML",
+            disable_notification=True,
+        )
+    except TelegramAPIError as exc:
+        logger.warning("Failed to notify topic about reassurance for %s: %s", record.ticket_id, exc)
+
+
 async def send_pre_sla_alert(bot: Bot, record: db.TicketTopic) -> None:
     minutes_left = _pre_sla_minutes_left(record)
     chat_id, thread_id = _pre_sla_destination(record)

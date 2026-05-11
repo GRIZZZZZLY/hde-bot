@@ -14,7 +14,14 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from . import db
 from .config import config
 from .time_utils import to_storage, utcnow, parse_datetime
-from .topic_manager import delete_pending_topic, send_pre_sla_alert, update_pre_sla_alert
+from .topic_manager import (
+    delete_pending_topic,
+    send_pre_sla_alert,
+    update_pre_sla_alert,
+    _hde_staff_replied_since,
+    _try_delete_pre_sla_message,
+    send_reassurance_to_client,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -312,16 +319,36 @@ async def process_scheduled_actions(bot: Bot) -> None:
     now_value = to_storage(utcnow())
 
     for record in await db.list_due_pre_sla(now_value):
+        if await _hde_staff_replied_since(record.ticket_id, record.last_client_reply_at):
+            logger.info(
+                "pre-SLA skipped for ticket %s: operator already replied in HDE (self-heal)",
+                record.ticket_id,
+            )
+            await db.clear_pre_sla(record.ticket_id)
+            continue
         try:
             await send_pre_sla_alert(bot, record)
         except TelegramAPIError as exc:
             logger.error("Failed to send pre-SLA alert for ticket %s: %s", record.ticket_id, exc)
 
-    for record in await db.list_active_pre_sla():
+    active_pre_sla = await db.list_active_pre_sla()
+
+    for record in active_pre_sla:
         if record.pre_sla_sent_at:
             last_update = parse_datetime(record.pre_sla_sent_at)
             if last_update and (utcnow() - last_update).total_seconds() < 55:
                 continue
+        if await _hde_staff_replied_since(record.ticket_id, record.last_client_reply_at):
+            logger.info(
+                "pre-SLA countdown cleared for ticket %s: operator replied in HDE",
+                record.ticket_id,
+            )
+            try:
+                await _try_delete_pre_sla_message(bot, record)
+            except Exception:
+                pass
+            await db.clear_pre_sla(record.ticket_id)
+            continue
         try:
             await update_pre_sla_alert(bot, record)
         except TelegramAPIError as exc:
@@ -329,6 +356,25 @@ async def process_scheduled_actions(bot: Bot) -> None:
                 "Failed to update pre-SLA countdown for ticket %s: %s",
                 record.ticket_id, exc,
             )
+
+    for record in active_pre_sla:
+        if record.reassurance_sent_at is not None:
+            continue
+        deadline = parse_datetime(record.pre_sla_notify_at)
+        if deadline is None:
+            continue
+        from datetime import timedelta as _td
+        sla_deadline = deadline + _td(minutes=config.pre_sla_warning_minutes)
+        minutes_left = (sla_deadline - utcnow()).total_seconds() / 60
+        if minutes_left > config.reassurance_minutes_before:
+            continue
+        if await _hde_staff_replied_since(record.ticket_id, record.last_client_reply_at):
+            await db.clear_pre_sla(record.ticket_id)
+            continue
+        try:
+            await send_reassurance_to_client(bot, record)
+        except Exception as exc:
+            logger.warning("Reassurance failed for ticket %s: %s", record.ticket_id, exc)
 
     for record in await db.list_due_deletions(now_value):
         await delete_pending_topic(bot, record)

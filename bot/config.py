@@ -58,6 +58,9 @@ class Config:
     deepgram_api_key: str
     groq_api_key: str
     openrouter_api_key: str
+    presla_hde_verify: bool
+    reassurance_minutes_before: int
+    reassurance_text: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -98,6 +101,12 @@ class Config:
             deepgram_api_key=os.getenv("DEEPGRAM_API_KEY", "").strip(),
             groq_api_key=os.getenv("GROQ_API_KEY", "").strip(),
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
+            presla_hde_verify=os.getenv("PRESLA_HDE_VERIFY", "1") == "1",
+            reassurance_minutes_before=int(os.getenv("REASSURANCE_MINUTES_BEFORE", "2")),
+            reassurance_text=os.getenv(
+                "REASSURANCE_TEXT",
+                "Я про вас не забыл, занимаюсь вашим вопросом 🔧",
+            ),
         )
 
     def matches_owner(self, owner_id: str, owner_name: str) -> bool:

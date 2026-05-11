@@ -74,6 +74,7 @@ TICKET_TOPIC_COLUMNS = {
     "pre_sla_notify_at": "TEXT",
     "pre_sla_sent_at": "TEXT",
     "pre_sla_message_id": "INTEGER",
+    "reassurance_sent_at": "TEXT",
     "hde_link": "TEXT DEFAULT ''",
     "updated_at": "TEXT",
     "deleted_at": "TEXT",
@@ -98,6 +99,7 @@ UPDATABLE_FIELDS = {
     "pre_sla_notify_at",
     "pre_sla_sent_at",
     "pre_sla_message_id",
+    "reassurance_sent_at",
     "hde_link",
     "deleted_at",
     "last_assigned_at",
@@ -124,6 +126,7 @@ class TicketTopic:
     pre_sla_notify_at: Optional[str]
     pre_sla_sent_at: Optional[str]
     pre_sla_message_id: Optional[int]
+    reassurance_sent_at: Optional[str]
     hde_link: str
     created_at: str
     updated_at: str
@@ -574,6 +577,7 @@ def _row_to_topic(row: aiosqlite.Row) -> TicketTopic:
         pre_sla_notify_at=row["pre_sla_notify_at"],
         pre_sla_sent_at=row["pre_sla_sent_at"],
         pre_sla_message_id=row["pre_sla_message_id"],
+        reassurance_sent_at=row["reassurance_sent_at"] if "reassurance_sent_at" in row.keys() else None,
         hde_link=row["hde_link"] or "",
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -792,6 +796,7 @@ async def clear_pre_sla(ticket_id: str) -> None:
         pre_sla_notify_at=None,
         pre_sla_sent_at=None,
         pre_sla_message_id=None,
+        reassurance_sent_at=None,
     )
 
 
