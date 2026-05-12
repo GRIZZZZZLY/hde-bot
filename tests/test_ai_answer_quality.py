@@ -68,8 +68,8 @@ def test_detect_equipment_acquiring():
 
 def test_build_system_prompt_contains_role():
     text = _build_system_prompt("тест")
-    assert "2-й линии" in text
-    assert "СПЕЦИАЛИСТУ" in text
+    assert "2-я линия" in text
+    assert "ДЛЯ ОПЕРАТОРА" in text
 
 def test_build_system_prompt_with_equipment():
     text = _build_system_prompt("тест", equipment="АТОЛ")
