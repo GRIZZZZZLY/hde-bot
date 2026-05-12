@@ -105,7 +105,7 @@ class Config:
             reassurance_minutes_before=int(os.getenv("REASSURANCE_MINUTES_BEFORE", "2")),
             reassurance_text=os.getenv(
                 "REASSURANCE_TEXT",
-                "Я про вас не забыл, занимаюсь вашим вопросом 🔧",
+                "Я про вас не забыл, занимаюсь вашим вопросом",
             ),
         )
 
