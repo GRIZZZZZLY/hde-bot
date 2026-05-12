@@ -25,3 +25,14 @@ pytest-cache-files-*/
 *.tmp
 Thumbs.db
 .DS_Store
+
+# Local HAR dumps and exported macro data
+*.har
+tmp/
+tpm/
+data/macros/
+scripts/
+
+# Offline analysis tools and synced databases
+tools/analysis/
+hde_bot_local.db
