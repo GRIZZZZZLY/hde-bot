@@ -19,6 +19,21 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+import json as _json
+from pathlib import Path as _Path
+
+
+def _load_few_shot_examples() -> list[dict]:
+    path = _Path(__file__).parent / "prompts" / "few_shot_examples.json"
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        return data.get("examples", [])
+    except Exception:
+        return []
+
+
+_FEW_SHOT_EXAMPLES: list[dict] = _load_few_shot_examples()
+
 _GEMINI_MODEL = "gemini-2.5-flash"
 _GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -99,6 +114,12 @@ def _detect_equipment(title: str, history: str) -> str | None:
 
 
 _FORMAT_INSTRUCTIONS = (
+    "Перед ответом заполни блок рассуждения (скрыт от пользователя):\n"
+    "<reasoning>\n"
+    "1. Что именно сломано технически — конкретная причина, не симптом?\n"
+    "2. Какая модель/ПО затронута?\n"
+    "3. Какой следующий шаг оператора наиболее вероятен?\n"
+    "</reasoning>\n\n"
     "Формат ответа — ровно три метки, каждая с новой строки:\n"
     "Суть: <одно предложение, 8–15 слов, что именно сломано и у какого ПО/оборудования>\n"
     "Клиенту: <одно предложение, императив, максимум 20 слов — либо один уточняющий вопрос>\n"
@@ -218,6 +239,20 @@ def _build_system_prompt(
             "Справочная статья из базы знаний:\n\n"
             f"{wiki_context}\n\n"
             "---\n\n"
+        )
+    if _FEW_SHOT_EXAMPLES:
+        shots = []
+        for ex in _FEW_SHOT_EXAMPLES:
+            shots.append(
+                f"Проблема: {ex.get('problem', '')}\n"
+                f"Суть: {ex.get('suit', '')}\n"
+                f"Клиенту: {ex.get('client', '')}\n"
+                f"Памятка: {ex.get('pamyatka', '')}"
+            )
+        base += (
+            "Эталонные примеры (из принятых ответов операторов):\n\n"
+            + "\n\n---\n\n".join(shots)
+            + "\n\n---\n\n"
         )
     if rag_examples:
         examples_text = "\n\n---\n\n".join(rag_examples)
@@ -553,6 +588,7 @@ async def generate_ticket_summary(
     # Parse "Суть: ...\nКлиенту: ...\nПамятка: ..."
     import re as _re
     logger.info("AI raw response for ticket %s: %r", ticket_id, text[:400])
+    text = _re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=_re.DOTALL).strip()
     suit_line = ""
     client_line = ""
     memo_line = ""
