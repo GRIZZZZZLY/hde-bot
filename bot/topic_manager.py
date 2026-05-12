@@ -1241,10 +1241,11 @@ async def _hde_staff_replied_since(ticket_id: str, since_storage: Optional[str])
             if since_dt is None:
                 return True
             try:
-                from datetime import timezone
-                post_dt = __import__("datetime").datetime.strptime(
+                from datetime import timezone, timedelta
+                _msk = timezone(timedelta(hours=3))
+                post_dt = datetime.strptime(
                     post.date_created, "%H:%M:%S %d.%m.%Y"
-                ).replace(tzinfo=timezone.utc)
+                ).replace(tzinfo=_msk).astimezone(timezone.utc)
             except (ValueError, AttributeError):
                 continue
             if post_dt > since_dt:
