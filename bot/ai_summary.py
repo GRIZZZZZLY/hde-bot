@@ -7,6 +7,7 @@ import json
 import logging
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiohttp
@@ -19,17 +20,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-import json as _json
-from pathlib import Path as _Path
-
-
 def _load_few_shot_examples() -> list[dict]:
-    path = _Path(__file__).parent / "prompts" / "few_shot_examples.json"
+    path = Path(__file__).parent / "prompts" / "few_shot_examples.json"
     try:
-        data = _json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         return data.get("examples", [])
     except Exception:
         return []
+
+
+def _strip_reasoning(text: str) -> str:
+    import re as _re
+    return _re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=_re.DOTALL).strip()
 
 
 _FEW_SHOT_EXAMPLES: list[dict] = _load_few_shot_examples()
@@ -588,7 +590,7 @@ async def generate_ticket_summary(
     # Parse "Суть: ...\nКлиенту: ...\nПамятка: ..."
     import re as _re
     logger.info("AI raw response for ticket %s: %r", ticket_id, text[:400])
-    text = _re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=_re.DOTALL).strip()
+    text = _strip_reasoning(text)
     suit_line = ""
     client_line = ""
     memo_line = ""

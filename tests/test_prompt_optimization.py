@@ -1,10 +1,5 @@
-import re
 import pytest
-
-
-def strip_reasoning(text: str) -> str:
-    """Strip <reasoning>...</reasoning> block from AI response."""
-    return re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=re.DOTALL).strip()
+from bot.ai_summary import _strip_reasoning
 
 
 def test_strip_reasoning_removes_block():
@@ -18,7 +13,7 @@ def test_strip_reasoning_removes_block():
         "Клиенту: Перезагрузите оба устройства.\n"
         "Памятка: Атол 30Ф + Эвотор 5 • USB."
     )
-    result = strip_reasoning(raw)
+    result = _strip_reasoning(raw)
     assert "<reasoning>" not in result
     assert "Суть:" in result
     assert "Клиенту:" in result
@@ -26,12 +21,12 @@ def test_strip_reasoning_removes_block():
 
 def test_strip_reasoning_noop_when_absent():
     raw = "Суть: Проблема X.\nКлиенту: Сделайте Y.\nПамятка: —"
-    assert strip_reasoning(raw) == raw
+    assert _strip_reasoning(raw) == raw
 
 
 def test_strip_reasoning_multiline():
     raw = "<reasoning>\nline1\nline2\n</reasoning>\nСуть: X.\nКлиенту: Y.\nПамятка: —"
-    result = strip_reasoning(raw)
+    result = _strip_reasoning(raw)
     assert result.startswith("Суть:")
 
 
