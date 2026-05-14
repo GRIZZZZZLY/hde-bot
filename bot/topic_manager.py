@@ -671,14 +671,19 @@ async def _ensure_active_topic(
                     name=_build_topic_name(payload),
                 )
             except TelegramAPIError as exc:
-                if any(k in str(exc).lower() for k in ("thread not found", "not found", "deleted")):
+                err_lower = str(exc).lower()
+                if "topic_not_modified" in err_lower:
+                    # Same name — Telegram rejects the edit but topic is alive. Not an error.
+                    pass
+                elif any(k in err_lower for k in ("topic_id_invalid", "thread not found", "not found", "deleted")):
                     logger.warning(
                         "Topic %d for ticket %s no longer exists in Telegram, recreating",
                         record.topic_id, ticket_id,
                     )
                     await db.mark_topic_deleted(ticket_id)
                     return await _ensure_active_topic(bot, payload, announce_assignment=announce_assignment)
-                logger.error("Failed to verify topic %d: %s", record.topic_id, exc)
+                else:
+                    logger.error("Failed to verify topic %d: %s", record.topic_id, exc)
         else:
             await _rename_topic_if_needed(bot, record, payload)
         await db.update_topic(
@@ -759,6 +764,14 @@ async def _delete_topic_now(bot: Bot, record: db.TicketTopic) -> bool:
             message_thread_id=record.topic_id,
         )
     except TelegramAPIError as exc:
+        err = str(exc).lower()
+        if any(k in err for k in ("topic_id_invalid", "thread not found", "topic_deleted", "not found")):
+            await db.mark_topic_deleted(record.ticket_id)
+            logger.info(
+                "Topic %d for ticket %s already gone in Telegram, marked deleted in DB",
+                record.topic_id, record.ticket_id,
+            )
+            return True
         logger.error("Failed to delete topic %d for ticket %s: %s", record.topic_id, record.ticket_id, exc)
         return False
 
@@ -895,20 +908,30 @@ async def handle_client_reply(bot: Bot, payload: dict) -> None:
         return
 
     record = await _ensure_active_topic(bot, payload)
+    reply_text = format_client_reply(
+        user_name=_payload_value(payload, "user_name"),
+        message=_payload_value(payload, "message"),
+        sla_remaining=payload.get("sla_remaining_minutes"),
+        link=record.hde_link or _payload_value(payload, "link"),
+        date_str=_payload_value(payload, "last_post_date"),
+    )
     try:
-        await _send_topic_message(
-            bot,
-            record.topic_id,
-            format_client_reply(
-                user_name=_payload_value(payload, "user_name"),
-                message=_payload_value(payload, "message"),
-                sla_remaining=payload.get("sla_remaining_minutes"),
-                link=record.hde_link or _payload_value(payload, "link"),
-                date_str=_payload_value(payload, "last_post_date"),
-            ),
-        )
+        await _send_topic_message(bot, record.topic_id, reply_text)
     except TelegramAPIError as exc:
-        logger.error("Failed to send client reply to topic %d: %s", record.topic_id, exc)
+        err_lower = str(exc).lower()
+        if any(k in err_lower for k in ("thread not found", "topic_id_invalid", "topic_deleted", "not found")):
+            logger.warning(
+                "Topic %d for ticket %s missing in Telegram on client_reply, recreating",
+                record.topic_id, ticket_id,
+            )
+            await db.mark_topic_deleted(ticket_id)
+            record = await _ensure_active_topic(bot, payload, announce_assignment=True)
+            try:
+                await _send_topic_message(bot, record.topic_id, reply_text)
+            except TelegramAPIError as exc2:
+                logger.error("Failed to resend client reply to recreated topic %d: %s", record.topic_id, exc2)
+        else:
+            logger.error("Failed to send client reply to topic %d: %s", record.topic_id, exc)
 
     try:
         await _send_client_attachments(bot, record.topic_id, payload)
@@ -1166,8 +1189,14 @@ async def handle_ticket_closed(bot: Bot, payload: dict) -> None:
         pre_sla_message_id=None,
     )
 
-    await _delete_topic_now(bot, record)
-    logger.info("Ticket %s completed, topic %d deleted immediately", ticket_id, record.topic_id)
+    ok = await _delete_topic_now(bot, record)
+    if ok:
+        logger.info("Ticket %s completed, topic %d deleted immediately", ticket_id, record.topic_id)
+    else:
+        logger.warning(
+            "Ticket %s completed but topic %d could not be deleted (will retry via reconcile)",
+            ticket_id, record.topic_id,
+        )
 
 
 def _pre_sla_minutes_left(record: "db.TicketTopic") -> int:
