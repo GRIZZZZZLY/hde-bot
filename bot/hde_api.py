@@ -152,9 +152,11 @@ class HDEApiClient:
                     if response.status >= 400:
                         return None
             raw = data.get("data", data) if isinstance(data, dict) else {}
-            status = raw.get("status", "")
+            # HDE returns the status as `status_id` (e.g. open / 6 / v-processe /
+            # closed). The only terminal status is "closed" ("Выполнено").
+            status = str(raw.get("status_id", "") or "")
             link = raw.get("link_staff", "")
-            is_deletable = status in {"resolved", "closed"}
+            is_deletable = status == "closed"
             return (is_deletable, link)
         except Exception:
             return None
@@ -456,6 +458,17 @@ class HDEApiClient:
         url = f"{self.base_url}/tickets/{ticket_id}/"
         async with aiohttp.ClientSession(auth=self.auth) as session:
             async with session.put(url, json={"owner_id": int(owner_id)}) as response:
+                data = await self._read_response(response)
+                if response.status >= 400:
+                    message = self._extract_error_message(data) or f"HDE API error {response.status}"
+                    raise HDEApiError(message)
+                return HDEApiResult(status=response.status, data=data)
+
+    async def update_ticket_fields(self, ticket_id: str, custom_fields: dict[str, str]) -> HDEApiResult:
+        """Update custom fields of a ticket. Keys are field IDs (as strings)."""
+        url = f"{self.base_url}/tickets/{ticket_id}/"
+        async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with session.put(url, json={"custom_fields": custom_fields}) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
                     message = self._extract_error_message(data) or f"HDE API error {response.status}"
