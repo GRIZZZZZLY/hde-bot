@@ -102,16 +102,31 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
             hde_by_ticket_id.get(topic.ticket_id)
             or hde_by_unique_id.get(topic.unique_id or "")
         )
-        if ticket is None:
-            continue  # stale ticket — will be handled in Step 2
+        # Probe EVERY db topic against Telegram — independent of HDE presence.
+        # When HDE returns 0 tickets (no open tickets, or reassigned away),
+        # gating the probe on `ticket in HDE` left manually-deleted topics
+        # undetected forever. Build the probe name from the DB record when
+        # the ticket is no longer in HDE.
+        if ticket is not None:
+            probe_name = _topic_display_name(ticket, topic)
+        else:
+            probe_name = make_topic_name(
+                topic.unique_id or "",
+                topic.company_name or "",
+                topic.ticket_name or "",
+                topic.priority or "medium",
+            )
         try:
             await bot.edit_forum_topic(
                 chat_id=config.group_chat_id,
                 message_thread_id=topic.topic_id,
-                name=_topic_display_name(ticket, topic),
+                name=probe_name,
             )
         except TelegramAPIError as exc:
-            if any(k in str(exc).lower() for k in ("thread not found", "not found", "deleted")):
+            err = str(exc).lower()
+            if "topic_not_modified" in err:
+                pass  # same name — topic alive, not an error
+            elif any(k in err for k in ("thread not found", "topic_id_invalid", "not found", "deleted")):
                 logger.warning(
                     "refresh: topic %d for ticket %s not found in Telegram, marking deleted",
                     topic.topic_id, topic.ticket_id,
