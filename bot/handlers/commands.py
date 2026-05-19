@@ -24,6 +24,7 @@ from ..ticket_fields import (
     AutofillResult,
     apply_ticket_fields,
 )
+from ..command_menu import hub_keyboard, submenu_keyboard, back_keyboard, HUB_TITLE, ARGS_HELP_TEXT
 from ..operator_replies import (
     OperatorReplyError,
     add_internal_note,
@@ -52,15 +53,6 @@ async def _run_operator_command(
     await message.answer(result, parse_mode="HTML", disable_web_page_preview=True)
 
 
-@router.message(Command("start"))
-async def cmd_start(message: Message) -> None:
-    await message.answer(
-        "👋 <b>HDE Notification Router</b>\n\n"
-        "Бот отслеживает ваши тикеты из HelpDeskEddy, ведет Telegram topics,\n"
-        "считает pre-SLA напоминания и поддерживает /note и /send для текста, медиа и альбомов.",
-        parse_mode="HTML",
-    )
-
 
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
@@ -80,35 +72,9 @@ async def cmd_status(message: Message) -> None:
 
 
 @router.message(Command("help"))
-async def cmd_help(message: Message) -> None:
-    await message.answer(
-        "📖 <b>Команды бота</b>\n\n"
-        "/start — краткое описание бота\n"
-        "/status — активные topics, pending delete и pre-SLA\n"
-        "/help — этот список команд\n"
-        "/note текст — добавить внутренний комментарий в HDE\n"
-        "/note в ответ на фото, видео, voice, документ или альбом — сохранить медиа в комментарий\n"
-        "/send текст — отправить публичный ответ клиенту через HDE\n"
-        "/send в ответ на сообщение, медиа или альбом — отправить текст, caption и вложения клиенту\n"
-        "/delete в ответ на сообщение — удалить его из HDE\n"
-        "/autofill — заполнить поля тикета (Окружение/Классификация/Роль) по контексту\n"
-        "/refresh — синхронизировать топики с HDE, убрать устаревшие\n"
-        "/digest — вручную вызвать утреннюю сводку\n"
-        "/vacation — включить режим тишины до следующего рабочего дня\n"
-        "/vacation 3d — режим тишины на N дней\n"
-        "/vacation YYYY-MM-DD — режим тишины до конкретной даты\n"
-        "/workon — снять режим тишины досрочно\n"
-        "/report — записать отчёт по операторам в Google Sheets (за вчера)\n"
-        "/report YYYY-MM-DD — отчёт за конкретную дату\n"
-        "/aisummary — статус AI саммари\n"
-        "/aisummary on/off — включить/выключить AI саммари\n"
-        "/aiknowledge — статистика базы знаний AI\n"
-        "/aistatus — статус AI Knowledge System (RAG, embedding, предупреждения)\n"
-        "/aiimport [N] [owner_id] — bulk-импорт закрытых тикетов HDE\n"
-        "/aireindex — переиндексировать записи без embedding\n"
-        "/aibackfill — дозаполнить организации в базе знаний\n",
-        parse_mode="HTML",
-    )
+@router.message(Command("menu"))
+async def cmd_menu(message: Message) -> None:
+    await message.answer(HUB_TITLE, parse_mode="HTML", reply_markup=hub_keyboard())
 
 
 @router.message(Command("note"))
@@ -355,6 +321,119 @@ async def cb_report_yesterday(callback: CallbackQuery) -> None:
     await callback.message.answer(result, parse_mode="HTML")
 
 
+@router.callback_query(F.data.startswith("menu:"))
+async def cb_menu(callback: CallbackQuery) -> None:
+    action = callback.data.split(":", 1)[1]
+    await callback.answer()
+
+    if action == "root":
+        await callback.message.edit_text(
+            HUB_TITLE, parse_mode="HTML", reply_markup=hub_keyboard()
+        )
+        return
+    if action in ("quiet", "reports", "ai"):
+        await callback.message.edit_text(
+            HUB_TITLE, parse_mode="HTML", reply_markup=submenu_keyboard(action)
+        )
+        return
+    if action == "args":
+        await callback.message.edit_text(
+            ARGS_HELP_TEXT, parse_mode="HTML", reply_markup=back_keyboard()
+        )
+        return
+
+    if action == "status":
+        active_topics = await count_active_topics()
+        pending_delete = await count_pending_delete_topics()
+        pending_pre_sla = await count_pending_pre_sla_topics()
+        total_topics = await count_total_topics()
+        await callback.message.answer(
+            "📊 <b>Статус бота</b>\n\n"
+            f"🟢 Активных topics: <b>{active_topics}</b>\n"
+            f"⏳ Ожидают удаления: <b>{pending_delete}</b>\n"
+            f"⏰ Ожидают pre-SLA: <b>{pending_pre_sla}</b>\n"
+            f"📚 Всего записей: <b>{total_topics}</b>",
+            parse_mode="HTML",
+        )
+        return
+    if action == "refresh":
+        wait_msg = await callback.message.answer("🔄 Синхронизирую с HDE...")
+        error_text: str | None = None
+        result_text: str | None = None
+        try:
+            result = await refresh_topics(bot=callback.bot)
+            result_text = format_refresh_result(
+                active_count=result.active_after,
+                hde_count=result.hde_count,
+                created=result.created,
+                renamed=result.renamed,
+                deleted=result.deleted,
+                cleaned_pending=result.cleaned_pending,
+            )
+        except Exception as exc:
+            error_text = f"⚠️ <b>Ошибка при синхронизации:</b> {exc}"
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+        await callback.message.answer(error_text or result_text, parse_mode="HTML")
+        from ..topic_manager import retry_missing_ai_summaries
+        try:
+            sent = await retry_missing_ai_summaries(callback.bot)
+            if sent:
+                await callback.message.answer(
+                    f"🧠 <b>AI саммари отправлено:</b> {sent} топик(ов)",
+                    parse_mode="HTML",
+                )
+        except Exception as exc:
+            logger.warning("retry_missing_ai_summaries failed: %s", exc)
+        return
+    if action == "report_yesterday":
+        await cb_report_yesterday(callback)
+        return
+    if action == "digest":
+        await send_morning_digest(callback.bot)
+        return
+    if action == "vacation":
+        from ..work_schedule import next_work_start, set_vacation
+        import zoneinfo
+        _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
+        until = next_work_start()
+        set_vacation(until)
+        until_msk = until.astimezone(_MSK)
+        await callback.message.answer(
+            f"🏖 <b>Режим отпуска включён</b>\n"
+            f"Уведомления возобновятся: <b>{until_msk.strftime('%d.%m.%Y %H:%M')} МСК</b>",
+            parse_mode="HTML",
+        )
+        return
+    if action == "workon":
+        from ..work_schedule import is_on_vacation, set_vacation
+        if not is_on_vacation():
+            await callback.message.answer("ℹ️ Режим отпуска не активен.")
+            return
+        set_vacation(None)
+        await callback.message.answer(
+            "✅ <b>Режим отпуска отключён.</b> Уведомления возобновлены.", parse_mode="HTML"
+        )
+        return
+    if action == "aisummary":
+        from ..db import get_setting, set_setting
+        current = await get_setting("ai_summary_enabled", "1")
+        status = "включено ✅" if current == "1" else "выключено ❌"
+        await callback.message.answer(
+            f"🧠 <b>AI Саммари</b>: {status}\n\n"
+            "Команды:\n"
+            "/aisummary on — включить\n"
+            "/aisummary off — выключить",
+            parse_mode="HTML",
+        )
+        return
+    if action == "aimetrics":
+        await cmd_aimetrics(callback.message)
+        return
+
+
 @router.message(Command("vacation"))
 async def cmd_vacation(message: Message, command: CommandObject) -> None:
     """
@@ -573,11 +652,6 @@ async def cb_km_expire(callback: CallbackQuery) -> None:
     except Exception:
         pass
 
-
-@router.message(Command("aistatus"))
-async def cmd_aistatus(message: Message) -> None:
-    """Алиас для /aimetrics (обратная совместимость)."""
-    await cmd_aimetrics(message)
 
 
 @router.message(Command("aiimport"))

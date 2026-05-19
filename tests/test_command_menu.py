@@ -85,3 +85,43 @@ def test_args_help_lists_arg_variants():
 def test_unknown_submenu_raises():
     with pytest.raises(KeyError):
         submenu_keyboard("nope")
+
+
+@pytest.mark.asyncio
+async def test_menu_callback_status(monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+    import bot.handlers.commands as cmds
+
+    monkeypatch.setattr(cmds, "count_active_topics", AsyncMock(return_value=3))
+    monkeypatch.setattr(cmds, "count_pending_delete_topics", AsyncMock(return_value=1))
+    monkeypatch.setattr(cmds, "count_pending_pre_sla_topics", AsyncMock(return_value=2))
+    monkeypatch.setattr(cmds, "count_total_topics", AsyncMock(return_value=9))
+
+    cb = MagicMock()
+    cb.data = "menu:status"
+    cb.answer = AsyncMock()
+    cb.message = MagicMock()
+    cb.message.edit_text = AsyncMock()
+    cb.message.answer = AsyncMock()
+
+    await cmds.cb_menu(cb)
+
+    cb.answer.assert_awaited()
+    sent = " ".join(
+        str(c.args[0]) for c in
+        list(cb.message.edit_text.await_args_list) + list(cb.message.answer.await_args_list)
+    )
+    assert "Активных topics" in sent and "3" in sent
+
+
+@pytest.mark.asyncio
+async def test_menu_callback_navigation():
+    from unittest.mock import AsyncMock, MagicMock
+    import bot.handlers.commands as cmds
+    cb = MagicMock()
+    cb.data = "menu:quiet"
+    cb.answer = AsyncMock()
+    cb.message = MagicMock()
+    cb.message.edit_text = AsyncMock()
+    await cmds.cb_menu(cb)
+    cb.message.edit_text.assert_awaited()

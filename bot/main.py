@@ -4,8 +4,9 @@ import logging
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
-from aiogram.types import BotCommand, ErrorEvent, Update
+from aiogram.types import ErrorEvent, Update
 
+from .command_menu import build_command_scopes
 from .config import config
 from .db import init_db, migrate_feedback_samples
 from .handlers.commands import router as commands_router
@@ -73,28 +74,9 @@ async def _main_async() -> None:
     # Remove any leftover webhook so polling works
     await bot.delete_webhook(drop_pending_updates=False)
 
-    await bot.set_my_commands([
-        BotCommand(command="status",   description="Активные топики и pre-SLA"),
-        BotCommand(command="refresh",  description="Синхронизировать топики с HDE"),
-        BotCommand(command="digest",   description="Вызвать утреннюю сводку"),
-        BotCommand(command="vacation", description="Режим тишины (напр. /vacation 3d)"),
-        BotCommand(command="workon",   description="Снять режим тишины"),
-        BotCommand(command="note",     description="Внутренний комментарий в HDE"),
-        BotCommand(command="send",     description="Публичный ответ клиенту через HDE"),
-        BotCommand(command="delete",   description="Удалить сообщение из HDE"),
-        BotCommand(command="autofill", description="Заполнить Окружение/Классификацию/Роль"),
-        BotCommand(command="report",     description="Отчёт в Google Sheets (за вчера)"),
-        BotCommand(command="aisummary", description="Вкл/выкл AI саммари тикета"),
-        BotCommand(command="aiknowledge", description="Статистика базы знаний AI"),
-        BotCommand(command="aistatus",   description="Статус AI (алиас /aimetrics)"),
-        BotCommand(command="aimetrics", description="Статистика и управление базой знаний"),
-        BotCommand(command="aiimport",   description="Импорт закрытых тикетов HDE"),
-        BotCommand(command="aireindex",  description="Переиндексировать embeddings"),
-        BotCommand(command="aibackfill", description="Дозаполнить организации в базе знаний"),
-        BotCommand(command="aianalyze",  description="Извлечь паттерны решений из базы знаний"),
-        BotCommand(command="aioptimize", description="Запустить оптимизацию промпта вручную"),
-        BotCommand(command="help",      description="Список всех команд"),
-    ])
+    await bot.delete_my_commands()
+    for entry in build_command_scopes(config.group_chat_id):
+        await bot.set_my_commands(entry["commands"], scope=entry["scope"])
     logger.info("Bot started (polling mode)")
 
     stop_event = asyncio.Event()
