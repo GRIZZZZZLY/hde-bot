@@ -13,10 +13,17 @@ from ..db import (
     mark_report_sent,
 )
 from .. import db
-from ..ai_summary import invalidate_prompt_cache
+from ..ai_summary import invalidate_prompt_cache, _build_history_text
 from ..digest import send_morning_digest
 from ..formatter import format_refresh_result
+from ..hde_api import HDEApiClient, HDEApiError
 from ..refresh import refresh_topics
+from ..ticket_fields import (
+    FIELD_ROL,
+    OKRUZHENIE_OPTIONS,
+    AutofillResult,
+    apply_ticket_fields,
+)
 from ..operator_replies import (
     OperatorReplyError,
     add_internal_note,
@@ -84,6 +91,7 @@ async def cmd_help(message: Message) -> None:
         "/send текст — отправить публичный ответ клиенту через HDE\n"
         "/send в ответ на сообщение, медиа или альбом — отправить текст, caption и вложения клиенту\n"
         "/delete в ответ на сообщение — удалить его из HDE\n"
+        "/autofill — заполнить поля тикета (Окружение/Классификация/Роль) по контексту\n"
         "/refresh — синхронизировать топики с HDE, убрать устаревшие\n"
         "/digest — вручную вызвать утреннюю сводку\n"
         "/vacation — включить режим тишины до следующего рабочего дня\n"
@@ -117,6 +125,46 @@ async def cmd_note(message: Message, command: CommandObject) -> None:
             command_args=command.args,
             tg_message_id=message.message_id,
         )
+
+    await _run_operator_command(message, action)
+
+
+def _format_autofill_result(r: AutofillResult) -> str:
+    if not r.updated:
+        return f"⚠️ <b>Автозаполнение не выполнено:</b> {r.error or 'неизвестная ошибка'}"
+    lines = ["✅ <b>Поля тикета обновлены</b>", "• Классификация: Оборудование"]
+    if r.env_id:
+        lines.append(f"• Окружение: {OKRUZHENIE_OPTIONS.get(r.env_id, r.env_id)}")
+    else:
+        lines.append("• Окружение: ⚠️ не определено — выставьте вручную")
+    if FIELD_ROL in r.fields:
+        lines.append("• Роль: Не важно (поле было пустым)")
+    else:
+        lines.append("• Роль: без изменений")
+    return "\n".join(lines)
+
+
+@router.message(Command("autofill"))
+async def cmd_autofill(message: Message) -> None:
+    async def action() -> str:
+        context = await get_operator_topic_context(
+            telegram_user_id=message.from_user.id,
+            topic_id=message.message_thread_id,
+        )
+        ticket_id = context.record.ticket_id
+        client = HDEApiClient()
+        info = await client.get_ticket_info(ticket_id)
+        posts = await client.get_ticket_posts(ticket_id)
+        try:
+            comments = await client.get_ticket_comments(ticket_id)
+        except HDEApiError:
+            comments = []
+        all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+        history = _build_history_text(all_posts, info)
+        result = await apply_ticket_fields(
+            message.bot, ticket_id, context.topic_id, history
+        )
+        return _format_autofill_result(result)
 
     await _run_operator_command(message, action)
 

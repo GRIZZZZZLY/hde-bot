@@ -82,6 +82,7 @@ async def _main_async() -> None:
         BotCommand(command="note",     description="Внутренний комментарий в HDE"),
         BotCommand(command="send",     description="Публичный ответ клиенту через HDE"),
         BotCommand(command="delete",   description="Удалить сообщение из HDE"),
+        BotCommand(command="autofill", description="Заполнить Окружение/Классификацию/Роль"),
         BotCommand(command="report",     description="Отчёт в Google Sheets (за вчера)"),
         BotCommand(command="aisummary", description="Вкл/выкл AI саммари тикета"),
         BotCommand(command="aiknowledge", description="Статистика базы знаний AI"),

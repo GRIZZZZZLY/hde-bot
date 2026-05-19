@@ -11,6 +11,7 @@ from bot.ticket_fields import (
     KLASSIFIKACIYA_OBORUDOVANIE,
     ROL_NE_VAZHNO,
     OKRUZHENIE_OPTIONS,
+    AutofillResult,
     classify_environment,
 )
 
@@ -151,12 +152,16 @@ async def test_apply_env_found_role_empty(monkeypatch):
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: касса POS не печатает")
+    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: касса POS не печатает")
 
     fake_client.update_ticket_fields.assert_awaited_once_with(
         "T1", {"3": "20", "24": "197", "2": "11"}
     )
     bot.send_message.assert_not_called()
+    assert res.updated is True
+    assert res.env_id == "11"
+    assert res.fields == {"3": "20", "24": "197", "2": "11"}
+    assert res.error is None
 
 
 @pytest.mark.asyncio
@@ -170,13 +175,16 @@ async def test_apply_env_undetermined_warns(monkeypatch):
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: здравствуйте")
+    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: здравствуйте")
 
     fake_client.update_ticket_fields.assert_awaited_once_with("T1", {"3": "20"})
     bot.send_message.assert_awaited_once()
     kwargs = bot.send_message.call_args.kwargs
     assert kwargs["message_thread_id"] == 555
     assert "Окружение не определено" in kwargs["text"]
+    assert res.updated is True
+    assert res.env_id is None
+    assert res.fields == {"3": "20"}
 
 
 @pytest.mark.asyncio
@@ -190,11 +198,14 @@ async def test_apply_role_unknown_state_skipped(monkeypatch):
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    await tf.apply_ticket_fields(bot, "T1", 555, "Эвотор завис")
+    res = await tf.apply_ticket_fields(bot, "T1", 555, "Эвотор завис")
 
     fake_client.update_ticket_fields.assert_awaited_once_with(
         "T1", {"3": "20", "2": "146"}
     )
+    assert res.updated is True
+    assert res.env_id == "146"
+    assert res.fields == {"3": "20", "2": "146"}
 
 
 @pytest.mark.asyncio
@@ -209,7 +220,40 @@ async def test_apply_update_failure_skips_warning(monkeypatch):
     bot.send_message = AsyncMock()
 
     # Must not raise even though update_ticket_fields raised
-    await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: текст")
+    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: текст")
 
     fake_client.update_ticket_fields.assert_awaited_once()
     bot.send_message.assert_not_called()
+    assert res.updated is False
+    assert res.error
+    assert res.env_id is None
+
+
+def test_format_autofill_result_success_env_and_role():
+    from bot.handlers.commands import _format_autofill_result
+
+    r = AutofillResult(updated=True, fields={"3": "20", "24": "197", "2": "11"},
+                        env_id="11")
+    out = _format_autofill_result(r)
+    assert "Поля тикета обновлены" in out
+    assert "Классификация: Оборудование" in out
+    assert "Окружение: POS" in out
+    assert "Роль: Не важно" in out
+
+
+def test_format_autofill_result_env_undetermined_role_unchanged():
+    from bot.handlers.commands import _format_autofill_result
+
+    r = AutofillResult(updated=True, fields={"3": "20"}, env_id=None)
+    out = _format_autofill_result(r)
+    assert "Окружение: ⚠️ не определено" in out
+    assert "Роль: без изменений" in out
+
+
+def test_format_autofill_result_not_updated():
+    from bot.handlers.commands import _format_autofill_result
+
+    r = AutofillResult(updated=False, error="ошибка записи в HDE")
+    out = _format_autofill_result(r)
+    assert "не выполнено" in out
+    assert "ошибка записи в HDE" in out

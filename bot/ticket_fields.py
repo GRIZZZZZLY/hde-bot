@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass, field
 
 import aiohttp
 from aiogram import Bot
@@ -114,16 +115,34 @@ async def classify_environment(history: str) -> str | None:
 ENV_UNDETERMINED_MSG = "⚠️ Окружение не определено автоматически — выставьте вручную"
 
 
-async def apply_ticket_fields(bot: Bot, ticket_id: str, topic_id: int, history: str) -> None:
+@dataclass
+class AutofillResult:
+    """Outcome of apply_ticket_fields, for callers that want feedback.
+
+    updated: the HDE PUT succeeded.
+    fields:  the custom_fields map that was sent (empty if not updated).
+    env_id:  classified Окружение option_id, or None if undetermined.
+    error:   human-readable reason when not updated, else None.
+    """
+    updated: bool
+    fields: dict[str, str] = field(default_factory=dict)
+    env_id: str | None = None
+    error: str | None = None
+
+
+async def apply_ticket_fields(
+    bot: Bot, ticket_id: str, topic_id: int, history: str
+) -> AutofillResult:
     """Auto-fill Классификация / Окружение / Роль after the AI summary.
 
     Never raises — any failure is logged so the summary flow is unaffected.
+    Returns an AutofillResult; the auto-trigger hook ignores it.
     """
     try:
         client = HDEApiClient()
     except Exception as exc:
         logger.warning("apply_ticket_fields: no HDE client: %s", exc)
-        return
+        return AutofillResult(updated=False, error="HDE API недоступен")
 
     fields: dict[str, str] = {FIELD_KLASSIFIKACIYA: KLASSIFIKACIYA_OBORUDOVANIE}
 
@@ -146,7 +165,9 @@ async def apply_ticket_fields(bot: Bot, ticket_id: str, topic_id: int, history: 
         logger.info("apply_ticket_fields: ticket %s updated %s", ticket_id, fields)
     except Exception as exc:
         logger.warning("apply_ticket_fields: update failed for %s: %s", ticket_id, exc)
-        return
+        return AutofillResult(
+            updated=False, fields=fields, env_id=env_id, error="ошибка записи в HDE"
+        )
 
     if env_id is None:
         try:
@@ -161,3 +182,5 @@ async def apply_ticket_fields(bot: Bot, ticket_id: str, topic_id: int, history: 
                 "apply_ticket_fields: warn-message failed for topic %s: %s",
                 topic_id, exc,
             )
+
+    return AutofillResult(updated=True, fields=fields, env_id=env_id)
