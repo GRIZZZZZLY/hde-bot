@@ -600,6 +600,13 @@ async def _post_ticket_history(
     except TelegramAPIError as exc:
         logger.warning("Failed to post AI summary to topic %d: %s", topic_id, exc)
 
+    try:
+        from .ticket_fields import apply_ticket_fields
+        _autofill_history = _build_history_text(all_posts, info)
+        await apply_ticket_fields(bot, ticket_id, topic_id, _autofill_history)
+    except Exception as exc:
+        logger.warning("Ticket field auto-fill failed for %s: %s", ticket_id, exc)
+
 
 async def _ensure_active_topic(
     bot: Bot,

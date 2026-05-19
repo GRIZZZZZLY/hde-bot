@@ -342,3 +342,58 @@ async def test_scheduler_deletes_pending_topics(initialized_db, monkeypatch):
     record = await db_module.get_topic("TKT-1")
     assert record is not None
     assert record.is_deleted is True
+
+
+@pytest.mark.asyncio
+async def test_post_ticket_history_autofill_called(monkeypatch):
+    """apply_ticket_fields is awaited once after a successful AI summary."""
+    from unittest.mock import patch, AsyncMock as AM
+    from bot.hde_api import HDEPost, HDETicketInfo
+
+    bot = make_bot()
+
+    fake_info = HDETicketInfo(
+        client_id=1, client_name="Alice", owner_id=2, owner_name="Bob"
+    )
+    fake_post = HDEPost(
+        post_id=1,
+        user_id=1,
+        text="Hello",
+        date_created="10:00:00 01.01.2026",
+        is_comment=False,
+    )
+
+    # patch has_hde_api_credentials on the singleton used inside topic_manager
+    monkeypatch.setattr(
+        topic_manager.config, "has_hde_api_credentials", lambda: True
+    )
+
+    apply_mock = AM()
+
+    with (
+        patch("bot.hde_api.HDEApiClient") as MockClient,
+        patch("bot.topic_manager._post_client_history", new_callable=AM),
+        patch("bot.topic_manager._generate_summary_with_retry", new_callable=AM) as mock_gen,
+        patch("bot.topic_manager.format_ticket_history", return_value=[]),
+        patch("bot.handlers.ai_feedback.suit_feedback_kb", return_value=None),
+        patch("bot.handlers.ai_feedback.answer_feedback_kb", return_value=None),
+        patch("bot.handlers.ai_feedback.memo_feedback_kb", return_value=None),
+        patch("bot.handlers.ai_feedback.register_feedback_pending", new_callable=AM),
+        patch("bot.topic_manager.db") as mock_db,
+        patch("bot.ticket_fields.apply_ticket_fields", apply_mock),
+    ):
+        instance = MockClient.return_value
+        instance.get_ticket_info = AM(return_value=fake_info)
+        instance.get_ticket_posts = AM(return_value=[fake_post])
+        instance.get_ticket_comments = AM(return_value=[])
+        mock_gen.return_value = ("суть", "клиенту", "памятка", 80)
+        mock_db.update_topic = AM()
+
+        await topic_manager._post_ticket_history(bot, "TKT-9", 999, ticket_title="T", company_id="")
+
+    apply_mock.assert_awaited_once()
+    call_args = apply_mock.await_args.args
+    assert call_args[0] is bot
+    assert call_args[1] == "TKT-9"
+    assert call_args[2] == 999
+    assert isinstance(call_args[3], str)
