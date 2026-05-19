@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import bot.ticket_fields as tf
 from bot.hde_api import HDEApiClient
 from bot.ticket_fields import (
     FIELD_OKRUZHENIE,
@@ -139,9 +140,6 @@ async def test_get_ticket_field_value_missing_field():
     assert val == 0
 
 
-import bot.ticket_fields as tf
-
-
 @pytest.mark.asyncio
 async def test_apply_env_found_role_empty(monkeypatch):
     fake_client = MagicMock()
@@ -197,3 +195,21 @@ async def test_apply_role_unknown_state_skipped(monkeypatch):
     fake_client.update_ticket_fields.assert_awaited_once_with(
         "T1", {"3": "20", "2": "146"}
     )
+
+
+@pytest.mark.asyncio
+async def test_apply_update_failure_skips_warning(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.get_ticket_field_value = AsyncMock(return_value=199)
+    fake_client.update_ticket_fields = AsyncMock(side_effect=RuntimeError("HDE 500"))
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+    monkeypatch.setattr(tf, "classify_environment", AsyncMock(return_value=None))
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    # Must not raise even though update_ticket_fields raised
+    await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: текст")
+
+    fake_client.update_ticket_fields.assert_awaited_once()
+    bot.send_message.assert_not_called()

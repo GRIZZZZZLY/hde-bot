@@ -9,6 +9,7 @@ import logging
 import re
 
 import aiohttp
+from aiogram import Bot
 
 from .config import config
 from .hde_api import HDEApiClient
@@ -112,7 +113,7 @@ async def classify_environment(history: str) -> str | None:
 ENV_UNDETERMINED_MSG = "⚠️ Окружение не определено автоматически — выставьте вручную"
 
 
-async def apply_ticket_fields(bot, ticket_id: str, topic_id: int, history: str) -> None:
+async def apply_ticket_fields(bot: Bot, ticket_id: str, topic_id: int, history: str) -> None:
     """Auto-fill Классификация / Окружение / Роль after the AI summary.
 
     Never raises — any failure is logged so the summary flow is unaffected.
