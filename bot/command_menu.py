@@ -10,6 +10,8 @@ from aiogram.types import (
     BotCommand,
     BotCommandScopeAllPrivateChats,
     BotCommandScopeChat,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
 )
 
 # DM / admin menu (private chats)
@@ -53,3 +55,76 @@ def build_command_scopes(group_chat_id: int) -> list[dict]:
             "commands": GROUP_COMMANDS,
         },
     ]
+
+
+# ---------------------------------------------------------------------------
+# Inline hub keyboards
+# ---------------------------------------------------------------------------
+
+def _kb(rows: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=t, callback_data=d) for t, d in row]
+            for row in rows
+        ]
+    )
+
+
+def hub_keyboard() -> InlineKeyboardMarkup:
+    return _kb([
+        [("📊 Статус", "menu:status"), ("🔄 Синхрон", "menu:refresh")],
+        [("💤 Тишина ▸", "menu:quiet"), ("📈 Отчёты ▸", "menu:reports")],
+        [("🤖 AI ▸", "menu:ai")],
+        [("ℹ️ Команды с аргументами", "menu:args")],
+    ])
+
+
+_SUBMENUS: dict[str, list[list[tuple[str, str]]]] = {
+    "quiet": [
+        [("💤 Тишина до след. раб. дня", "menu:vacation")],
+        [("▶️ Снять тишину", "menu:workon")],
+        [("⬅️ Назад", "menu:root")],
+    ],
+    "reports": [
+        [("📈 Отчёт за вчера", "menu:report_yesterday")],
+        [("🌅 Утренняя сводка", "menu:digest")],
+        [("⬅️ Назад", "menu:root")],
+    ],
+    "ai": [
+        [("🧠 AI summary вкл/выкл", "menu:aisummary")],
+        [("📚 База знаний", "menu:aimetrics")],
+        [("⬅️ Назад", "menu:root")],
+    ],
+}
+
+
+def submenu_keyboard(name: str) -> InlineKeyboardMarkup:
+    return _kb(_SUBMENUS[name])  # KeyError on unknown name (caller guards)
+
+
+def back_keyboard() -> InlineKeyboardMarkup:
+    return _kb([[("⬅️ Назад", "menu:root")]])
+
+
+HUB_TITLE = "🤖 <b>Меню бота</b>\nВыберите действие:"
+
+ARGS_HELP_TEXT = (
+    "ℹ️ <b>Команды с аргументами</b>\n\n"
+    "<b>Тишина</b>\n"
+    "/vacation 3d — режим тишины на N дней\n"
+    "/vacation 2026-05-30 — тишина до даты\n\n"
+    "<b>Отчёты</b>\n"
+    "/report 2026-05-18 — отчёт за конкретную дату\n\n"
+    "<b>AI</b>\n"
+    "/aisummary on | /aisummary off — вкл/выкл AI-саммари\n"
+    "/aiknowledge — статистика базы знаний\n"
+    "/aimetrics — управление базой знаний\n"
+    "/aiimport [N] [owner_id] — импорт закрытых тикетов HDE\n"
+    "/aireindex — переиндексировать embeddings\n"
+    "/aibackfill — дозаполнить организации\n"
+    "/aianalyze — извлечь паттерны решений\n"
+    "/aioptimize — ручная оптимизация промпта\n"
+    "/promptrollback — откатить версию промпта\n\n"
+    "<b>В топике тикета</b>\n"
+    "/note текст | /send текст | /delete (в ответ) | /autofill"
+)
