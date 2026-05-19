@@ -1,5 +1,5 @@
 from datetime import timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -347,7 +347,6 @@ async def test_scheduler_deletes_pending_topics(initialized_db, monkeypatch):
 @pytest.mark.asyncio
 async def test_post_ticket_history_autofill_called(monkeypatch):
     """apply_ticket_fields is awaited once after a successful AI summary."""
-    from unittest.mock import patch, AsyncMock as AM
     from bot.hde_api import HDEPost, HDETicketInfo
 
     bot = make_bot()
@@ -368,26 +367,26 @@ async def test_post_ticket_history_autofill_called(monkeypatch):
         topic_manager.config, "has_hde_api_credentials", lambda: True
     )
 
-    apply_mock = AM()
+    apply_mock = AsyncMock()
 
     with (
         patch("bot.hde_api.HDEApiClient") as MockClient,
-        patch("bot.topic_manager._post_client_history", new_callable=AM),
-        patch("bot.topic_manager._generate_summary_with_retry", new_callable=AM) as mock_gen,
+        patch("bot.topic_manager._post_client_history", new_callable=AsyncMock),
+        patch("bot.topic_manager._generate_summary_with_retry", new_callable=AsyncMock) as mock_gen,
         patch("bot.topic_manager.format_ticket_history", return_value=[]),
         patch("bot.handlers.ai_feedback.suit_feedback_kb", return_value=None),
         patch("bot.handlers.ai_feedback.answer_feedback_kb", return_value=None),
         patch("bot.handlers.ai_feedback.memo_feedback_kb", return_value=None),
-        patch("bot.handlers.ai_feedback.register_feedback_pending", new_callable=AM),
+        patch("bot.handlers.ai_feedback.register_feedback_pending", new_callable=AsyncMock),
         patch("bot.topic_manager.db") as mock_db,
         patch("bot.ticket_fields.apply_ticket_fields", apply_mock),
     ):
         instance = MockClient.return_value
-        instance.get_ticket_info = AM(return_value=fake_info)
-        instance.get_ticket_posts = AM(return_value=[fake_post])
-        instance.get_ticket_comments = AM(return_value=[])
+        instance.get_ticket_info = AsyncMock(return_value=fake_info)
+        instance.get_ticket_posts = AsyncMock(return_value=[fake_post])
+        instance.get_ticket_comments = AsyncMock(return_value=[])
         mock_gen.return_value = ("суть", "клиенту", "памятка", 80)
-        mock_db.update_topic = AM()
+        mock_db.update_topic = AsyncMock()
 
         await topic_manager._post_ticket_history(bot, "TKT-9", 999, ticket_title="T", company_id="")
 

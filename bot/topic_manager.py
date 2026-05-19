@@ -602,8 +602,8 @@ async def _post_ticket_history(
 
     try:
         from .ticket_fields import apply_ticket_fields
-        _autofill_history = _build_history_text(all_posts, info)
-        await apply_ticket_fields(bot, ticket_id, topic_id, _autofill_history)
+        autofill_history = _build_history_text(all_posts, info)
+        await apply_ticket_fields(bot, ticket_id, topic_id, autofill_history)
     except Exception as exc:
         logger.warning("Ticket field auto-fill failed for %s: %s", ticket_id, exc)
 
