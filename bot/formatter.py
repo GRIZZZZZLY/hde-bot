@@ -1,6 +1,5 @@
 import re
-import zoneinfo
-from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+from datetime import datetime as _dt
 from html import escape, unescape
 from typing import Optional, TYPE_CHECKING
 
@@ -216,76 +215,12 @@ def format_message_deleted(display_id: str) -> str:
     )
 
 
-def _parse_hde_sla_date(sla_date: Optional[str]) -> Optional[_dt]:
-    """Parse HDE sla_date format: 'DD.MM.YYYY HH:MM' (Moscow time UTC+3)."""
-    if not sla_date or sla_date == "null":
-        return None
-    try:
-        msk = zoneinfo.ZoneInfo("Europe/Moscow")
-        dt = _dt.strptime(sla_date, "%d.%m.%Y %H:%M")
-        return dt.replace(tzinfo=msk).astimezone(_tz.utc)
-    except (ValueError, KeyError):
-        return None
-
-
-def _sla_remaining_text(sla_date: Optional[str]) -> Optional[str]:
-    """Return human-readable time until SLA, or None if SLA already passed."""
-    dt = _parse_hde_sla_date(sla_date)
-    if dt is None:
-        return None
-    now = _dt.now(_tz.utc)
-    delta = dt - now
-    total_seconds = int(delta.total_seconds())
-    if total_seconds <= 0:
-        return None  # already past — skip in digest
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes = remainder // 60
-    if hours > 0:
-        return f"{hours}ч {minutes}мин" if minutes else f"{hours}ч"
-    return f"{minutes}мин"
-
-
-def format_morning_digest(
-    night_start_label: str,
-    night_end_label: str,
-    assigned_tickets: list,
-    total_open: int,
-    open_tickets_with_sla: list,
-    unassigned_equipment_count: int = 0,
-) -> str:
-    lines = [
+def format_morning_digest(unassigned_equipment_count: int = 0) -> str:
+    return "\n".join([
         "📊 <b>Сводка за ночь</b>",
-        f"🕕 {night_start_label} — {night_end_label}",
         "",
-        f"📥 Назначено за ночь: <b>{len(assigned_tickets)}</b>",
-        f"🟢 Открытых тикетов сейчас: <b>{total_open}</b>",
         f"⚠️ Неприсвоенных (Оборудование): <b>{unassigned_equipment_count}</b>",
-    ]
-
-    if assigned_tickets:
-        lines.append("")
-        for t in assigned_tickets:
-            ticket_line = f"• {_escape(t.ticket_name)}"
-            if t.hde_link:
-                ticket_line += f' <a href="{_escape(t.hde_link)}">🔗</a>'
-            lines.append(ticket_line)
-
-    # SLA section — show tickets with upcoming SLA sorted by sla_date ascending
-    sla_lines = []
-    for ticket in open_tickets_with_sla:
-        remaining = _sla_remaining_text(getattr(ticket, "sla_date", None))
-        if remaining is None:
-            continue
-        line = f"• {_escape(ticket.title)} — {_escape(ticket.company_name)} — {remaining}"
-        line += f' <a href="{_escape(ticket.link_staff)}">🔗</a>'
-        sla_lines.append(line)
-
-    if sla_lines:
-        lines.append("")
-        lines.append("⏰ <b>Очередь по SLA:</b>")
-        lines.extend(sla_lines)
-
-    return "\n".join(lines)
+    ])
 
 
 def _strip_html(text: str) -> str:

@@ -6,8 +6,6 @@ Enabled only when GENERAL_TOPIC_ID is set in config.
 from __future__ import annotations
 
 import logging
-import zoneinfo
-from datetime import datetime, timedelta, timezone
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -16,9 +14,6 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from . import db
 from .config import config
 
-_MSK = zoneinfo.ZoneInfo("Europe/Moscow")
-# Tracks unique ticket IDs saved to pending since last flush (in-memory, resets on restart)
-_overnight_pending_ids: set[str] = set()
 # Prevents duplicate General notifications when ticket_updated + owner_changed arrive concurrently
 _currently_posting: set[str] = set()
 
@@ -46,22 +41,6 @@ def _is_unassigned(owner_name: str, department: str, target_dept: str) -> bool:
     if target_dept and department and department.strip().lower() != target_dept.strip().lower():
         return False
     return True
-
-
-def _format_overnight_summary(total: int, assigned: int, unassigned: int) -> str:
-    now_msk = datetime.now(timezone.utc).astimezone(_MSK)
-    from_dt = (now_msk - timedelta(days=1)).replace(
-        hour=config.work_hour_end, minute=0, second=0, microsecond=0,
-    )
-    dept = config.unassigned_department or "отдел"
-    return "\n".join([
-        "📊 <b>Сводка за ночь</b>",
-        f"🕕 {from_dt.strftime('%H:%M %d.%m')} — {now_msk.strftime('%H:%M %d.%m')}",
-        "",
-        f"📬 Поступило за ночь: {total}",
-        f"✅ Назначены до открытия: {assigned}",
-        f"⚠️ Неприсвоенных ({dept}): {unassigned}",
-    ])
 
 
 def _format_general_message(display_id: str, ticket_name: str, link: str) -> str:
@@ -166,7 +145,6 @@ async def on_assigned_on_create(bot: Bot, payload: dict) -> None:
             ticket_name=_payload_str(payload, "ticket_name"),
             link=_payload_str(payload, "link"),
         )
-        _overnight_pending_ids.add(ticket_id)
         logger.info("Queued General notification for ticket %s (outside work hours)", ticket_id)
         return
     text = _format_general_message(
@@ -220,7 +198,6 @@ async def on_owner_changed(bot: Bot, payload: dict) -> None:
                     ticket_name=_payload_str(payload, "ticket_name"),
                     link=_payload_str(payload, "link"),
                 )
-                _overnight_pending_ids.add(ticket_id)
                 logger.info(
                     "Queued General notification for ticket %s on re-unassign (outside work hours)",
                     ticket_id,
@@ -295,7 +272,6 @@ async def on_ticket_updated(bot: Bot, payload: dict) -> None:
                             ticket_name=_payload_str(payload, "ticket_name"),
                             link=_payload_str(payload, "link"),
                         )
-                        _overnight_pending_ids.add(ticket_id)
                         logger.info("Queued General notification for ticket %s (ticket_updated, outside work hours)", ticket_id)
                     else:
                         text = _format_general_message(
@@ -422,14 +398,11 @@ async def reconcile_with_hde(bot: Bot) -> None:
 
 
 async def flush_overnight_general(bot: Bot) -> None:
-    """Reconcile General-topic with HDE, post pending overnight tickets, send personal summary."""
-    global _overnight_pending_ids
+    """Reconcile General-topic with HDE, post pending overnight tickets."""
     if config.general_topic_id is None:
         return
 
     pending = await db.list_pending_general()
-    pending_count = len(pending)
-    overnight_seen = len(_overnight_pending_ids)
 
     # 1) Flush queued overnight tickets — post them to General
     for row in pending:
@@ -453,16 +426,3 @@ async def flush_overnight_general(bot: Bot) -> None:
 
     # 2) Reconcile with HDE — remove phantoms, add tickets the bot missed
     await reconcile_with_hde(bot)
-
-    # 3) Send personal overnight summary using post-reconcile state
-    final_unassigned = await db.count_general_messages()
-    total_received = max(overnight_seen, pending_count)
-    assigned_overnight = max(0, total_received - pending_count)
-
-    summary = _format_overnight_summary(total_received, assigned_overnight, final_unassigned)
-    try:
-        await bot.send_message(config.personal_chat_id, summary, parse_mode="HTML")
-    except Exception as exc:
-        logger.warning("Failed to send overnight summary: %s", exc)
-
-    _overnight_pending_ids.clear()

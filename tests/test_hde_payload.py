@@ -133,19 +133,13 @@ def test_format_message_deleted_contains_id():
     assert "ABC-123" in text
 
 
-def test_format_morning_digest_empty_night():
-    text = format_morning_digest(
-        night_start_label="18:00 03.04",
-        night_end_label="08:00 04.04",
-        assigned_tickets=[],
-        total_open=5,
-        open_tickets_with_sla=[],
-    )
+def test_format_morning_digest_only_unassigned_equipment():
+    text = format_morning_digest(unassigned_equipment_count=2)
     assert "Сводка за ночь" in text
-    assert "Назначено за ночь:" in text
-    assert "<b>0</b>" in text
-    assert "Открытых тикетов сейчас:" in text
-    assert "<b>5</b>" in text
+    assert "Неприсвоенных (Оборудование):" in text
+    assert "<b>2</b>" in text
+    assert "Назначено за ночь" not in text
+    assert "Открытых тикетов сейчас" not in text
 
 
 def test_format_refresh_result_no_changes():
