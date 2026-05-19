@@ -909,10 +909,15 @@ async def handle_ticket_updated(bot: Bot, payload: dict) -> None:
 
 
 async def handle_client_reply(bot: Bot, payload: dict) -> None:
+    ticket_id = _payload_value(payload, "ticket_id")
+    async with _ticket_lock(ticket_id):
+        await _handle_client_reply_locked(bot, payload, ticket_id)
+
+
+async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -> None:
     if not _is_work_time():
         return
 
-    ticket_id = _payload_value(payload, "ticket_id")
     _existing = await db.get_topic(ticket_id)
     if _existing is not None and _existing.is_deleted:
         logger.info("Ignoring client_reply for deleted ticket %s", ticket_id)
@@ -1149,19 +1154,38 @@ async def _implicit_feedback(record: "db.TicketTopic", staff_text: str) -> None:
 
 async def handle_staff_reply(bot: Bot, payload: dict) -> None:
     ticket_id = _payload_value(payload, "ticket_id")
+    async with _ticket_lock(ticket_id):
+        await _handle_staff_reply_locked(bot, payload, ticket_id)
+
+
+async def _handle_staff_reply_locked(bot: Bot, payload: dict, ticket_id: str) -> None:
     record = await db.get_topic(ticket_id)
     if record is None or record.is_deleted:
         logger.info("Ignoring staff_reply for unknown ticket %s", ticket_id)
         return
 
     reply_at = parse_datetime(payload.get("last_post_date")) or utcnow()
+    # Clear the pre-SLA timer only when this staff reply is genuinely newer
+    # than the last client message. A staff_reply at/before the last client
+    # reply (duplicate, out-of-order, or bot/HDE echo) must NOT wipe a timer
+    # that belongs to a still-unanswered client message.
+    last_client = (
+        parse_datetime(record.last_client_reply_at)
+        if record.last_client_reply_at else None
+    )
+    should_clear = last_client is None or reply_at > last_client
     logger.info(
-        "PRESLA-DIAG staff_reply ticket=%s clearing_pre_sla had_notify_at=%r "
+        "PRESLA-DIAG staff_reply ticket=%s should_clear=%s had_notify_at=%r "
         "had_sent_at=%r staff_reply_at=%s last_client_reply_at=%r",
-        ticket_id, record.pre_sla_notify_at, record.pre_sla_sent_at,
+        ticket_id, should_clear, record.pre_sla_notify_at, record.pre_sla_sent_at,
         to_storage(reply_at), record.last_client_reply_at,
     )
-    await _try_delete_pre_sla_message(bot, record)
+    if should_clear:
+        await _try_delete_pre_sla_message(bot, record)
+    pre_sla_clear = (
+        {"pre_sla_notify_at": None, "pre_sla_sent_at": None, "pre_sla_message_id": None}
+        if should_clear else {}
+    )
     await db.update_topic(
         ticket_id,
         unique_id=_display_id(payload),
@@ -1173,9 +1197,7 @@ async def handle_staff_reply(bot: Bot, payload: dict) -> None:
         owner_name=_payload_value(payload, "owner_name"),
         hde_link=_payload_value(payload, "link"),
         last_staff_reply_at=to_storage(reply_at),
-        pre_sla_notify_at=None,
-        pre_sla_sent_at=None,
-        pre_sla_message_id=None,
+        **pre_sla_clear,
     )
 
     # Implicit feedback: compare AI suggestion with what operator actually sent

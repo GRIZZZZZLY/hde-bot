@@ -262,6 +262,41 @@ async def test_staff_reply_clears_pre_sla(initialized_db):
 
 
 @pytest.mark.asyncio
+async def test_staff_reply_keeps_pre_sla_when_client_reply_is_newer(initialized_db):
+    """Regression: a staff_reply older than the last client reply must NOT
+    wipe the pre-SLA timer. Observed in prod: a burst of staff_reply events
+    (staff_reply_at <= last_client_reply_at) kept clearing the freshly
+    scheduled timer, so unanswered tickets never got a pre-SLA alert.
+    """
+    future_notify = to_storage(utcnow() + timedelta(minutes=10))
+    client_reply_at = to_storage(utcnow())  # 2026 — newer than payload date
+    await db_module.upsert_topic(
+        "TKT-1",
+        999,
+        unique_id="ABC-123",
+        company_name="ACME",
+        ticket_name="Broken printer",
+        priority="high",
+        status="open",
+        owner_id="me",
+        owner_name="Me",
+        hde_link="https://hde.example.com/tickets/1",
+        pre_sla_notify_at=future_notify,
+        last_client_reply_at=client_reply_at,
+    )
+    bot = make_bot()
+
+    # make_payload default last_post_date is 2026-04-03 — OLDER than the
+    # client reply just recorded, so this staff_reply must not clear pre-SLA.
+    await handle_staff_reply(bot, make_payload(user_name="Support"))
+
+    record = await db_module.get_topic("TKT-1")
+    assert record is not None
+    assert record.pre_sla_notify_at == future_notify  # preserved
+    assert record.last_staff_reply_at is not None       # other updates still applied
+
+
+@pytest.mark.asyncio
 async def test_ticket_closed_deletes_topic(initialized_db):
     await db_module.upsert_topic(
         "TKT-1",
