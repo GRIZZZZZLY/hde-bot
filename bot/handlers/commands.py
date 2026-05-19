@@ -370,7 +370,8 @@ async def cb_menu(callback: CallbackQuery) -> None:
                 deleted=result.deleted,
                 cleaned_pending=result.cleaned_pending,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("cb_menu refresh failed")
             error_text = f"⚠️ <b>Ошибка при синхронизации:</b> {exc}"
         try:
             await wait_msg.delete()
@@ -392,7 +393,12 @@ async def cb_menu(callback: CallbackQuery) -> None:
         await cb_report_yesterday(callback)
         return
     if action == "digest":
-        await send_morning_digest(callback.bot)
+        try:
+            await send_morning_digest(callback.bot)
+            await callback.message.answer("🌅 Утренняя сводка отправлена.")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("cb_menu digest failed")
+            await callback.message.answer(f"⚠️ <b>Ошибка:</b> {exc}", parse_mode="HTML")
         return
     if action == "vacation":
         from ..work_schedule import next_work_start, set_vacation
@@ -430,6 +436,7 @@ async def cb_menu(callback: CallbackQuery) -> None:
     if action == "aimetrics":
         await cmd_aimetrics(callback.message)
         return
+    logger.warning("cb_menu: unknown action %r", action)
 
 
 @router.message(Command("vacation"))
