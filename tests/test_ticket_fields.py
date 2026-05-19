@@ -2,6 +2,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from bot.hde_api import HDEApiClient
 from bot.ticket_fields import (
     FIELD_OKRUZHENIE,
     FIELD_KLASSIFIKACIYA,
@@ -85,3 +86,69 @@ async def test_classify_environment_unknown_id_returns_none():
          patch("bot.ticket_fields.aiohttp.ClientSession", return_value=sess_cm):
         result = await classify_environment("текст")
     assert result is None
+
+
+def _hde_get_resp(custom_fields: list):
+    payload = {"data": {"custom_fields": custom_fields}}
+    resp = MagicMock()
+    resp.status = 200
+    resp.json = AsyncMock(return_value=payload)
+    resp.text = AsyncMock(return_value="")
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=resp)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    return cm, payload
+
+
+def _patch_session(get_cm_and_payload):
+    get_cm, payload = get_cm_and_payload
+    session = MagicMock()
+    session.get = MagicMock(return_value=get_cm)
+    sess_cm = MagicMock()
+    sess_cm.__aenter__ = AsyncMock(return_value=session)
+    sess_cm.__aexit__ = AsyncMock(return_value=False)
+    from contextlib import contextmanager
+    from unittest.mock import patch as _patch
+
+    class _multi:
+        def __enter__(self):
+            self._p1 = _patch("bot.hde_api.aiohttp.ClientSession", return_value=sess_cm)
+            self._p2 = _patch.object(
+                HDEApiClient, "_read_response", new=AsyncMock(return_value=payload)
+            )
+            self._p1.__enter__()
+            self._p2.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            self._p2.__exit__(*args)
+            self._p1.__exit__(*args)
+
+    return _multi()
+
+
+@pytest.mark.asyncio
+async def test_get_ticket_field_value_empty():
+    cf = [{"id": 24, "field_type": "select", "field_value": {"id": 0, "name": None}}]
+    with _patch_session(_hde_get_resp(cf)):
+        client = HDEApiClient()
+        val = await client.get_ticket_field_value("123", 24)
+    assert val == 0
+
+
+@pytest.mark.asyncio
+async def test_get_ticket_field_value_set():
+    cf = [{"id": 24, "field_type": "select",
+           "field_value": {"id": 199, "name": {"ru": "Администратор"}}}]
+    with _patch_session(_hde_get_resp(cf)):
+        client = HDEApiClient()
+        val = await client.get_ticket_field_value("123", 24)
+    assert val == 199
+
+
+@pytest.mark.asyncio
+async def test_get_ticket_field_value_missing_field():
+    with _patch_session(_hde_get_resp([])):
+        client = HDEApiClient()
+        val = await client.get_ticket_field_value("123", 24)
+    assert val == 0
