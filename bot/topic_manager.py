@@ -756,6 +756,10 @@ async def _ensure_active_topic(
 
 async def _schedule_pre_sla(ticket_id: str, payload: dict, last_client_reply_at: str) -> None:
     notify_at = _calculate_pre_sla_notify_at(payload)
+    logger.info(
+        "PRESLA-DIAG schedule ticket=%s notify_at=%s lcr=%s",
+        ticket_id, notify_at, last_client_reply_at,
+    )
     await db.update_topic(
         ticket_id,
         last_client_reply_at=last_client_reply_at,
@@ -950,6 +954,13 @@ async def handle_client_reply(bot: Bot, payload: dict) -> None:
     # Subsequent client messages don't reset the deadline — only a staff
     # reply resets it (handle_staff_reply clears pre_sla_notify_at).
     timer_active = record.pre_sla_notify_at is not None and record.pre_sla_sent_at is None
+    logger.info(
+        "PRESLA-DIAG client_reply ticket=%s notify_at=%r sent_at=%r timer_active=%s "
+        "branch=%s reply_at=%s",
+        record.ticket_id, record.pre_sla_notify_at, record.pre_sla_sent_at,
+        timer_active, "else-update-lcr" if timer_active else "schedule",
+        to_storage(reply_at),
+    )
     if not timer_active:
         await _schedule_pre_sla(record.ticket_id, payload, to_storage(reply_at))
     else:
@@ -1144,6 +1155,12 @@ async def handle_staff_reply(bot: Bot, payload: dict) -> None:
         return
 
     reply_at = parse_datetime(payload.get("last_post_date")) or utcnow()
+    logger.info(
+        "PRESLA-DIAG staff_reply ticket=%s clearing_pre_sla had_notify_at=%r "
+        "had_sent_at=%r staff_reply_at=%s last_client_reply_at=%r",
+        ticket_id, record.pre_sla_notify_at, record.pre_sla_sent_at,
+        to_storage(reply_at), record.last_client_reply_at,
+    )
     await _try_delete_pre_sla_message(bot, record)
     await db.update_topic(
         ticket_id,
