@@ -14,6 +14,8 @@ def test_command_sets_partitioned():
         "workon", "report", "digest", "aisummary",
     }
     assert grp == {"note", "send", "delete", "autofill", "help"}
+    # Regression guard: this redesign removes /start and the /aistatus
+    # alias — they must never reappear in any menu set.
     assert "start" not in dm | grp | set(HIDDEN_COMMANDS)
     assert "aistatus" not in dm | grp | set(HIDDEN_COMMANDS)
     assert set(HIDDEN_COMMANDS) == {
