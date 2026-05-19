@@ -98,7 +98,7 @@ async def classify_environment(history: str) -> str | None:
     except Exception as exc:
         logger.warning("Env classifier failed: %s", exc)
         return None
-    m = re.search(r"\d+", raw)
+    m = re.fullmatch(r"\d+", raw)
     if not m:
         return None
     option_id = m.group(0)

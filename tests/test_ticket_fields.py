@@ -1,3 +1,7 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
 from bot.ticket_fields import (
     FIELD_OKRUZHENIE,
     FIELD_KLASSIFIKACIYA,
@@ -5,6 +9,7 @@ from bot.ticket_fields import (
     KLASSIFIKACIYA_OBORUDOVANIE,
     ROL_NE_VAZHNO,
     OKRUZHENIE_OPTIONS,
+    classify_environment,
 )
 
 
@@ -27,13 +32,6 @@ def test_okruzhenie_options_complete():
     assert OKRUZHENIE_OPTIONS["14"] == "Другое"
     # all keys are numeric strings
     assert all(k.isdigit() for k in OKRUZHENIE_OPTIONS)
-
-
-from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
-
-from bot.ticket_fields import classify_environment
 
 
 def _gemini_resp(text: str):
