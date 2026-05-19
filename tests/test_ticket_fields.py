@@ -92,39 +92,24 @@ def _hde_get_resp(custom_fields: list):
     payload = {"data": {"custom_fields": custom_fields}}
     resp = MagicMock()
     resp.status = 200
+    resp.headers = {"Content-Type": "application/json"}
     resp.json = AsyncMock(return_value=payload)
     resp.text = AsyncMock(return_value="")
     cm = MagicMock()
     cm.__aenter__ = AsyncMock(return_value=resp)
     cm.__aexit__ = AsyncMock(return_value=False)
-    return cm, payload
+    return cm
 
 
-def _patch_session(get_cm_and_payload):
-    get_cm, payload = get_cm_and_payload
+def _patch_session(get_cm):
     session = MagicMock()
     session.get = MagicMock(return_value=get_cm)
     sess_cm = MagicMock()
     sess_cm.__aenter__ = AsyncMock(return_value=session)
     sess_cm.__aexit__ = AsyncMock(return_value=False)
-    from contextlib import contextmanager
     from unittest.mock import patch as _patch
 
-    class _multi:
-        def __enter__(self):
-            self._p1 = _patch("bot.hde_api.aiohttp.ClientSession", return_value=sess_cm)
-            self._p2 = _patch.object(
-                HDEApiClient, "_read_response", new=AsyncMock(return_value=payload)
-            )
-            self._p1.__enter__()
-            self._p2.__enter__()
-            return self
-
-        def __exit__(self, *args):
-            self._p2.__exit__(*args)
-            self._p1.__exit__(*args)
-
-    return _multi()
+    return _patch("bot.hde_api.aiohttp.ClientSession", return_value=sess_cm)
 
 
 @pytest.mark.asyncio
