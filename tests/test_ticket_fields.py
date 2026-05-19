@@ -137,3 +137,63 @@ async def test_get_ticket_field_value_missing_field():
         client = HDEApiClient()
         val = await client.get_ticket_field_value("123", 24)
     assert val == 0
+
+
+import bot.ticket_fields as tf
+
+
+@pytest.mark.asyncio
+async def test_apply_env_found_role_empty(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.get_ticket_field_value = AsyncMock(return_value=0)
+    fake_client.update_ticket_fields = AsyncMock()
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+    monkeypatch.setattr(tf, "classify_environment", AsyncMock(return_value="11"))
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: касса POS не печатает")
+
+    fake_client.update_ticket_fields.assert_awaited_once_with(
+        "T1", {"3": "20", "24": "197", "2": "11"}
+    )
+    bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_env_undetermined_warns(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.get_ticket_field_value = AsyncMock(return_value=199)  # Роль set
+    fake_client.update_ticket_fields = AsyncMock()
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+    monkeypatch.setattr(tf, "classify_environment", AsyncMock(return_value=None))
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: здравствуйте")
+
+    fake_client.update_ticket_fields.assert_awaited_once_with("T1", {"3": "20"})
+    bot.send_message.assert_awaited_once()
+    kwargs = bot.send_message.call_args.kwargs
+    assert kwargs["message_thread_id"] == 555
+    assert "Окружение не определено" in kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_apply_role_unknown_state_skipped(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.get_ticket_field_value = AsyncMock(return_value=None)  # read error
+    fake_client.update_ticket_fields = AsyncMock()
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+    monkeypatch.setattr(tf, "classify_environment", AsyncMock(return_value="146"))
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    await tf.apply_ticket_fields(bot, "T1", 555, "Эвотор завис")
+
+    fake_client.update_ticket_fields.assert_awaited_once_with(
+        "T1", {"3": "20", "2": "146"}
+    )

@@ -11,6 +11,7 @@ import re
 import aiohttp
 
 from .config import config
+from .hde_api import HDEApiClient
 
 logger = logging.getLogger(__name__)
 
@@ -106,3 +107,55 @@ async def classify_environment(history: str) -> str | None:
         return option_id
     logger.info("Env classifier returned unknown id %r (raw=%r)", option_id, raw[:60])
     return None
+
+
+ENV_UNDETERMINED_MSG = "⚠️ Окружение не определено автоматически — выставьте вручную"
+
+
+async def apply_ticket_fields(bot, ticket_id: str, topic_id: int, history: str) -> None:
+    """Auto-fill Классификация / Окружение / Роль after the AI summary.
+
+    Never raises — any failure is logged so the summary flow is unaffected.
+    """
+    try:
+        client = HDEApiClient()
+    except Exception as exc:
+        logger.warning("apply_ticket_fields: no HDE client: %s", exc)
+        return
+
+    fields: dict[str, str] = {FIELD_KLASSIFIKACIYA: KLASSIFIKACIYA_OBORUDOVANIE}
+
+    # Роль: set only if currently empty (id == 0). None = read error → skip.
+    try:
+        current_rol = await client.get_ticket_field_value(ticket_id, int(FIELD_ROL))
+    except Exception as exc:
+        logger.warning("apply_ticket_fields: role read failed for %s: %s", ticket_id, exc)
+        current_rol = None
+    if current_rol == 0:
+        fields[FIELD_ROL] = ROL_NE_VAZHNO
+
+    # Окружение: LLM classify; overwrite always when determined.
+    env_id = await classify_environment(history)
+    if env_id:
+        fields[FIELD_OKRUZHENIE] = env_id
+
+    try:
+        await client.update_ticket_fields(ticket_id, fields)
+        logger.info("apply_ticket_fields: ticket %s updated %s", ticket_id, fields)
+    except Exception as exc:
+        logger.warning("apply_ticket_fields: update failed for %s: %s", ticket_id, exc)
+        return
+
+    if env_id is None:
+        try:
+            await bot.send_message(
+                chat_id=config.group_chat_id,
+                message_thread_id=topic_id,
+                text=ENV_UNDETERMINED_MSG,
+                disable_notification=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "apply_ticket_fields: warn-message failed for topic %s: %s",
+                topic_id, exc,
+            )
