@@ -1,8 +1,13 @@
+import pytest
+
 from bot.command_menu import (
+    ARGS_HELP_TEXT,
     DM_COMMANDS,
     GROUP_COMMANDS,
     HIDDEN_COMMANDS,
     build_command_scopes,
+    hub_keyboard,
+    submenu_keyboard,
 )
 
 
@@ -38,8 +43,6 @@ def test_build_command_scopes_shape():
 # ---------------------------------------------------------------------------
 # Task 2: inline hub keyboards + args help text
 # ---------------------------------------------------------------------------
-
-from bot.command_menu import hub_keyboard, submenu_keyboard, ARGS_HELP_TEXT
 
 
 def _callbacks(markup):
@@ -80,6 +83,5 @@ def test_args_help_lists_arg_variants():
 
 
 def test_unknown_submenu_raises():
-    import pytest
     with pytest.raises(KeyError):
         submenu_keyboard("nope")
