@@ -420,14 +420,12 @@ async def cb_menu(callback: CallbackQuery) -> None:
     if action == "aisummary":
         from ..db import get_setting, set_setting
         current = await get_setting("ai_summary_enabled", "1")
-        status = "включено ✅" if current == "1" else "выключено ❌"
-        await callback.message.answer(
-            f"🧠 <b>AI Саммари</b>: {status}\n\n"
-            "Команды:\n"
-            "/aisummary on — включить\n"
-            "/aisummary off — выключить",
-            parse_mode="HTML",
-        )
+        new = "0" if current == "1" else "1"
+        await set_setting("ai_summary_enabled", new)
+        if new == "1":
+            await callback.message.answer("🧠 <b>AI Саммари включён</b> ✅", parse_mode="HTML")
+        else:
+            await callback.message.answer("🧠 <b>AI Саммари выключен</b> ❌", parse_mode="HTML")
         return
     if action == "aimetrics":
         await cmd_aimetrics(callback.message)
