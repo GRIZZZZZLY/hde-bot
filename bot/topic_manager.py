@@ -1211,6 +1211,11 @@ async def _handle_staff_reply_locked(bot: Bot, payload: dict, ticket_id: str) ->
 
 async def handle_ticket_closed(bot: Bot, payload: dict) -> None:
     ticket_id = _payload_value(payload, "ticket_id")
+    async with _ticket_lock(ticket_id):
+        await _handle_ticket_closed_locked(bot, payload, ticket_id)
+
+
+async def _handle_ticket_closed_locked(bot: Bot, payload: dict, ticket_id: str) -> None:
     record = await db.get_topic(ticket_id)
     if record is None or record.is_deleted:
         logger.info("Ignoring ticket_closed for unknown ticket %s", ticket_id)

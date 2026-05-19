@@ -1,3 +1,4 @@
+import asyncio
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -318,6 +319,41 @@ async def test_ticket_closed_deletes_topic(initialized_db):
     record = await db_module.get_topic("TKT-1")
     assert record is not None
     assert record.is_deleted is True
+
+
+@pytest.mark.asyncio
+async def test_ticket_closed_serialized_on_ticket_lock(initialized_db):
+    """Regression: handle_ticket_closed must serialize on the shared
+    per-ticket lock. Prod incident (ticket 167924): a slow in-flight
+    owner_changed (holding _ticket_lock during a ~30s AI-summary) ran
+    concurrently with an unlocked ticket_closed; closure marked the
+    topic deleted, then the in-flight _ensure_active_topic re-read the
+    deleted record and RESURRECTED a fresh, never-deleted topic.
+    """
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Broken printer", priority="high", status="open",
+        owner_id="me", owner_name="Me",
+        hde_link="https://hde.example.com/tickets/1",
+    )
+    bot = make_bot()
+    lock = topic_manager._ticket_lock("TKT-1")
+    await lock.acquire()
+    task = asyncio.create_task(
+        handle_ticket_closed(bot, make_payload(status="closed"))
+    )
+    try:
+        await asyncio.sleep(0.05)
+        # Blocked on the shared per-ticket lock → not yet deleted
+        rec = await db_module.get_topic("TKT-1")
+        assert rec is not None and rec.is_deleted is False
+        bot.delete_forum_topic.assert_not_called()
+    finally:
+        lock.release()
+    await task
+    rec = await db_module.get_topic("TKT-1")
+    assert rec.is_deleted is True
+    bot.delete_forum_topic.assert_called_once()
 
 
 @pytest.mark.asyncio
