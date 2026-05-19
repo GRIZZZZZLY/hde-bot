@@ -50,11 +50,8 @@ OKRUZHENIE_OPTIONS: dict[str, str] = {
     "156": "Viki Print \\ Вики принт",
 }
 
-_GEMINI_MODEL = "gemini-2.5-flash"
-_GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{_GEMINI_MODEL}:generateContent"
-)
+_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+_GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 def _build_env_prompt() -> str:
@@ -76,19 +73,23 @@ def _build_env_prompt() -> str:
 
 async def classify_environment(history: str) -> str | None:
     """Return an Окружение option_id, or None if undetermined / unknown / error."""
-    if not config.gemini_api_key or not history.strip():
+    if not config.groq_api_key or not history.strip():
         return None
     payload = {
-        "system_instruction": {"parts": [{"text": _build_env_prompt()}]},
-        "contents": [{"parts": [{"text": f"Переписка:\n{history}"}]}],
-        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 16},
+        "model": _GROQ_MODEL,
+        "messages": [
+            {"role": "system", "content": _build_env_prompt()},
+            {"role": "user", "content": f"Переписка:\n{history}"},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 16,
     }
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                _GEMINI_URL,
+                _GROQ_URL,
                 json=payload,
-                params={"key": config.gemini_api_key},
+                headers={"Authorization": f"Bearer {config.groq_api_key}"},
                 timeout=aiohttp.ClientTimeout(total=20),
             ) as resp:
                 if resp.status != 200:
@@ -96,7 +97,7 @@ async def classify_environment(history: str) -> str | None:
                     logger.warning("Env classifier HTTP %s: %s", resp.status, body[:200])
                     return None
                 data = await resp.json()
-        raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        raw = data["choices"][0]["message"]["content"].strip()
     except Exception as exc:
         logger.warning("Env classifier failed: %s", exc)
         return None

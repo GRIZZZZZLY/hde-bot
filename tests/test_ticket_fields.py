@@ -36,9 +36,9 @@ def test_okruzhenie_options_complete():
     assert all(k.isdigit() for k in OKRUZHENIE_OPTIONS)
 
 
-def _gemini_resp(text: str):
-    """Build a fake aiohttp response context manager returning Gemini JSON."""
-    payload = {"candidates": [{"content": {"parts": [{"text": text}]}}]}
+def _groq_resp(text: str):
+    """Build a fake aiohttp response context manager returning Groq JSON."""
+    payload = {"choices": [{"message": {"content": text}}]}
     resp = MagicMock()
     resp.status = 200
     resp.json = AsyncMock(return_value=payload)
@@ -53,11 +53,11 @@ def _gemini_resp(text: str):
 @pytest.mark.asyncio
 async def test_classify_environment_valid_id():
     session = MagicMock()
-    session.post = MagicMock(return_value=_gemini_resp("11"))
+    session.post = MagicMock(return_value=_groq_resp("11"))
     sess_cm = MagicMock()
     sess_cm.__aenter__ = AsyncMock(return_value=session)
     sess_cm.__aexit__ = AsyncMock(return_value=False)
-    with patch("bot.ticket_fields.config.gemini_api_key", "test-key"), \
+    with patch("bot.ticket_fields.config.groq_api_key", "test-key"), \
          patch("bot.ticket_fields.aiohttp.ClientSession", return_value=sess_cm):
         result = await classify_environment("Клиент: не открывается касса POS")
     assert result == "11"
@@ -66,11 +66,11 @@ async def test_classify_environment_valid_id():
 @pytest.mark.asyncio
 async def test_classify_environment_undetermined():
     session = MagicMock()
-    session.post = MagicMock(return_value=_gemini_resp("НЕ ОПРЕДЕЛЕНО"))
+    session.post = MagicMock(return_value=_groq_resp("НЕ ОПРЕДЕЛЕНО"))
     sess_cm = MagicMock()
     sess_cm.__aenter__ = AsyncMock(return_value=session)
     sess_cm.__aexit__ = AsyncMock(return_value=False)
-    with patch("bot.ticket_fields.config.gemini_api_key", "test-key"), \
+    with patch("bot.ticket_fields.config.groq_api_key", "test-key"), \
          patch("bot.ticket_fields.aiohttp.ClientSession", return_value=sess_cm):
         result = await classify_environment("Клиент: добрый день")
     assert result is None
@@ -79,11 +79,11 @@ async def test_classify_environment_undetermined():
 @pytest.mark.asyncio
 async def test_classify_environment_unknown_id_returns_none():
     session = MagicMock()
-    session.post = MagicMock(return_value=_gemini_resp("99999"))
+    session.post = MagicMock(return_value=_groq_resp("99999"))
     sess_cm = MagicMock()
     sess_cm.__aenter__ = AsyncMock(return_value=session)
     sess_cm.__aexit__ = AsyncMock(return_value=False)
-    with patch("bot.ticket_fields.config.gemini_api_key", "test-key"), \
+    with patch("bot.ticket_fields.config.groq_api_key", "test-key"), \
          patch("bot.ticket_fields.aiohttp.ClientSession", return_value=sess_cm):
         result = await classify_environment("текст")
     assert result is None
