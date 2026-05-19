@@ -26,64 +26,92 @@ FIELD_ROL = "24"
 KLASSIFIKACIYA_OBORUDOVANIE = "20"  # "Оборудование"
 ROL_NE_VAZHNO = "197"               # "Не важно"
 
-# Окружение: option_id -> human label (field_id 2)
+# Окружение: option_id -> human label (field_id 2).
+# Intentionally a restricted subset of HDE's 26 field-2 options — only
+# these 13 are allowed for auto-classification (product decision). IDs
+# verified against the authoritative HDE /custom_fields/2/options/ endpoint.
 OKRUZHENIE_OPTIONS: dict[str, str] = {
-    "15": "Интернет витрина",
-    "11": "POS",
-    "146": "Эвотор",
-    "148": "АКСИ \\ AQSI",
-    "12": "Биллинг",
-    "190": "Wallet",
-    "10": "Админ панель",
-    "145": "Атол",
-    "17": "API",
-    "140": "ТГ-Бот",
-    "13": "Florist",
-    "151": "Яндекс Пэй",
-    "150": "INPAS \\ ИНПАС",
-    "46": "Менеджер",
-    "149": "SBER \\ СБЕР",
     "14": "Другое",
-    "153": "Принтер Этикеток",
-    "56": "Интеграция",
-    "152": "Принтер Чеков",
-    "157": "WEB касса \\ Веб касса",
+    "145": "Атол",
+    "146": "Эвотор",
+    "147": "ККМ сервер",
+    "148": "АКСИ \\ AQSI",
     "156": "Viki Print \\ Вики принт",
+    "157": "WEB касса \\ Веб касса",
+    "149": "SBER \\ СБЕР",
+    "150": "INPAS \\ ИНПАС",
+    "155": "Штрих",
+    "152": "Принтер Чеков",
+    "153": "Принтер Этикеток",
+    "154": "Сканер",
+}
+
+# One-line disambiguation criteria per option (for the LLM prompt).
+_OKRUZHENIE_CRITERIA: dict[str, str] = {
+    "145": "фискальный регистратор / ККТ Атол",
+    "146": "смарт-терминал Эвотор",
+    "147": "серверная касса / ККМ-сервер (kkm-server, серверный фискальный модуль)",
+    "148": "касса / фискальный регистратор АКСИ (AQSI)",
+    "156": "фискальный принтер Viki Print (Вики Принт)",
+    "157": "облачная веб-касса в браузере, без физического устройства",
+    "149": "эквайринговый терминал Сбербанка (SBER)",
+    "150": "эквайринговый терминал INPAS (ИНПАС)",
+    "155": "ККТ / фискальный регистратор Штрих-М",
+    "152": "нефискальный чековый принтер",
+    "153": "принтер этикеток / штрихкодов",
+    "154": "сканер штрихкодов",
+    "14": "ничего из перечисленного выше не подходит",
 }
 
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 _GROQ_MODEL = "llama-3.3-70b-versatile"
+_GEMINI_MODEL = "gemini-2.5-flash"
+_GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    f"{_GEMINI_MODEL}:generateContent"
+)
 
 
 def _build_env_prompt() -> str:
     lines = "\n".join(
-        f"{oid} = {label}" for oid, label in OKRUZHENIE_OPTIONS.items()
+        f"{oid} = {OKRUZHENIE_OPTIONS[oid]} — {crit}"
+        for oid, crit in _OKRUZHENIE_CRITERIA.items()
     )
     return (
         "Ты классифицируешь обращение в техподдержку кассового ПО/оборудования "
         "по полю «Окружение».\n"
-        "Ниже список допустимых значений в формате «ID = Название»:\n\n"
+        "Допустимые значения (формат «ID = Название — когда выбирать»):\n\n"
         f"{lines}\n\n"
-        "Прочитай переписку и определи наиболее подходящее окружение.\n"
-        "Ответь СТРОГО одним токеном:\n"
-        "— числовой ID из списка выше, ЕСЛИ окружение уверенно определяется;\n"
-        "— либо ровно «НЕ ОПРЕДЕЛЕНО», если определить нельзя.\n"
-        "Без пояснений, без префиксов, только токен."
+        "Прочитай переписку, определи наиболее подходящее окружение строго из "
+        "списка выше. Если уверенно определить нельзя — ответь «НЕ ОПРЕДЕЛЕНО».\n"
+        "В конце ответа укажи только числовой ID выбранного значения "
+        "(или «НЕ ОПРЕДЕЛЕНО»)."
     )
 
 
-async def classify_environment(history: str) -> str | None:
-    """Return an Окружение option_id, or None if undetermined / unknown / error."""
-    if not config.groq_api_key or not history.strip():
+def _parse_env_id(raw: str) -> str | None:
+    """Return the first whitelisted option_id found in the model output.
+
+    Lenient: tolerates surrounding text/reasoning; rejects hallucinated
+    ids not in OKRUZHENIE_OPTIONS; "НЕ ОПРЕДЕЛЕНО" yields no digits → None.
+    """
+    for tok in re.findall(r"\d+", raw):
+        if tok in OKRUZHENIE_OPTIONS:
+            return tok
+    return None
+
+
+async def _groq_classify(prompt: str, history: str) -> str | None:
+    if not config.groq_api_key:
         return None
     payload = {
         "model": _GROQ_MODEL,
         "messages": [
-            {"role": "system", "content": _build_env_prompt()},
+            {"role": "system", "content": prompt},
             {"role": "user", "content": f"Переписка:\n{history}"},
         ],
         "temperature": 0.0,
-        "max_tokens": 16,
+        "max_tokens": 64,
     }
     try:
         async with aiohttp.ClientSession() as session:
@@ -95,21 +123,60 @@ async def classify_environment(history: str) -> str | None:
             ) as resp:
                 if resp.status != 200:
                     body = await resp.text()
-                    logger.warning("Env classifier HTTP %s: %s", resp.status, body[:200])
+                    logger.warning("Env classifier Groq HTTP %s: %s", resp.status, body[:200])
                     return None
                 data = await resp.json()
-        raw = data["choices"][0]["message"]["content"].strip()
+        return data["choices"][0]["message"]["content"].strip()
     except Exception as exc:
-        logger.warning("Env classifier failed: %s", exc)
+        logger.warning("Env classifier Groq failed: %s", exc)
         return None
-    m = re.fullmatch(r"\d+", raw)
-    if not m:
+
+
+async def _gemini_classify(prompt: str, history: str) -> str | None:
+    if not config.gemini_api_key:
         return None
-    option_id = m.group(0)
-    if option_id in OKRUZHENIE_OPTIONS:
-        return option_id
-    logger.info("Env classifier returned unknown id %r (raw=%r)", option_id, raw[:60])
-    return None
+    payload = {
+        "system_instruction": {"parts": [{"text": prompt}]},
+        "contents": [{"parts": [{"text": f"Переписка:\n{history}"}]}],
+        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 64},
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                _GEMINI_URL,
+                json=payload,
+                params={"key": config.gemini_api_key},
+                timeout=aiohttp.ClientTimeout(total=20),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.warning("Env classifier Gemini HTTP %s: %s", resp.status, body[:200])
+                    return None
+                data = await resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as exc:
+        logger.warning("Env classifier Gemini failed: %s", exc)
+        return None
+
+
+async def classify_environment(history: str) -> str | None:
+    """Return an Окружение option_id, or None if undetermined / unknown / error.
+
+    Groq first (fast); falls back to Gemini when Groq is unavailable
+    (e.g. daily token limit / 429) so classification keeps working.
+    """
+    if not history.strip():
+        return None
+    prompt = _build_env_prompt()
+    raw = await _groq_classify(prompt, history)
+    if raw is None:
+        raw = await _gemini_classify(prompt, history)
+    if raw is None:
+        return None
+    option_id = _parse_env_id(raw)
+    if option_id is None:
+        logger.info("Env classifier: no valid id in response %r", raw[:80])
+    return option_id
 
 
 ENV_UNDETERMINED_MSG = "⚠️ Окружение не определено автоматически — выставьте вручную"

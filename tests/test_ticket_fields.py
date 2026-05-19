@@ -28,20 +28,23 @@ def test_fixed_option_ids():
 
 
 def test_okruzhenie_options_complete():
-    # 21 environments discovered from production scan
-    assert len(OKRUZHENIE_OPTIONS) == 21
-    assert OKRUZHENIE_OPTIONS["11"] == "POS"
+    # Restricted to 13 allowed environments (product decision)
+    assert len(OKRUZHENIE_OPTIONS) == 13
     assert OKRUZHENIE_OPTIONS["146"] == "Эвотор"
+    assert OKRUZHENIE_OPTIONS["147"] == "ККМ сервер"
+    assert OKRUZHENIE_OPTIONS["155"] == "Штрих"
+    assert OKRUZHENIE_OPTIONS["154"] == "Сканер"
     assert OKRUZHENIE_OPTIONS["14"] == "Другое"
+    # Excluded options must be gone
+    assert "11" not in OKRUZHENIE_OPTIONS  # POS removed
+    assert "13" not in OKRUZHENIE_OPTIONS  # Florist removed
     # all keys are numeric strings
     assert all(k.isdigit() for k in OKRUZHENIE_OPTIONS)
 
 
-def _groq_resp(text: str):
-    """Build a fake aiohttp response context manager returning Groq JSON."""
-    payload = {"choices": [{"message": {"content": text}}]}
+def _resp(payload: dict, status: int = 200):
     resp = MagicMock()
-    resp.status = 200
+    resp.status = status
     resp.json = AsyncMock(return_value=payload)
     resp.text = AsyncMock(return_value="")
     resp.read = AsyncMock(return_value=b"")
@@ -51,17 +54,75 @@ def _groq_resp(text: str):
     return cm
 
 
+def _groq_resp(text: str, status: int = 200):
+    return _resp({"choices": [{"message": {"content": text}}]}, status)
+
+
+def _gemini_resp(text: str, status: int = 200):
+    return _resp(
+        {"candidates": [{"content": {"parts": [{"text": text}]}}]}, status
+    )
+
+
+def _session_cm(post_return):
+    session = MagicMock()
+    session.post = MagicMock(return_value=post_return)
+    sess_cm = MagicMock()
+    sess_cm.__aenter__ = AsyncMock(return_value=session)
+    sess_cm.__aexit__ = AsyncMock(return_value=False)
+    return sess_cm
+
+
 @pytest.mark.asyncio
 async def test_classify_environment_valid_id():
+    with patch("bot.ticket_fields.config.groq_api_key", "test-key"), \
+         patch("bot.ticket_fields.aiohttp.ClientSession",
+               return_value=_session_cm(_groq_resp("145"))):
+        result = await classify_environment("Клиент: не печатает Атол")
+    assert result == "145"
+
+
+@pytest.mark.asyncio
+async def test_classify_environment_lenient_parse():
+    """Model output with surrounding text still yields the id."""
+    with patch("bot.ticket_fields.config.groq_api_key", "test-key"), \
+         patch("bot.ticket_fields.aiohttp.ClientSession",
+               return_value=_session_cm(
+                   _groq_resp("Анализ: это Эвотор.\nОТВЕТ: 146"))):
+        result = await classify_environment("Клиент: завис Эвотор")
+    assert result == "146"
+
+
+@pytest.mark.asyncio
+async def test_classify_environment_gemini_fallback():
+    """Groq unavailable (no key) → Gemini fallback returns the id."""
+    with patch("bot.ticket_fields.config.groq_api_key", ""), \
+         patch("bot.ticket_fields.config.gemini_api_key", "g-key"), \
+         patch("bot.ticket_fields.aiohttp.ClientSession",
+               return_value=_session_cm(_gemini_resp("155"))):
+        result = await classify_environment("Клиент: ошибка на Штрих-М")
+    assert result == "155"
+
+
+@pytest.mark.asyncio
+async def test_classify_environment_groq_500_falls_back_to_gemini():
+    """Groq HTTP 500 → Gemini fallback used."""
+    calls = {"n": 0}
+
+    def post(*a, **k):
+        calls["n"] += 1
+        return _groq_resp("145", status=500) if calls["n"] == 1 else _gemini_resp("146")
+
     session = MagicMock()
-    session.post = MagicMock(return_value=_groq_resp("11"))
+    session.post = MagicMock(side_effect=post)
     sess_cm = MagicMock()
     sess_cm.__aenter__ = AsyncMock(return_value=session)
     sess_cm.__aexit__ = AsyncMock(return_value=False)
     with patch("bot.ticket_fields.config.groq_api_key", "test-key"), \
+         patch("bot.ticket_fields.config.gemini_api_key", "g-key"), \
          patch("bot.ticket_fields.aiohttp.ClientSession", return_value=sess_cm):
-        result = await classify_environment("Клиент: не открывается касса POS")
-    assert result == "11"
+        result = await classify_environment("Клиент: проблема")
+    assert result == "146"
 
 
 @pytest.mark.asyncio
@@ -232,12 +293,12 @@ async def test_apply_update_failure_skips_warning(monkeypatch):
 def test_format_autofill_result_success_env_and_role():
     from bot.handlers.commands import _format_autofill_result
 
-    r = AutofillResult(updated=True, fields={"3": "20", "24": "197", "2": "11"},
-                        env_id="11")
+    r = AutofillResult(updated=True, fields={"3": "20", "24": "197", "2": "146"},
+                        env_id="146")
     out = _format_autofill_result(r)
     assert "Поля тикета обновлены" in out
     assert "Классификация: Оборудование" in out
-    assert "Окружение: POS" in out
+    assert "Окружение: Эвотор" in out
     assert "Роль: Не важно" in out
 
 
