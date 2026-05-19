@@ -12,6 +12,29 @@ def use_test_db(tmp_path, monkeypatch):
     monkeypatch.setattr("bot.db.DB_PATH", str(tmp_path / "test.db"))
 
 
+def test_capture_correction_filter_excludes_commands():
+    """Regression: a pending correction must NOT swallow slash-commands.
+
+    Before the fix, /autofill (and any command) typed in a topic with an
+    active pending-correction state was consumed by capture_correction
+    (ai_feedback_router is registered before commands_router), so the
+    command never ran. The _NOT_COMMAND filter must reject command text
+    so the update propagates to the commands router.
+    """
+    from types import SimpleNamespace
+
+    from bot.handlers.ai_feedback import _NOT_COMMAND
+
+    assert _NOT_COMMAND.resolve(SimpleNamespace(text="/autofill")) is False
+    assert _NOT_COMMAND.resolve(
+        SimpleNamespace(text="/autofill@notifffikator_bot")
+    ) is False
+    # Genuine operator correction text must still pass through
+    assert _NOT_COMMAND.resolve(
+        SimpleNamespace(text="Перезагрузите терминал и повторите оплату")
+    ) is True
+
+
 @pytest.mark.asyncio
 async def test_feedback_pending_lifecycle():
     await init_db()

@@ -20,6 +20,11 @@ router = Router()
 
 _TTL_HOURS = 24
 
+# Slash-commands must never be swallowed by capture_correction: this router
+# is registered before commands_router, so without this guard a pending
+# correction in a topic would hijack /autofill, /note, etc.
+_NOT_COMMAND = ~F.text.startswith("/")
+
 
 def make_ai_feedback_keyboard() -> InlineKeyboardMarkup:
     """Legacy keyboard — kept for backwards compatibility."""
@@ -288,7 +293,7 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
         pass
 
 
-@router.message(_HasPendingCorrection(), F.text.is_not(None))
+@router.message(_HasPendingCorrection(), F.text.is_not(None), _NOT_COMMAND)
 async def capture_correction(message: Message) -> None:
     topic_id = message.message_thread_id
     pending = await get_ai_feedback_pending(topic_id)
