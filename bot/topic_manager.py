@@ -1173,7 +1173,16 @@ async def _handle_staff_reply_locked(bot: Bot, payload: dict, ticket_id: str) ->
         parse_datetime(record.last_client_reply_at)
         if record.last_client_reply_at else None
     )
-    should_clear = last_client is None or reply_at > last_client
+    # Floor to whole seconds before comparing: HDE dispatcher echoes
+    # (and the utcnow() fallback when payload last_post_date is empty)
+    # produce sub-second drift past a second-precision stored
+    # last_client_reply_at — without flooring, a same-second staff event
+    # spuriously clears the just-armed pre-SLA timer.
+    reply_at_sec = reply_at.replace(microsecond=0)
+    last_client_sec = (
+        last_client.replace(microsecond=0) if last_client else None
+    )
+    should_clear = last_client_sec is None or reply_at_sec > last_client_sec
     logger.info(
         "PRESLA-DIAG staff_reply ticket=%s should_clear=%s had_notify_at=%r "
         "had_sent_at=%r staff_reply_at=%s last_client_reply_at=%r",

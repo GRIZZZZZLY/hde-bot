@@ -322,6 +322,36 @@ async def test_ticket_closed_deletes_topic(initialized_db):
 
 
 @pytest.mark.asyncio
+async def test_staff_reply_same_second_does_not_clear_pre_sla(initialized_db, monkeypatch):
+    """Regression (ticket 167908): when HDE's dispatcher emits a staff_reply
+    in the same second as the client's post (or payload last_post_date is
+    empty so utcnow() fallback kicks in with microseconds), the resulting
+    sub-second drift made `reply_at > last_client` true even though the
+    staff event is not genuinely newer. Same-second staff_reply must NOT
+    clear an armed pre-SLA timer.
+    """
+    from datetime import datetime, timezone as _tz
+    lcr = "2026-05-20 11:14:19"
+    notify = "2026-05-20 11:24:19"
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Broken printer", priority="high", status="open",
+        owner_id="me", owner_name="Me",
+        hde_link="https://hde.example.com/tickets/1",
+        pre_sla_notify_at=notify,
+        last_client_reply_at=lcr,
+    )
+    # Force the staff_reply utcnow() fallback to drift sub-second past lcr
+    fake_now = datetime(2026, 5, 20, 11, 14, 19, 500000, tzinfo=_tz.utc)
+    monkeypatch.setattr(topic_manager, "utcnow", lambda: fake_now)
+    bot = make_bot()
+    # Empty last_post_date → parse_datetime returns None → utcnow() fallback
+    await handle_staff_reply(bot, make_payload(last_post_date="", user_name="Support"))
+    rec = await db_module.get_topic("TKT-1")
+    assert rec.pre_sla_notify_at == notify  # timer preserved
+
+
+@pytest.mark.asyncio
 async def test_ticket_closed_serialized_on_ticket_lock(initialized_db):
     """Regression: handle_ticket_closed must serialize on the shared
     per-ticket lock. Prod incident (ticket 167924): a slow in-flight
