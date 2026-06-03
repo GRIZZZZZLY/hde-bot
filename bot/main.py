@@ -11,6 +11,7 @@ from .config import config
 from .db import init_db, migrate_feedback_samples
 from .handlers.commands import router as commands_router
 from .handlers.ai_feedback import router as ai_feedback_router
+from .hde_api import close_shared_connector
 from .hde_webhook import hde_webhook_handler
 from .scheduler import run_scheduler, _ALLOWED_UPDATES
 from .tg_session import RetrySession
@@ -93,6 +94,7 @@ async def _main_async() -> None:
             with contextlib.suppress(asyncio.CancelledError):
                 await task
         await bot.session.close()
+        await close_shared_connector()
         logger.info("Bot stopped")
 
 

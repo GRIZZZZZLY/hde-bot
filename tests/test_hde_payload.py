@@ -1,7 +1,9 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 
+import bot.hde_api as hde_api_module
 from bot.formatter import (
     format_assignment_message,
     format_client_reply,
@@ -165,6 +167,21 @@ def test_normalize_payload_department_defaults_to_empty():
         "ticket_id": "TKT-6",
     })
     assert payload["department"] == ""
+
+
+@pytest.mark.asyncio
+async def test_shared_connector_reused_and_survives_session_close():
+    conn = hde_api_module._get_connector()
+    # Same pool handed back on repeat calls within one event loop.
+    assert hde_api_module._get_connector() is conn
+    # A borrowing session (connector_owner=False) must NOT close the shared pool.
+    async with aiohttp.ClientSession(connector=conn, connector_owner=False):
+        pass
+    assert not conn.closed
+    # Explicit shutdown closes it and clears the module state.
+    await hde_api_module.close_shared_connector()
+    assert conn.closed
+    assert hde_api_module._shared_connector is None
 
 
 @pytest.mark.asyncio

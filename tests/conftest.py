@@ -2,6 +2,18 @@ import pytest
 
 import bot.config as config_module
 import bot.db as db_module
+import bot.hde_api as hde_api_module
+
+
+@pytest.fixture(autouse=True)
+def reset_hde_connector():
+    """Drop the shared HDE connector around each test so a connector bound to
+    one test's event loop never leaks into the next."""
+    hde_api_module._shared_connector = None
+    hde_api_module._connector_loop = None
+    yield
+    hde_api_module._shared_connector = None
+    hde_api_module._connector_loop = None
 
 
 @pytest.fixture(autouse=True)

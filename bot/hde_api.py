@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional, Sequence
@@ -9,6 +10,38 @@ import aiohttp
 from .config import config
 
 logger = logging.getLogger(__name__)
+
+
+# Process-wide connection pool. Short-lived ClientSessions borrow keep-alive
+# connections from it (connector_owner=False), so the TCP+TLS handshake happens
+# once per pooled connection instead of once per request — the win for bulk
+# loops (import, refresh, pagination) on a 24/7 bot with a single event loop.
+_shared_connector: aiohttp.TCPConnector | None = None
+_connector_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_connector() -> aiohttp.TCPConnector:
+    """Return the shared connector, (re)created per running event loop.
+
+    Keyed by the running loop so tests — which use a fresh loop per test —
+    never reuse a connector bound to a closed loop. In production the loop is
+    stable, so the connector is created once and lives for the process.
+    """
+    global _shared_connector, _connector_loop
+    loop = asyncio.get_running_loop()
+    if _shared_connector is None or _shared_connector.closed or _connector_loop is not loop:
+        _shared_connector = aiohttp.TCPConnector(limit=20, keepalive_timeout=30)
+        _connector_loop = loop
+    return _shared_connector
+
+
+async def close_shared_connector() -> None:
+    """Close the shared connection pool. Call on bot shutdown."""
+    global _shared_connector, _connector_loop
+    if _shared_connector is not None and not _shared_connector.closed:
+        await _shared_connector.close()
+    _shared_connector = None
+    _connector_loop = None
 
 
 class HDEApiError(RuntimeError):
@@ -109,7 +142,7 @@ class HDEApiClient:
     async def get_user_organization(self, user_id: str) -> tuple[str, str]:
         """Return (org_id, org_name) for a HDE user. Returns ('', '') if no org."""
         url = f"{self.base_url}/users/{user_id}/"
-        async with aiohttp.ClientSession(auth=self.auth) as session:
+        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
             async with session.get(url) as response:
                 if response.status >= 400:
                     return ("", "")
@@ -123,7 +156,7 @@ class HDEApiClient:
     async def get_ticket_info(self, ticket_id: str) -> HDETicketInfo:
         """Return client and owner identities for a ticket."""
         url = f"{self.base_url}/tickets/{ticket_id}/"
-        async with aiohttp.ClientSession(auth=self.auth) as session:
+        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
             async with session.get(url) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -146,7 +179,7 @@ class HDEApiClient:
         """
         url = f"{self.base_url}/tickets/{ticket_id}/"
         try:
-            async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
                 async with session.get(url) as response:
                     data = await self._read_response(response)
                     if response.status >= 400:
@@ -171,7 +204,7 @@ class HDEApiClient:
         """
         url = f"{self.base_url}/tickets/{ticket_id}/"
         try:
-            async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
                 async with session.get(url) as response:
                     data = await self._read_response(response)
                     if response.status >= 400:
@@ -198,7 +231,7 @@ class HDEApiClient:
             "order_dir": "desc",
             "page": "1",
         }
-        async with aiohttp.ClientSession(auth=self.auth) as session:
+        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
             async with session.get(url, params=params) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -221,7 +254,7 @@ class HDEApiClient:
         """Return up to *limit* posts (newest first from API, returned oldest-first)."""
         url = f"{self.base_url}/tickets/{ticket_id}/posts/"
         params = {"limit": str(limit)}
-        async with aiohttp.ClientSession(auth=self.auth) as session:
+        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
             async with session.get(url, params=params) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -246,7 +279,7 @@ class HDEApiClient:
         """Return up to *limit* internal comments (oldest-first)."""
         url = f"{self.base_url}/tickets/{ticket_id}/comments/"
         params = {"limit": str(limit)}
-        async with aiohttp.ClientSession(auth=self.auth) as session:
+        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
             async with session.get(url, params=params) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -281,7 +314,7 @@ class HDEApiClient:
                 "status_list": "open,process",
                 "page": str(page),
             }
-            async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
                 async with session.get(url, params=params) as response:
                     data = await self._read_response(response)
                     if response.status >= 400:
@@ -341,7 +374,7 @@ class HDEApiClient:
                 "status_list": "open,process",
                 "page": str(page),
             }
-            async with aiohttp.ClientSession(auth=self.auth) as session:
+            async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
                 async with session.get(url, params=params) as response:
                     data = await self._read_response(response)
                     if response.status >= 400:
@@ -428,7 +461,7 @@ class HDEApiClient:
             "status_list": "closed",
             "page": str(page),
         }
-        async with aiohttp.ClientSession(auth=self.auth) as session:
+        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
             async with session.get(url, params=params) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -481,7 +514,7 @@ class HDEApiClient:
     async def assign_ticket(self, ticket_id: str, owner_id: str) -> HDEApiResult:
         """Assign ticket to the given HDE user id."""
         url = f"{self.base_url}/tickets/{ticket_id}/"
-        async with aiohttp.ClientSession(auth=self.auth) as session:
+        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
             async with session.put(url, json={"owner_id": int(owner_id)}) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -492,7 +525,7 @@ class HDEApiClient:
     async def update_ticket_fields(self, ticket_id: str, custom_fields: dict[str, str]) -> HDEApiResult:
         """Update custom fields of a ticket. Keys are field IDs (as strings)."""
         url = f"{self.base_url}/tickets/{ticket_id}/"
-        async with aiohttp.ClientSession(auth=self.auth) as session:
+        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
             async with session.put(url, json={"custom_fields": custom_fields}) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -509,7 +542,7 @@ class HDEApiClient:
     ) -> HDEApiResult:
         url = f"{self.base_url}{path}"
         payload = self._build_payload(text=text, attachments=attachments)
-        async with aiohttp.ClientSession(auth=self.auth) as session:
+        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
             async with session.post(url, data=payload) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -520,7 +553,7 @@ class HDEApiClient:
     async def _put(self, path: str, *, text: str = "") -> HDEApiResult:
         url = f"{self.base_url}{path}"
         payload = {"text": text.strip()}
-        async with aiohttp.ClientSession(auth=self.auth) as session:
+        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
             async with session.put(url, data=payload) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -530,7 +563,7 @@ class HDEApiClient:
 
     async def _delete(self, path: str) -> HDEApiResult:
         url = f"{self.base_url}{path}"
-        async with aiohttp.ClientSession(auth=self.auth) as session:
+        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
             async with session.delete(url) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
