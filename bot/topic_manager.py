@@ -1182,7 +1182,21 @@ async def _handle_staff_reply_locked(bot: Bot, payload: dict, ticket_id: str) ->
     last_client_sec = (
         last_client.replace(microsecond=0) if last_client else None
     )
-    should_clear = last_client_sec is None or reply_at_sec > last_client_sec
+    newer_than_client = last_client_sec is None or reply_at_sec > last_client_sec
+    if not newer_than_client:
+        # stale / out-of-order / at-or-before the client message — never clears
+        should_clear = False
+    elif config.presla_hde_verify and config.hde_owner_id.strip():
+        # Only the operator's own HDE post should clear the timer. Automated
+        # replies (PosifloraSupportBot, dispatcher echoes) fire staff_reply too
+        # but have a different HDE user_id — verify the operator genuinely
+        # replied after the client before wiping the pre-SLA timer.
+        should_clear = await _hde_staff_replied_since(
+            ticket_id, record.last_client_reply_at
+        )
+    else:
+        # No HDE verification available — trust the staff_reply event (legacy).
+        should_clear = True
     logger.info(
         "PRESLA-DIAG staff_reply ticket=%s should_clear=%s had_notify_at=%r "
         "had_sent_at=%r staff_reply_at=%s last_client_reply_at=%r",

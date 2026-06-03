@@ -237,7 +237,8 @@ async def test_client_reply_sends_voice_attachment(initialized_db, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_staff_reply_clears_pre_sla(initialized_db):
+async def test_staff_reply_clears_pre_sla(initialized_db, monkeypatch):
+    monkeypatch.setattr(topic_manager.config, "presla_hde_verify", False)
     await db_module.upsert_topic(
         "TKT-1",
         999,
@@ -349,6 +350,85 @@ async def test_staff_reply_same_second_does_not_clear_pre_sla(initialized_db, mo
     await handle_staff_reply(bot, make_payload(last_post_date="", user_name="Support"))
     rec = await db_module.get_topic("TKT-1")
     assert rec.pre_sla_notify_at == notify  # timer preserved
+
+
+@pytest.mark.asyncio
+async def test_staff_reply_autoreply_does_not_clear_pre_sla(initialized_db, monkeypatch):
+    """Automated staff_reply (PosifloraSupportBot / dispatcher echo) arrives
+    newer than the client message but is NOT the operator. With HDE verify on,
+    the timer must survive so pre-SLA can still fire (ticket 171623)."""
+    notify = to_storage(utcnow() + timedelta(minutes=10))
+    lcr = to_storage(utcnow() - timedelta(minutes=1))
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Broken printer", priority="high", status="open",
+        owner_id="me", owner_name="Me",
+        hde_link="https://hde.example.com/tickets/1",
+        pre_sla_notify_at=notify, last_client_reply_at=lcr,
+    )
+    monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
+    monkeypatch.setattr(topic_manager.config, "hde_owner_id", "me")
+    verify = AsyncMock(return_value=False)  # operator has NOT posted in HDE
+    monkeypatch.setattr(topic_manager, "_hde_staff_replied_since", verify)
+    bot = make_bot()
+
+    await handle_staff_reply(bot, make_payload(
+        last_post_date=to_storage(utcnow()), user_name="PosifloraSupportBot"))
+
+    rec = await db_module.get_topic("TKT-1")
+    assert rec.pre_sla_notify_at == notify   # timer preserved
+    verify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_staff_reply_operator_reply_clears_pre_sla(initialized_db, monkeypatch):
+    """A genuine operator reply (verified present in HDE) clears the timer."""
+    notify = to_storage(utcnow() + timedelta(minutes=10))
+    lcr = to_storage(utcnow() - timedelta(minutes=1))
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Broken printer", priority="high", status="open",
+        owner_id="me", owner_name="Me",
+        hde_link="https://hde.example.com/tickets/1",
+        pre_sla_notify_at=notify, last_client_reply_at=lcr,
+    )
+    monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
+    monkeypatch.setattr(topic_manager.config, "hde_owner_id", "me")
+    verify = AsyncMock(return_value=True)  # operator genuinely replied
+    monkeypatch.setattr(topic_manager, "_hde_staff_replied_since", verify)
+    bot = make_bot()
+
+    await handle_staff_reply(bot, make_payload(
+        last_post_date=to_storage(utcnow()), user_name="Me"))
+
+    rec = await db_module.get_topic("TKT-1")
+    assert rec.pre_sla_notify_at is None     # timer cleared
+    verify.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_staff_reply_legacy_clear_when_verify_disabled(initialized_db, monkeypatch):
+    """With HDE verify disabled, fall back to the timestamp comparison: a
+    staff_reply newer than the client clears the timer and makes no API call."""
+    notify = to_storage(utcnow() + timedelta(minutes=10))
+    lcr = to_storage(utcnow() - timedelta(minutes=1))
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Broken printer", priority="high", status="open",
+        owner_id="me", owner_name="Me",
+        hde_link="https://hde.example.com/tickets/1",
+        pre_sla_notify_at=notify, last_client_reply_at=lcr,
+    )
+    monkeypatch.setattr(topic_manager.config, "presla_hde_verify", False)
+    verify = AsyncMock(return_value=False)
+    monkeypatch.setattr(topic_manager, "_hde_staff_replied_since", verify)
+    bot = make_bot()
+
+    await handle_staff_reply(bot, make_payload(last_post_date=to_storage(utcnow())))
+
+    rec = await db_module.get_topic("TKT-1")
+    assert rec.pre_sla_notify_at is None     # cleared (legacy timestamp path)
+    verify.assert_not_awaited()              # no HDE API call
 
 
 @pytest.mark.asyncio
