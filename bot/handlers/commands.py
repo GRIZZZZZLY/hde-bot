@@ -948,8 +948,8 @@ async def cmd_aireindex(message: Message) -> None:
     Use after /aiimport when Gemini key was not configured,
     or after switching LLM providers.
     """
-    from ..db import list_knowledge_items_without_embedding, update_knowledge_embedding
-    from ..knowledge.indexer import embed_text
+    from ..db import list_knowledge_items_without_embedding, update_knowledge_embeddings
+    from ..knowledge import indexer
     from ..knowledge.store import embedding_to_bytes
 
     items = await list_knowledge_items_without_embedding()
@@ -962,13 +962,16 @@ async def cmd_aireindex(message: Message) -> None:
     )
     done = 0
     errors = 0
-    for item_id, content in items:
-        emb = await embed_text(content)
-        if emb is None:
-            errors += 1
-            continue
-        await update_knowledge_embedding(item_id, embedding_to_bytes(emb))
-        done += 1
+    embeddings = await indexer.embed_texts([content for _, content in items])
+    if embeddings is None:
+        errors = len(items)
+    else:
+        pairs = [
+            (item_id, embedding_to_bytes(emb))
+            for (item_id, _), emb in zip(items, embeddings)
+        ]
+        await update_knowledge_embeddings(pairs)
+        done = len(pairs)
 
     try:
         await wait_msg.delete()

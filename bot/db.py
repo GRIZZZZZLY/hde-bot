@@ -1404,6 +1404,18 @@ async def update_knowledge_embedding(item_id: int, embedding: bytes) -> None:
         await db.commit()
 
 
+async def update_knowledge_embeddings(pairs: list[tuple[int, bytes]]) -> None:
+    """Store embedding blobs for many knowledge items in one transaction."""
+    if not pairs:
+        return
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            "UPDATE knowledge_items SET embedding = ? WHERE id = ?",
+            [(embedding, item_id) for item_id, embedding in pairs],
+        )
+        await db.commit()
+
+
 async def list_knowledge_items_without_embedding() -> list[tuple[int, str]]:
     """Return (id, content) for rows missing an embedding."""
     async with aiosqlite.connect(DB_PATH) as db:

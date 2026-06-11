@@ -307,3 +307,72 @@ async def test_list_knowledge_content_hashes():
     )
 
     assert await _db.list_knowledge_content_hashes() == {"hash_a", "hash_b"}
+
+
+# --- batch reindex (/aireindex) ---
+
+@pytest.mark.asyncio
+async def test_embed_texts_one_encode_call():
+    """embed_texts must encode the whole list in a single model.encode call."""
+    import numpy as np
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from bot.knowledge import indexer
+
+    fake_model = MagicMock()
+    fake_model.encode = MagicMock(return_value=np.ones((3, 4), dtype=np.float32))
+    with patch.object(indexer, "_get_model", new=AsyncMock(return_value=fake_model)):
+        result = await indexer.embed_texts(["a", "b", "c"])
+
+    assert fake_model.encode.call_count == 1
+    assert result is not None and len(result) == 3
+    texts_arg = fake_model.encode.call_args[0][0]
+    assert all(t.startswith("passage: ") for t in texts_arg)
+
+
+@pytest.mark.asyncio
+async def test_embed_texts_none_on_failure():
+    import numpy as np  # noqa: F401
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from bot.knowledge import indexer
+
+    fake_model = MagicMock()
+    fake_model.encode = MagicMock(side_effect=RuntimeError("boom"))
+    with patch.object(indexer, "_get_model", new=AsyncMock(return_value=fake_model)):
+        result = await indexer.embed_texts(["a"])
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_update_knowledge_embeddings_batch():
+    """One call writes all embeddings; no rows left without embedding."""
+    await _db.init_db()
+    id1, _ = await _db.upsert_knowledge_item(source="hde_closed", content="A", ticket_id="B1")
+    id2, _ = await _db.upsert_knowledge_item(source="hde_closed", content="B", ticket_id="B2")
+
+    await _db.update_knowledge_embeddings([(id1, b"\x00\x01"), (id2, b"\x02\x03")])
+
+    assert await _db.list_knowledge_items_without_embedding() == []
+
+
+@pytest.mark.asyncio
+async def test_cmd_aireindex_uses_one_batch(monkeypatch):
+    """/aireindex must embed all pending items in one embed_texts call."""
+    import numpy as np
+    from unittest.mock import AsyncMock
+    import bot.knowledge.indexer as indexer
+    from bot.handlers.commands import cmd_aireindex
+
+    await _db.init_db()
+    await _db.upsert_knowledge_item(source="hde_closed", content="A", ticket_id="R1")
+    await _db.upsert_knowledge_item(source="hde_closed", content="B", ticket_id="R2")
+
+    embs = [np.ones(4, dtype=np.float32), np.ones(4, dtype=np.float32)]
+    embed_texts_mock = AsyncMock(return_value=embs)
+    monkeypatch.setattr(indexer, "embed_texts", embed_texts_mock)
+
+    message = AsyncMock()
+    await cmd_aireindex(message)
+
+    embed_texts_mock.assert_awaited_once()
+    assert await _db.list_knowledge_items_without_embedding() == []

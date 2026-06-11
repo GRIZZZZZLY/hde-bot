@@ -102,6 +102,30 @@ async def embed_text(text: str, *, task_type: str = "passage") -> np.ndarray | N
         return None
 
 
+async def embed_texts(
+    texts: list[str], *, task_type: str = "passage", batch_size: int = 32
+) -> list[np.ndarray] | None:
+    """Embed a list of texts in one batched model.encode call.
+
+    Returns a list aligned with the input, or None if encoding failed.
+    """
+    prefix = "query: " if task_type == "query" else "passage: "
+    inputs = [f"{prefix}{t[:8000]}" for t in texts]
+    try:
+        model = await _get_model()
+        loop = asyncio.get_event_loop()
+        embeddings: np.ndarray = await loop.run_in_executor(
+            None,
+            lambda: model.encode(
+                inputs, batch_size=batch_size, normalize_embeddings=True
+            ),
+        )
+        return [emb.astype(np.float32) for emb in embeddings]
+    except Exception as exc:
+        logger.warning("embed_texts failed: %s", exc)
+        return None
+
+
 async def index_knowledge_item(
     source: str,
     content: str,
