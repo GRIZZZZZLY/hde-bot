@@ -30,8 +30,8 @@ Thumbs.db
 *.har
 tmp/
 tpm/
+data/
 data/macros/
-scripts/
 
 # Offline analysis tools and synced databases
 tools/analysis/
