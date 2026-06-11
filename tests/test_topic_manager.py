@@ -577,3 +577,146 @@ async def test_post_ticket_history_autofill_called(monkeypatch):
     assert call_args[1] == "TKT-9"
     assert call_args[2] == 999
     assert isinstance(call_args[3], str)
+
+
+@pytest.mark.asyncio
+async def test_post_ticket_history_reuses_hde_client_for_client_history(monkeypatch):
+    from bot.hde_api import HDETicketInfo
+
+    bot = make_bot()
+    instances = []
+
+    class FakeClient:
+        def __init__(self):
+            self.ticket_info_calls = 0
+            self.client_tickets_calls = 0
+            instances.append(self)
+
+        async def get_ticket_info(self, ticket_id):
+            self.ticket_info_calls += 1
+            return HDETicketInfo(
+                client_id=1,
+                client_name="Alice",
+                owner_id=2,
+                owner_name="Bob",
+            )
+
+        async def get_ticket_posts(self, ticket_id):
+            return []
+
+        async def get_ticket_comments(self, ticket_id):
+            return []
+
+        async def get_client_tickets(self, client_id, limit=10):
+            self.client_tickets_calls += 1
+            return []
+
+    monkeypatch.setattr(topic_manager.config, "has_hde_api_credentials", lambda: True)
+    monkeypatch.setattr("bot.hde_api.HDEApiClient", FakeClient)
+
+    await topic_manager._post_ticket_history(bot, "TKT-9", 999, ticket_title="T")
+
+    assert len(instances) == 1
+    assert instances[0].ticket_info_calls == 1
+    assert instances[0].client_tickets_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_missing_ai_summaries_reuses_one_hde_client(monkeypatch):
+    from bot.hde_api import HDEPost, HDETicketInfo
+
+    bot = make_bot()
+    instances = []
+
+    class FakeClient:
+        def __init__(self):
+            instances.append(self)
+
+        async def get_ticket_info(self, ticket_id):
+            return HDETicketInfo(
+                client_id=1,
+                client_name="Alice",
+                owner_id=2,
+                owner_name="Bob",
+            )
+
+        async def get_ticket_posts(self, ticket_id):
+            return [
+                HDEPost(
+                    post_id=1,
+                    user_id=1,
+                    text=f"Message {ticket_id}",
+                    date_created="10:00:00 01.01.2026",
+                )
+            ]
+
+        async def get_ticket_comments(self, ticket_id):
+            return []
+
+    records = [
+        db_module.TicketTopic(
+            ticket_id="TKT-1",
+            unique_id="ABC-1",
+            ticket_name="Ticket 1",
+            company_name="ACME",
+            topic_id=101,
+            topic_state="active",
+            priority="medium",
+            status="open",
+            owner_id="me",
+            owner_name="Me",
+            delete_after_at=None,
+            last_client_reply_at=None,
+            last_staff_reply_at=None,
+            pre_sla_notify_at=None,
+            pre_sla_sent_at=None,
+            pre_sla_message_id=None,
+            reassurance_sent_at=None,
+            hde_link="https://hde.example.com/tickets/1",
+            created_at="2026-01-01T00:00:00",
+            updated_at="2026-01-01T00:00:00",
+            deleted_at=None,
+            last_assigned_at=None,
+            ai_summary_sent_at=None,
+        ),
+        db_module.TicketTopic(
+            ticket_id="TKT-2",
+            unique_id="ABC-2",
+            ticket_name="Ticket 2",
+            company_name="ACME",
+            topic_id=102,
+            topic_state="active",
+            priority="medium",
+            status="open",
+            owner_id="me",
+            owner_name="Me",
+            delete_after_at=None,
+            last_client_reply_at=None,
+            last_staff_reply_at=None,
+            pre_sla_notify_at=None,
+            pre_sla_sent_at=None,
+            pre_sla_message_id=None,
+            reassurance_sent_at=None,
+            hde_link="https://hde.example.com/tickets/2",
+            created_at="2026-01-01T00:00:00",
+            updated_at="2026-01-01T00:00:00",
+            deleted_at=None,
+            last_assigned_at=None,
+            ai_summary_sent_at=None,
+        ),
+    ]
+
+    monkeypatch.setattr(topic_manager.db, "list_topics_missing_summary", AsyncMock(return_value=records))
+    monkeypatch.setattr(topic_manager.db, "update_topic", AsyncMock())
+    monkeypatch.setattr("bot.hde_api.HDEApiClient", FakeClient)
+    monkeypatch.setattr("bot.handlers.ai_feedback.register_feedback_pending", AsyncMock())
+    monkeypatch.setattr(
+        topic_manager,
+        "_generate_summary_with_retry",
+        AsyncMock(return_value=("Суть", "Ответ", "Памятка", 80)),
+    )
+
+    sent = await topic_manager.retry_missing_ai_summaries(bot)
+
+    assert sent == 2
+    assert len(instances) == 1

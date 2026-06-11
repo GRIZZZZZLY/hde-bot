@@ -376,11 +376,21 @@ async def retry_missing_ai_summaries(bot: Bot) -> int:
 
     records = await db.list_topics_missing_summary()
     sent = 0
+    try:
+        client = HDEApiClient()
+    except HDEApiError as exc:
+        for record in records:
+            logger.warning("retry_missing_ai_summaries: can't fetch ticket %s: %s", record.ticket_id, exc)
+        return 0
+    except Exception as exc:
+        for record in records:
+            logger.error("retry_missing_ai_summaries: unexpected error for ticket %s: %s", record.ticket_id, exc)
+        return 0
+
     for record in records:
         ticket_id = record.ticket_id
         topic_id = record.topic_id
         try:
-            client = HDEApiClient()
             info = await client.get_ticket_info(ticket_id)
             posts = await client.get_ticket_posts(ticket_id)
             try:
@@ -495,7 +505,7 @@ async def _post_ticket_history(
     # Merge posts and comments, sort by date_created ascending
     all_posts = sorted(posts + comments, key=lambda p: p.date_created)
 
-    await _post_client_history(bot, topic_id, ticket_id)
+    await _post_client_history(bot, topic_id, ticket_id, client=client, info=info)
 
     if not all_posts:
         logger.info("No posts for ticket %s, skipping history+summary", ticket_id)
@@ -1450,15 +1460,24 @@ async def sync_ticket_topic(bot: Bot, payload: dict) -> db.TicketTopic:
         return await _ensure_active_topic(bot, payload, announce_assignment=False)
 
 
-async def _post_client_history(bot: Bot, topic_id: int, ticket_id: str) -> None:
+async def _post_client_history(
+    bot: Bot,
+    topic_id: int,
+    ticket_id: str,
+    *,
+    client=None,
+    info=None,
+) -> None:
     """Fetch client's past tickets from HDE and post a summary to the topic.
 
     Silently skips on any error or if no past tickets exist.
     """
     try:
         from .hde_api import HDEApiClient
-        client = HDEApiClient()
-        info = await client.get_ticket_info(ticket_id)
+        if client is None:
+            client = HDEApiClient()
+        if info is None:
+            info = await client.get_ticket_info(ticket_id)
         if not info or not info.client_id:
             return
         tickets = await client.get_client_tickets(info.client_id, limit=10)

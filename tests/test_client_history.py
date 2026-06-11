@@ -186,11 +186,12 @@ async def test_post_ticket_history_calls_client_history():
         mock_cfg.has_hde_api_credentials.return_value = True
         mock_cfg.group_chat_id = -100
         mock_api = MagicMock()
-        mock_api.get_ticket_info = AsyncMock(return_value=MagicMock())
+        mock_info = MagicMock()
+        mock_api.get_ticket_info = AsyncMock(return_value=mock_info)
         mock_api.get_ticket_posts = AsyncMock(return_value=[])
         mock_api.get_ticket_comments = AsyncMock(return_value=[])
         mock_api_cls.return_value = mock_api
 
         await tm._post_ticket_history(mock_bot, ticket_id="123", topic_id=101)
 
-    mock_ch.assert_called_once_with(mock_bot, 101, "123")
+    mock_ch.assert_called_once_with(mock_bot, 101, "123", client=mock_api, info=mock_info)
