@@ -14,6 +14,7 @@ import aiohttp
 
 from .config import config
 from .llm_semaphore import LLM_SEMAPHORE
+from .voice_profile import load_voice_examples
 
 if TYPE_CHECKING:
     from .hde_api import HDEPost, HDETicketInfo
@@ -35,6 +36,7 @@ def _strip_reasoning(text: str) -> str:
 
 
 _FEW_SHOT_EXAMPLES: list[dict] = _load_few_shot_examples()
+_VOICE_EXAMPLES: list[str] = load_voice_examples()
 
 _GEMINI_MODEL = "gemini-2.5-flash"
 _GEMINI_URL = (
@@ -266,6 +268,13 @@ def _build_system_prompt(
         base += (
             "Эталонные примеры (из принятых ответов операторов):\n\n"
             + "\n\n---\n\n".join(shots)
+            + "\n\n---\n\n"
+        )
+    if _VOICE_EXAMPLES:
+        base += (
+            "Реальные ответы оператора клиентам. Пиши поле «Клиенту» в этом стиле —\n"
+            "та же длина, тот же тон, без шаблонной вежливости:\n\n"
+            + "\n".join(f"— {ex}" for ex in _VOICE_EXAMPLES)
             + "\n\n---\n\n"
         )
     if rag_examples:

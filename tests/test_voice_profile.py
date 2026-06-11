@@ -44,3 +44,20 @@ def test_load_reads_examples(tmp_path, monkeypatch):
     p.write_text(json.dumps({"examples": ["пример один", 42]}), encoding="utf-8")
     monkeypatch.setattr(vp, "_PROFILE_PATH", p)
     assert load_voice_examples() == ["пример один"]
+
+
+def test_build_system_prompt_includes_voice_examples(monkeypatch):
+    import bot.ai_summary as ai
+
+    monkeypatch.setattr(ai, "_VOICE_EXAMPLES", ["Проверьте чековую ленту и перезапустите кассу"])
+    prompt = ai._build_system_prompt("Не печатает чек")
+    assert "Проверьте чековую ленту" in prompt
+    assert "в этом стиле" in prompt
+
+
+def test_build_system_prompt_no_voice_block_when_empty(monkeypatch):
+    import bot.ai_summary as ai
+
+    monkeypatch.setattr(ai, "_VOICE_EXAMPLES", [])
+    prompt = ai._build_system_prompt("Не печатает чек")
+    assert "в этом стиле" not in prompt
