@@ -64,8 +64,8 @@ async def test_holdout_score_formula():
     score = await holdout_score(
         samples, "инструкция", _generate_fn=fake_generate, _judge_fn=fake_judge
     )
-    # combined_score даст ~1.0 (точное совпадение), judge 0.6 → 0.5*1.0+0.5*0.6=0.8
-    assert 0.75 <= score <= 0.85
+    # combined_score: 0.7*(1.0*0.4) + 0.3*1.0 = 0.58; judge 0.6 → 0.5*0.58+0.5*0.6 = 0.59
+    assert 0.55 <= score <= 0.63
 
 
 @pytest.mark.asyncio

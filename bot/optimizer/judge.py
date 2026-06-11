@@ -141,19 +141,12 @@ async def holdout_score(
     _generate_fn: GenerateFn | None = None,
     _judge_fn: JudgeFn | None = None,
 ) -> float:
-    """Финальный скор на holdout: 0.5 * similarity_base + 0.5 * judge.
+    """Финальный скор на holdout: 0.5 * combined_score + 0.5 * judge.
 
-    Генерация мемоизируется, чтобы base и судья не дёргали Gemini дважды
-    за один сэмпл.
-
-    base = среднее SequenceMatcher-сходство generated vs op_answer по
-    сэмплам, у которых op_answer есть; по остальным — combined_score.
-
-    Сэмплы без op_answer судьёй не оцениваются; если таких нет вовсе —
-    возвращается чистый base.
+    Генерация мемоизируется, чтобы combined_score и судья не дёргали
+    Gemini дважды за один сэмпл. Сэмплы без op_answer судьёй не
+    оцениваются; если таких нет вовсе — возвращается чистый combined_score.
     """
-    import difflib
-
     raw_generate = _generate_fn or _generate_answer
     judge = _judge_fn or judge_answer
 
@@ -165,48 +158,23 @@ async def holdout_score(
             memo[key] = await raw_generate(history, title, instructions)
         return memo[key]
 
-    # Split samples into those with and without op_answer
-    with_ref = [s for s in samples if s.get("op_answer")]
-    without_ref = [s for s in samples if not s.get("op_answer")]
+    base = await combined_score(
+        samples, format_instructions, max_samples=None, _generate_fn=generate
+    )
 
-    # Base score: similarity vs op_answer for samples that have one
-    base_scores: list[float] = []
     judge_scores: list[float] = []
-
-    for s in with_ref:
-        ref = s["op_answer"]
+    for s in samples:
+        ref = s.get("op_answer")
+        if not ref:
+            continue
         try:
             answer = await generate(s.get("history", ""), s.get("title", ""), format_instructions)
-        except Exception as exc:
-            logger.warning("Generate failed for sample %s: %s", s.get("ticket_id"), exc)
-            continue
-
-        sim = difflib.SequenceMatcher(None, answer.lower(), ref.lower()).ratio()
-        base_scores.append(sim)
-
-        try:
             verdict = await judge(s.get("history", ""), s.get("title", ""), answer, ref)
         except Exception as exc:
             logger.warning("Judge failed for sample %s: %s", s.get("ticket_id"), exc)
-            verdict = None
+            continue
         if verdict is not None:
             judge_scores.append(min(max(verdict["overall"], 0), 10) / 10.0)
-
-    # For samples without op_answer, fall back to combined_score contribution
-    if without_ref:
-        fallback = await combined_score(
-            without_ref, format_instructions, max_samples=None, _generate_fn=generate
-        )
-        # Weight fallback by proportion
-        n_with = len(base_scores)
-        n_without = len(without_ref)
-        total = n_with + n_without
-        if n_with > 0:
-            base = (sum(base_scores) * n_with / total) + (fallback * n_without / total)
-        else:
-            base = fallback
-    else:
-        base = sum(base_scores) / len(base_scores) if base_scores else 0.0
 
     if not judge_scores:
         return base
