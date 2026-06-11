@@ -22,6 +22,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# Windows-консоль по умолчанию cp1251 — эмодзи в отчёте роняют print
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 from bot.optimizer import evaluator
 from bot.optimizer.dataset import split_samples
 from bot.optimizer.judge import holdout_score
