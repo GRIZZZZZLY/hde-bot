@@ -1,3 +1,4 @@
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -182,6 +183,301 @@ async def test_shared_connector_reused_and_survives_session_close():
     await hde_api_module.close_shared_connector()
     assert conn.closed
     assert hde_api_module._shared_connector is None
+
+
+@pytest.mark.asyncio
+async def test_paginated_hde_fetch_borrows_one_shared_connector(monkeypatch):
+    connector_ids: list[int] = []
+    session_count = 0
+
+    class FakeResponse:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        def __init__(self, page: int):
+            self.page = page
+
+        async def json(self):
+            return {
+                "data": {
+                    str(self.page): {
+                        "id": self.page,
+                        "unique_id": f"ABC-{self.page:03d}",
+                        "title": f"Ticket {self.page}",
+                        "owner_id": "me",
+                    }
+                },
+                "meta": {"total_pages": 3},
+            }
+
+        async def text(self):
+            return ""
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            nonlocal session_count
+            session_count += 1
+            assert kwargs["connector_owner"] is False
+            connector_ids.append(id(kwargs["connector"]))
+
+        def get(self, url, params=None):
+            return FakeResponse(int(params["page"]))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    monkeypatch.setattr("bot.hde_api.aiohttp.ClientSession", FakeSession)
+
+    client = HDEApiClient()
+    tickets = await client.get_my_open_tickets()
+
+    assert [ticket.ticket_id for ticket in tickets] == ["1", "2", "3"]
+    assert session_count == 3
+    assert len(set(connector_ids)) == 1
+
+
+_TICKET_INFO_JSON = {
+    "data": {
+        "user_id": 7,
+        "user_name": "Alice",
+        "user_lastname": "Smith",
+        "owner_id": 2,
+        "owner_name": "Bob",
+        "owner_lastname": "Jones",
+    }
+}
+
+
+@pytest.mark.asyncio
+async def test_sessions_use_request_timeout(monkeypatch):
+    captured = {}
+
+    class FakeResponse:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        async def json(self):
+            return _TICKET_INFO_JSON
+
+        async def text(self):
+            return ""
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def get(self, url, params=None):
+            return FakeResponse()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    monkeypatch.setattr("bot.hde_api.aiohttp.ClientSession", FakeSession)
+
+    client = HDEApiClient()
+    await client.get_ticket_info("42")
+
+    timeout = captured["timeout"]
+    assert timeout.total == 30
+    assert timeout.connect == 10
+
+
+@pytest.mark.asyncio
+async def test_shared_connector_caches_dns():
+    conn = hde_api_module._get_connector()
+    assert conn._cached_hosts._ttl == 300
+    await hde_api_module.close_shared_connector()
+
+
+@pytest.mark.asyncio
+async def test_get_retries_once_on_stale_keepalive_connection(monkeypatch):
+    attempts = {"n": 0}
+
+    class FakeResponse:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        async def json(self):
+            return _TICKET_INFO_JSON
+
+        async def text(self):
+            return ""
+
+        async def __aenter__(self):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                raise aiohttp.ServerDisconnectedError()
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def get(self, url, params=None):
+            return FakeResponse()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    monkeypatch.setattr("bot.hde_api.aiohttp.ClientSession", FakeSession)
+
+    client = HDEApiClient()
+    info = await client.get_ticket_info("42")
+
+    assert info.client_id == 7
+    assert attempts["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_raises_after_second_disconnect(monkeypatch):
+    attempts = {"n": 0}
+
+    class FakeResponse:
+        async def __aenter__(self):
+            attempts["n"] += 1
+            raise aiohttp.ServerDisconnectedError()
+
+        async def __aexit__(self, *args):
+            pass
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def get(self, url, params=None):
+            return FakeResponse()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    monkeypatch.setattr("bot.hde_api.aiohttp.ClientSession", FakeSession)
+
+    client = HDEApiClient()
+    with pytest.raises(aiohttp.ServerDisconnectedError):
+        await client.get_ticket_info("42")
+
+    assert attempts["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_post_not_retried_on_server_disconnect(monkeypatch):
+    attempts = {"n": 0}
+
+    class FakeResponse:
+        async def __aenter__(self):
+            attempts["n"] += 1
+            raise aiohttp.ServerDisconnectedError()
+
+        async def __aexit__(self, *args):
+            pass
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def post(self, url, data=None):
+            return FakeResponse()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    monkeypatch.setattr("bot.hde_api.aiohttp.ClientSession", FakeSession)
+
+    client = HDEApiClient()
+    with pytest.raises(aiohttp.ServerDisconnectedError):
+        await client.add_post("42", text="hi")
+
+    assert attempts["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_open_tickets_pages_fetched_concurrently(monkeypatch):
+    active = {"now": 0, "max": 0}
+
+    class FakeResponse:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        def __init__(self, page: int):
+            self.page = page
+
+        async def json(self):
+            active["now"] += 1
+            active["max"] = max(active["max"], active["now"])
+            await asyncio.sleep(0.02)
+            active["now"] -= 1
+            return {
+                "data": {
+                    str(self.page): {
+                        "id": self.page,
+                        "unique_id": f"ABC-{self.page:03d}",
+                        "title": f"Ticket {self.page}",
+                        "owner_id": "me",
+                    }
+                },
+                "meta": {"total_pages": 4},
+            }
+
+        async def text(self):
+            return ""
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        def get(self, url, params=None):
+            return FakeResponse(int(params["page"]))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    monkeypatch.setattr("bot.hde_api.aiohttp.ClientSession", FakeSession)
+
+    client = HDEApiClient()
+    tickets = await client.get_my_open_tickets()
+
+    assert [t.ticket_id for t in tickets] == ["1", "2", "3", "4"]
+    # Page 1 is fetched alone (it carries total_pages); pages 2-4 must overlap.
+    assert active["max"] >= 2
 
 
 @pytest.mark.asyncio

@@ -30,7 +30,7 @@ def _get_connector() -> aiohttp.TCPConnector:
     global _shared_connector, _connector_loop
     loop = asyncio.get_running_loop()
     if _shared_connector is None or _shared_connector.closed or _connector_loop is not loop:
-        _shared_connector = aiohttp.TCPConnector(limit=20, keepalive_timeout=30)
+        _shared_connector = aiohttp.TCPConnector(limit=20, keepalive_timeout=30, ttl_dns_cache=300)
         _connector_loop = loop
     return _shared_connector
 
@@ -42,6 +42,11 @@ async def close_shared_connector() -> None:
         await _shared_connector.close()
     _shared_connector = None
     _connector_loop = None
+
+
+# Hard ceiling per request: without it aiohttp waits up to 5 minutes on a
+# hung server, stalling webhook handlers for the whole duration.
+_REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 
 
 class HDEApiError(RuntimeError):
@@ -103,6 +108,32 @@ class HDEApiClient:
         self.base_url = config.hde_api_base_url.rstrip("/")
         self.auth = aiohttp.BasicAuth(config.hde_api_email, config.hde_api_key)
 
+    def _make_session(self) -> aiohttp.ClientSession:
+        return aiohttp.ClientSession(
+            auth=self.auth,
+            connector=_get_connector(),
+            connector_owner=False,
+            timeout=_REQUEST_TIMEOUT,
+        )
+
+    async def _get(self, url: str, params: dict[str, str] | None = None) -> tuple[int, Any]:
+        """GET returning (status, parsed body), with one retry on a keep-alive race.
+
+        The shared pool can hand out a connection the server has just closed;
+        aiohttp surfaces that as ServerDisconnectedError. GETs are idempotent,
+        so one immediate retry is safe. Writes are never retried.
+        """
+        for attempt in (1, 2):
+            try:
+                async with self._make_session() as session:
+                    async with session.get(url, params=params) as response:
+                        return response.status, await self._read_response(response)
+            except aiohttp.ServerDisconnectedError:
+                if attempt == 2:
+                    raise
+                logger.warning("HDE GET %s: stale keep-alive connection, retrying once", url)
+        raise AssertionError("unreachable")
+
     async def add_comment(
         self,
         ticket_id: str,
@@ -141,12 +172,9 @@ class HDEApiClient:
 
     async def get_user_organization(self, user_id: str) -> tuple[str, str]:
         """Return (org_id, org_name) for a HDE user. Returns ('', '') if no org."""
-        url = f"{self.base_url}/users/{user_id}/"
-        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
-            async with session.get(url) as response:
-                if response.status >= 400:
-                    return ("", "")
-                data = await self._read_response(response)
+        status, data = await self._get(f"{self.base_url}/users/{user_id}/")
+        if status >= 400:
+            return ("", "")
         raw = data.get("data", data) if isinstance(data, dict) else {}
         org = raw.get("organization", "")
         if isinstance(org, dict):
@@ -155,12 +183,9 @@ class HDEApiClient:
 
     async def get_ticket_info(self, ticket_id: str) -> HDETicketInfo:
         """Return client and owner identities for a ticket."""
-        url = f"{self.base_url}/tickets/{ticket_id}/"
-        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
-            async with session.get(url) as response:
-                data = await self._read_response(response)
-                if response.status >= 400:
-                    raise HDEApiError(self._extract_error_message(data) or f"HDE API error {response.status}")
+        status, data = await self._get(f"{self.base_url}/tickets/{ticket_id}/")
+        if status >= 400:
+            raise HDEApiError(self._extract_error_message(data) or f"HDE API error {status}")
         raw = data.get("data", data) if isinstance(data, dict) else {}
         client_name = f"{raw.get('user_name', '')} {raw.get('user_lastname', '')}".strip() or "Клиент"
         owner_name = f"{raw.get('owner_name', '')} {raw.get('owner_lastname', '')}".strip() or "Сотрудник"
@@ -179,11 +204,9 @@ class HDEApiClient:
         """
         url = f"{self.base_url}/tickets/{ticket_id}/"
         try:
-            async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
-                async with session.get(url) as response:
-                    data = await self._read_response(response)
-                    if response.status >= 400:
-                        return None
+            status, data = await self._get(url)
+            if status >= 400:
+                return None
             raw = data.get("data", data) if isinstance(data, dict) else {}
             for cf in raw.get("custom_fields") or []:
                 if cf.get("id") != field_id:
@@ -204,11 +227,9 @@ class HDEApiClient:
         """
         url = f"{self.base_url}/tickets/{ticket_id}/"
         try:
-            async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
-                async with session.get(url) as response:
-                    data = await self._read_response(response)
-                    if response.status >= 400:
-                        return None
+            status_code, data = await self._get(url)
+            if status_code >= 400:
+                return None
             raw = data.get("data", data) if isinstance(data, dict) else {}
             # HDE returns the status as `status_id` (e.g. open / 6 / v-processe /
             # closed). The only terminal status is "closed" ("Выполнено").
@@ -231,34 +252,29 @@ class HDEApiClient:
             "order_dir": "desc",
             "page": "1",
         }
-        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
-            async with session.get(url, params=params) as response:
-                data = await self._read_response(response)
-                if response.status >= 400:
-                    raise HDEApiError(
-                        self._extract_error_message(data) or f"HDE API error {response.status}"
-                    )
-                items = data.get("data", []) if isinstance(data, dict) else []
-                return [
-                    {
-                        "id": item.get("id"),
-                        "subject": item.get("subject") or item.get("name") or "",
-                        "status": item.get("status", ""),
-                        "date_created": item.get("date_created", ""),
-                    }
-                    for item in items
-                    if isinstance(item, dict)
-                ][:limit]
+        status, data = await self._get(url, params)
+        if status >= 400:
+            raise HDEApiError(
+                self._extract_error_message(data) or f"HDE API error {status}"
+            )
+        items = data.get("data", []) if isinstance(data, dict) else []
+        return [
+            {
+                "id": item.get("id"),
+                "subject": item.get("subject") or item.get("name") or "",
+                "status": item.get("status", ""),
+                "date_created": item.get("date_created", ""),
+            }
+            for item in items
+            if isinstance(item, dict)
+        ][:limit]
 
     async def get_ticket_posts(self, ticket_id: str, limit: int = 20) -> list[HDEPost]:
         """Return up to *limit* posts (newest first from API, returned oldest-first)."""
         url = f"{self.base_url}/tickets/{ticket_id}/posts/"
-        params = {"limit": str(limit)}
-        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
-            async with session.get(url, params=params) as response:
-                data = await self._read_response(response)
-                if response.status >= 400:
-                    raise HDEApiError(self._extract_error_message(data) or f"HDE API error {response.status}")
+        status, data = await self._get(url, {"limit": str(limit)})
+        if status >= 400:
+            raise HDEApiError(self._extract_error_message(data) or f"HDE API error {status}")
         items = data.get("data", []) if isinstance(data, dict) else []
         posts = [
             HDEPost(
@@ -278,12 +294,9 @@ class HDEApiClient:
     async def get_ticket_comments(self, ticket_id: str, limit: int = 20) -> list[HDEPost]:
         """Return up to *limit* internal comments (oldest-first)."""
         url = f"{self.base_url}/tickets/{ticket_id}/comments/"
-        params = {"limit": str(limit)}
-        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
-            async with session.get(url, params=params) as response:
-                data = await self._read_response(response)
-                if response.status >= 400:
-                    raise HDEApiError(self._extract_error_message(data) or f"HDE API error {response.status}")
+        status, data = await self._get(url, {"limit": str(limit)})
+        if status >= 400:
+            raise HDEApiError(self._extract_error_message(data) or f"HDE API error {status}")
         items = data.get("data", []) if isinstance(data, dict) else []
         comments = [
             HDEPost(
@@ -302,31 +315,40 @@ class HDEApiClient:
         return comments
 
     async def get_my_open_tickets(self) -> list[HDETicket]:
-        """Return all open/in-progress tickets assigned to me, paginated."""
+        """Return all open/in-progress tickets assigned to me, paginated.
+
+        Page 1 reveals total_pages; remaining pages are fetched concurrently.
+        """
+        url = f"{self.base_url}/tickets/"
+        base_params = {
+            "owner_list": config.hde_owner_id,
+            "status_list": "open,process",
+        }
+
+        status, data = await self._get(url, {**base_params, "page": "1"})
+        if status >= 400:
+            raise HDEApiError(self._extract_error_message(data) or f"HDE API error {status}")
+        if not isinstance(data, dict):
+            return []
+
+        meta = data.get("meta", {})
+        total_pages = meta.get("total_pages", 1) if isinstance(meta, dict) else 1
+        pages: list[dict] = [data]
+        if total_pages > 1:
+            results = await asyncio.gather(
+                *(self._get(url, {**base_params, "page": str(p)}) for p in range(2, total_pages + 1))
+            )
+            for page_status, page_data in results:
+                if page_status >= 400:
+                    raise HDEApiError(self._extract_error_message(page_data) or f"HDE API error {page_status}")
+                if isinstance(page_data, dict):
+                    pages.append(page_data)
+
         all_tickets: list[HDETicket] = []
-        page = 1
-        owner_id = config.hde_owner_id
-
-        while True:
-            url = f"{self.base_url}/tickets/"
-            params = {
-                "owner_list": owner_id,
-                "status_list": "open,process",
-                "page": str(page),
-            }
-            async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
-                async with session.get(url, params=params) as response:
-                    data = await self._read_response(response)
-                    if response.status >= 400:
-                        message = self._extract_error_message(data) or f"HDE API error {response.status}"
-                        raise HDEApiError(message)
-
-            if not isinstance(data, dict):
-                break
-            tickets_data = data.get("data", {})
-            if not tickets_data:
-                break
-
+        for page_data in pages:
+            tickets_data = page_data.get("data", {})
+            if not isinstance(tickets_data, dict):
+                continue
             for ticket_raw in tickets_data.values():
                 if not isinstance(ticket_raw, dict):
                     continue
@@ -349,12 +371,6 @@ class HDEApiClient:
                     link_staff=link_staff,
                 ))
 
-            meta = data.get("meta", {})
-            total_pages = meta.get("total_pages", 1) if isinstance(meta, dict) else 1
-            if page >= total_pages:
-                break
-            page += 1
-
         return all_tickets
 
     async def get_unassigned_tickets(self, department_name: str = "") -> list[HDETicket]:
@@ -363,35 +379,46 @@ class HDEApiClient:
         Filters client-side by checking owner_id and (case-insensitive) department name —
         the HDE API's `owner_list=0` filter is not consistently honoured across instances.
         """
-        all_tickets: list[HDETicket] = []
         target_dept = department_name.strip().lower()
-        page = 1
+        url = f"{self.base_url}/tickets/"
+        base_params = {
+            "owner_list": "0",
+            "status_list": "open,process",
+        }
 
-        while page <= 30:  # safety cap — should never realistically fire
-            url = f"{self.base_url}/tickets/"
-            params = {
-                "owner_list": "0",
-                "status_list": "open,process",
-                "page": str(page),
-            }
-            async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
-                async with session.get(url, params=params) as response:
-                    data = await self._read_response(response)
-                    if response.status >= 400:
-                        message = self._extract_error_message(data) or f"HDE API error {response.status}"
-                        raise HDEApiError(message)
+        status, data = await self._get(url, {**base_params, "page": "1"})
+        if status >= 400:
+            raise HDEApiError(self._extract_error_message(data) or f"HDE API error {status}")
+        if not isinstance(data, dict):
+            return []
 
-            if not isinstance(data, dict):
-                break
-            tickets_data = data.get("data", {})
-            if not tickets_data:
-                break
+        meta = data.get("meta", {})
+        total_pages = meta.get("total_pages", 1) if isinstance(meta, dict) else 1
+        pagination = data.get("pagination", {})
+        if isinstance(pagination, dict):
+            total_pages = max(total_pages, pagination.get("total_pages", 1))
+        total_pages = min(total_pages, 30)  # safety cap — should never realistically fire
+
+        pages: list[dict] = [data]
+        if total_pages > 1:
+            results = await asyncio.gather(
+                *(self._get(url, {**base_params, "page": str(p)}) for p in range(2, total_pages + 1))
+            )
+            for page_status, page_data in results:
+                if page_status >= 400:
+                    raise HDEApiError(self._extract_error_message(page_data) or f"HDE API error {page_status}")
+                if isinstance(page_data, dict):
+                    pages.append(page_data)
+
+        all_tickets: list[HDETicket] = []
+        for page_data in pages:
+            tickets_data = page_data.get("data", {})
             if isinstance(tickets_data, dict):
                 items = list(tickets_data.values())
             elif isinstance(tickets_data, list):
                 items = tickets_data
             else:
-                break
+                continue
 
             for ticket_raw in items:
                 if not isinstance(ticket_raw, dict):
@@ -434,15 +461,6 @@ class HDEApiClient:
                     link_staff=link_staff,
                 ))
 
-            meta = data.get("meta", {}) if isinstance(data, dict) else {}
-            total_pages = meta.get("total_pages", 1) if isinstance(meta, dict) else 1
-            pagination = data.get("pagination", {}) if isinstance(data, dict) else {}
-            if isinstance(pagination, dict):
-                total_pages = max(total_pages, pagination.get("total_pages", 1))
-            if page >= total_pages:
-                break
-            page += 1
-
         return all_tickets
 
     async def get_closed_tickets_page(
@@ -461,15 +479,13 @@ class HDEApiClient:
             "status_list": "closed",
             "page": str(page),
         }
-        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
-            async with session.get(url, params=params) as response:
-                data = await self._read_response(response)
-                if response.status >= 400:
-                    message = (
-                        self._extract_error_message(data)
-                        or f"HDE API error {response.status}"
-                    )
-                    raise HDEApiError(message)
+        status, data = await self._get(url, params)
+        if status >= 400:
+            message = (
+                self._extract_error_message(data)
+                or f"HDE API error {status}"
+            )
+            raise HDEApiError(message)
 
         if not isinstance(data, dict):
             return [], 1
@@ -514,7 +530,7 @@ class HDEApiClient:
     async def assign_ticket(self, ticket_id: str, owner_id: str) -> HDEApiResult:
         """Assign ticket to the given HDE user id."""
         url = f"{self.base_url}/tickets/{ticket_id}/"
-        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
+        async with self._make_session() as session:
             async with session.put(url, json={"owner_id": int(owner_id)}) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -525,7 +541,7 @@ class HDEApiClient:
     async def update_ticket_fields(self, ticket_id: str, custom_fields: dict[str, str]) -> HDEApiResult:
         """Update custom fields of a ticket. Keys are field IDs (as strings)."""
         url = f"{self.base_url}/tickets/{ticket_id}/"
-        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
+        async with self._make_session() as session:
             async with session.put(url, json={"custom_fields": custom_fields}) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -542,7 +558,7 @@ class HDEApiClient:
     ) -> HDEApiResult:
         url = f"{self.base_url}{path}"
         payload = self._build_payload(text=text, attachments=attachments)
-        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
+        async with self._make_session() as session:
             async with session.post(url, data=payload) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -553,7 +569,7 @@ class HDEApiClient:
     async def _put(self, path: str, *, text: str = "") -> HDEApiResult:
         url = f"{self.base_url}{path}"
         payload = {"text": text.strip()}
-        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
+        async with self._make_session() as session:
             async with session.put(url, data=payload) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
@@ -563,7 +579,7 @@ class HDEApiClient:
 
     async def _delete(self, path: str) -> HDEApiResult:
         url = f"{self.base_url}{path}"
-        async with aiohttp.ClientSession(auth=self.auth, connector=_get_connector(), connector_owner=False) as session:
+        async with self._make_session() as session:
             async with session.delete(url) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
