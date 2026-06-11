@@ -1300,12 +1300,28 @@ async def is_report_sent(report_date: "date") -> bool:
             return await cursor.fetchone() is not None
 
 
-async def mark_report_sent(report_date: "date") -> None:
-    """Record that the daily report was sent for *report_date*."""
+async def mark_report_sent(report_date: "date") -> bool:
+    """Atomically claim *report_date* for the daily report.
+
+    Returns True if this caller claimed it (the row was inserted), False if it
+    was already claimed. Used as a claim-before-run guard so two triggers in the
+    same window (two bot instances, or a restart mid-run) never write twice.
+    """
+    key = report_date.strftime("%Y-%m-%d")
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "INSERT OR IGNORE INTO report_runs (report_date) VALUES (?)", (key,)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def clear_report_sent(report_date: "date") -> None:
+    """Release a claim made by mark_report_sent (e.g. when the run failed)."""
     key = report_date.strftime("%Y-%m-%d")
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT OR IGNORE INTO report_runs (report_date) VALUES (?)", (key,)
+            "DELETE FROM report_runs WHERE report_date = ?", (key,)
         )
         await db.commit()
 

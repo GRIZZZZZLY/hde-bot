@@ -174,21 +174,25 @@ async def _maybe_auto_run_report(bot: Bot) -> None:
     if _last_report_date == today:
         return
     last_wd = last_work_day()
-    if await db.is_report_sent(last_wd):
+    # Claim the date BEFORE running: the slow scrape+append happens inside
+    # run_report, so marking after it leaves a window where a second trigger
+    # (another instance / restart) also sees "not sent" and writes a duplicate.
+    if not await db.mark_report_sent(last_wd):
         _last_report_date = today
         return
     _last_report_date = today
     try:
         result = await run_report(last_wd)
-        await db.mark_report_sent(last_wd)
-        await bot.send_message(config.personal_chat_id, result, parse_mode="HTML")
     except Exception as exc:
+        await db.clear_report_sent(last_wd)  # nothing written — allow a retry
         logger.exception("Daily report failed: %s", exc)
         await bot.send_message(
             config.personal_chat_id,
             f"❌ <b>Ошибка при формировании отчёта:</b>\n<code>{exc}</code>",
             parse_mode="HTML",
         )
+        return
+    await bot.send_message(config.personal_chat_id, result, parse_mode="HTML")
 
 
 async def _maybe_thursday_evening_autorun(bot: Bot) -> None:
@@ -207,22 +211,25 @@ async def _maybe_thursday_evening_autorun(bot: Bot) -> None:
     today_key = today_date.strftime("%Y-%m-%d")
     if _thursday_evening_done == today_key:
         return
-    if await db.is_report_sent(today_date):
+    # Claim the date BEFORE running (see _maybe_auto_run_report): prevents a
+    # second trigger in the 19:00 window from appending a duplicate row.
+    if not await db.mark_report_sent(today_date):
         _thursday_evening_done = today_key
         return
     _thursday_evening_done = today_key
     _last_report_date = today_key
     try:
         result = await run_report(today_date)
-        await db.mark_report_sent(today_date)
-        await bot.send_message(config.personal_chat_id, result, parse_mode="HTML")
     except Exception as exc:
+        await db.clear_report_sent(today_date)  # nothing written — allow a retry
         logger.exception("Thursday evening report failed: %s", exc)
         await bot.send_message(
             config.personal_chat_id,
             f"❌ <b>Ошибка при формировании отчёта:</b>\n<code>{exc}</code>",
             parse_mode="HTML",
         )
+        return
+    await bot.send_message(config.personal_chat_id, result, parse_mode="HTML")
 
 
 async def _maybe_weekly_summary(bot: Bot) -> None:
