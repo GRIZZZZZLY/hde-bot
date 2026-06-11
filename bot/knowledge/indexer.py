@@ -188,6 +188,12 @@ async def index_knowledge_item(
     return item_id
 
 
+# Порог cosine-схожести для включения примера в промпт (multilingual-e5-large).
+# Замер на проде (scripts/_measure_rag_scores.py, 30 тикетов vs 1120 items,
+# июнь 2026): релевантные top-1 0.88–0.96, нерелевантные запросы ≤0.79.
+RAG_MIN_SCORE = 0.83
+
+
 async def get_rag_context(
     ticket_title: str,
     history_tail: str,
@@ -195,7 +201,11 @@ async def get_rag_context(
     limit: int = 3,
     company_id: str = "",
 ) -> tuple[list[str], int]:
-    """Return (content_list, max_confidence_pct) for top-N similar knowledge items."""
+    """Return (content_list, max_confidence_pct) for top-N similar knowledge items.
+
+    Items scoring below RAG_MIN_SCORE are dropped; with no confident match
+    returns ([], 0) so the RAG block is skipped entirely.
+    """
     query = f"{ticket_title}\n{history_tail[-600:]}"
     embedding = await embed_text(clean_for_embedding(query), task_type="query")
     if embedding is None:
@@ -203,9 +213,10 @@ async def get_rag_context(
     similar = await find_similar(
         embedding, limit=limit, query_text=query, company_id=company_id
     )
-    if not similar:
+    confident = [(item, score) for item, score in similar if score >= RAG_MIN_SCORE]
+    if not confident:
         return [], 0
-    examples = [item.content for item, _ in similar]
-    max_score = max(score for _, score in similar)
+    examples = [item.content for item, _ in confident]
+    max_score = max(score for _, score in confident)
     confidence_pct = int(max_score * 100)
     return examples, confidence_pct

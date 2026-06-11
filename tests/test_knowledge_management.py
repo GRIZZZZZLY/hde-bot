@@ -406,3 +406,96 @@ async def test_cmd_aireindex_uses_one_batch(monkeypatch):
 
     embed_texts_mock.assert_awaited_once()
     assert await _db.list_knowledge_items_without_embedding() == []
+
+
+# --- RAG confidence threshold ---
+
+async def _seed_item(content: str, ticket_id: str, emb: "np.ndarray") -> int:
+    item_id, _ = await _db.upsert_knowledge_item(
+        source="hde_closed", content=content, ticket_id=ticket_id,
+    )
+    async with aiosqlite.connect(_db.DB_PATH) as db:
+        await db.execute(
+            "UPDATE knowledge_items SET embedding=? WHERE id=?",
+            (emb.astype(np.float32).tobytes(), item_id),
+        )
+        await db.commit()
+    return item_id
+
+
+@pytest.mark.asyncio
+async def test_find_similar_bm25_only_item_gets_real_cosine_score():
+    """Item found only via BM25 (outside cosine pool) must carry its real
+    cosine score, not 0.0 — otherwise the confidence threshold kills
+    exact keyword matches."""
+    from bot.knowledge.store import invalidate_embeddings_cache
+
+    await _db.init_db()
+    # 6 items close to query → fill cosine pool (limit=2 → pool=6)
+    for i in range(6):
+        await _seed_item(
+            f"АТОЛ касса вариант {i}",
+            f"POOL{i}",
+            np.array([1.0, 0.01 * i, 0.0, 0.0]),
+        )
+    # 7th item: low cosine (0.5) but unique FTS keyword
+    await _seed_item(
+        "Эвотор эвоторкей не печатает чек",
+        "BM25ONLY",
+        np.array([0.5, 0.866, 0.0, 0.0]),
+    )
+    invalidate_embeddings_cache()
+
+    query = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    result = await find_similar(query, limit=2, query_text="эвоторкей")
+
+    by_content = {item.content: score for item, score in result}
+    bm25_scores = [s for c, s in by_content.items() if "эвоторкей" in c]
+    assert bm25_scores, "BM25-найденный элемент должен попасть в выдачу"
+    assert bm25_scores[0] == pytest.approx(0.5, abs=0.05)
+
+
+@pytest.mark.asyncio
+async def test_get_rag_context_filters_low_confidence(monkeypatch):
+    """Examples below RAG_MIN_SCORE must not reach the prompt."""
+    import bot.knowledge.indexer as indexer
+    from bot.knowledge.store import invalidate_embeddings_cache
+
+    await _db.init_db()
+    await _seed_item("Похожий случай АТОЛ", "HI1", np.array([1.0, 0.0, 0.0, 0.0]))
+    # cosine ≈ 0.5 — ниже порога 0.83
+    await _seed_item("Чужая тема", "LO1", np.array([0.5, 0.866, 0.0, 0.0]))
+    invalidate_embeddings_cache()
+
+    async def fake_embed(text, *, task_type="passage"):
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+    monkeypatch.setattr(indexer, "embed_text", fake_embed)
+
+    examples, confidence = await indexer.get_rag_context("АТОЛ", "история")
+
+    assert any("Похожий" in ex for ex in examples)
+    assert not any("Чужая" in ex for ex in examples)
+    assert confidence >= 83
+
+
+@pytest.mark.asyncio
+async def test_get_rag_context_all_below_threshold_returns_empty(monkeypatch):
+    """No good matches → skip RAG block entirely: ([], 0)."""
+    import bot.knowledge.indexer as indexer
+    from bot.knowledge.store import invalidate_embeddings_cache
+
+    await _db.init_db()
+    await _seed_item("Чужая тема один", "LOW1", np.array([0.5, 0.866, 0.0, 0.0]))
+    await _seed_item("Чужая тема два", "LOW2", np.array([0.4, 0.917, 0.0, 0.0]))
+    invalidate_embeddings_cache()
+
+    async def fake_embed(text, *, task_type="passage"):
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+
+    monkeypatch.setattr(indexer, "embed_text", fake_embed)
+
+    examples, confidence = await indexer.get_rag_context("АТОЛ", "история")
+
+    assert examples == []
+    assert confidence == 0

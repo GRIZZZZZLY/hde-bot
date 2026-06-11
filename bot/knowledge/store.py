@@ -148,9 +148,18 @@ async def find_similar(
 
     if query_text:
         bm25_rows = await fts_search_knowledge(query_text, limit=limit * 3)
-        for rank, (item_id, content) in enumerate(bm25_rows):
-            rrf_scores[item_id] = rrf_scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
-            contents[item_id] = content
+        if bm25_rows:
+            # BM25-находки вне cosine-пула получают реальный cosine-score,
+            # иначе порог уверенности в get_rag_context убьёт точные
+            # совпадения по ключевым словам (коды ошибок, модели касс).
+            id_to_idx = {rows[i][0]: i for i in range(len(rows))}
+            for rank, (item_id, content) in enumerate(bm25_rows):
+                rrf_scores[item_id] = rrf_scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
+                contents[item_id] = content
+                if item_id not in cosine_top:
+                    idx = id_to_idx.get(item_id)
+                    if idx is not None:
+                        cosine_top[item_id] = float(scores[idx])
 
     # Company boost: same-company items get bonus equivalent to rank-1 position
     if company_id:
