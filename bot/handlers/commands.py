@@ -671,9 +671,8 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
     """
     import asyncio
     import hashlib
-    import aiosqlite
     from ..config import config
-    from ..db import DB_PATH, list_knowledge_content_hashes, save_knowledge_item, set_setting
+    from ..db import list_knowledge_content_hashes, save_knowledge_item, set_setting
     from ..hde_api import HDEApiClient, HDEApiError
     from ..ai_summary import _build_history_text
     from ..knowledge.indexer import index_knowledge_item
@@ -797,17 +796,11 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                     ticket_id=ticket_id,
                     title=ticket_title,
                     quality="good",
+                    content_hash=content_hash,
                     company_id=company_id,
                     company_name=company_name,
                 )
-                if item_id is not None:
-                    async with aiosqlite.connect(DB_PATH) as db:
-                        await db.execute(
-                            "UPDATE knowledge_items SET content_hash = ? WHERE id = ?",
-                            (content_hash, item_id),
-                        )
-                        await db.commit()
-                else:
+                if item_id is None:
                     # No embedding yet — save text only, index later with /aireindex
                     item_id = await save_knowledge_item(
                         source="hde_closed",

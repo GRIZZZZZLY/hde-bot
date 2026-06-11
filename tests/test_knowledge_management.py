@@ -309,6 +309,36 @@ async def test_list_knowledge_content_hashes():
     assert await _db.list_knowledge_content_hashes() == {"hash_a", "hash_b"}
 
 
+# --- content_hash passthrough (/aiimport) ---
+
+@pytest.mark.asyncio
+async def test_upsert_knowledge_item_stores_content_hash():
+    await _db.init_db()
+    await _db.upsert_knowledge_item(
+        source="hde_closed", content="X", ticket_id="CH1", content_hash="hash_x",
+    )
+    assert await _db.list_knowledge_content_hashes() == {"hash_x"}
+    # update path refreshes the hash too
+    await _db.upsert_knowledge_item(
+        source="hde_closed", content="Y", ticket_id="CH1", content_hash="hash_y",
+    )
+    assert await _db.list_knowledge_content_hashes() == {"hash_y"}
+
+
+@pytest.mark.asyncio
+async def test_index_knowledge_item_stores_content_hash():
+    from unittest.mock import AsyncMock, patch
+    from bot.knowledge.indexer import index_knowledge_item
+
+    await _db.init_db()
+    with patch("bot.knowledge.indexer.embed_text", new=AsyncMock(return_value=None)):
+        item_id = await index_knowledge_item(
+            source="hde_closed", content="Z", ticket_id="CH2", content_hash="hash_z",
+        )
+    assert item_id is not None
+    assert await _db.list_knowledge_content_hashes() == {"hash_z"}
+
+
 # --- batch reindex (/aireindex) ---
 
 @pytest.mark.asyncio

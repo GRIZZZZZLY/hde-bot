@@ -1699,6 +1699,7 @@ async def upsert_knowledge_item(
     title: str = "",
     quality: str = "good",
     url: str = "",
+    content_hash: str = "",
     company_id: str = "",
     company_name: str = "",
 ) -> tuple[int, bool]:
@@ -1719,11 +1720,12 @@ async def upsert_knowledge_item(
                 item_id = row[0]
                 await db.execute(
                     "UPDATE knowledge_items "
-                    "SET content=?, title=?, quality=?, url=?, "
+                    "SET content=?, title=?, quality=?, url=?, content_hash=?, "
                     "company_id=?, company_name=?, embedding=NULL, "
                     "created_at=datetime('now') "
                     "WHERE id=?",
                     (content, title or None, quality, url or None,
+                     content_hash or None,
                      company_id or None, company_name or None, item_id),
                 )
                 # Обновить FTS
@@ -1739,10 +1741,12 @@ async def upsert_knowledge_item(
         # INSERT
         cursor = await db.execute(
             "INSERT INTO knowledge_items "
-            "(source, ticket_id, title, content, quality, url, company_id, company_name) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(source, ticket_id, title, content, quality, url, content_hash, "
+            "company_id, company_name) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (source, ticket_id or None, title or None, content, quality,
-             url or None, company_id or None, company_name or None),
+             url or None, content_hash or None,
+             company_id or None, company_name or None),
         )
         item_id = cursor.lastrowid
         if item_id is None:

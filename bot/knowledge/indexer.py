@@ -134,6 +134,7 @@ async def index_knowledge_item(
     title: str = "",
     quality: str = "good",
     url: str = "",
+    content_hash: str = "",
     company_id: str = "",
     company_name: str = "",
 ) -> int | None:
@@ -161,6 +162,7 @@ async def index_knowledge_item(
             title=title,
             quality=quality,
             url=url,
+            content_hash=content_hash,
             company_id=company_id,
             company_name=company_name,
         )
