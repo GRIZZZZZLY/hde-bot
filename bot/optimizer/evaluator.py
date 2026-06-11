@@ -60,6 +60,7 @@ async def combined_score(
     samples: list[dict],
     format_instructions: str,
     *,
+    max_samples: int | None = _MAX_EVAL_SAMPLES,
     _generate_fn: GenerateFn | None = None,
 ) -> float:
     """Evaluate format_instructions on a sample set. Returns score in [0, 1].
@@ -67,6 +68,7 @@ async def combined_score(
     Args:
         samples: list of dicts from get_optimization_samples()
         format_instructions: candidate FORMAT_INSTRUCTIONS text to evaluate
+        max_samples: обрезка выборки для экономии API; None = оценивать все детерминированно.
         _generate_fn: injectable for testing; defaults to _generate_answer
     """
     if not samples:
@@ -75,7 +77,10 @@ async def combined_score(
     generate = _generate_fn or _generate_answer
 
     # Limit to avoid excessive API cost
-    eval_set = samples if len(samples) <= _MAX_EVAL_SAMPLES else random.sample(samples, _MAX_EVAL_SAMPLES)
+    if max_samples is not None and len(samples) > max_samples:
+        eval_set = random.sample(samples, max_samples)
+    else:
+        eval_set = samples
 
     acceptance_scores: list[float] = []
     similarity_scores: list[float] = []

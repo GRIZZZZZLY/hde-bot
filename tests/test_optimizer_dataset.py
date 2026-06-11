@@ -1,5 +1,8 @@
 """Tests for deterministic train/holdout split."""
+import pytest
+
 from bot.optimizer.dataset import HOLDOUT_RATIO, is_holdout, split_samples
+from bot.optimizer.evaluator import combined_score
 
 
 def test_is_holdout_deterministic():
@@ -23,3 +26,21 @@ def test_split_stable_across_calls():
 
 def test_split_empty():
     assert split_samples([]) == ([], [])
+
+
+@pytest.mark.asyncio
+async def test_combined_score_max_samples_none_evaluates_all():
+    calls = []
+
+    async def fake_generate(history, title, instructions):
+        calls.append(history)
+        return "Клиенту: перезагрузите кассу"
+
+    samples = [
+        {"id": i, "ticket_id": str(i), "title": "t", "history": f"h{i}",
+         "ai_answer": "a", "op_answer": "Клиенту: перезагрузите кассу",
+         "outcome": "corrected"}
+        for i in range(25)
+    ]
+    await combined_score(samples, "инструкция", max_samples=None, _generate_fn=fake_generate)
+    assert len(calls) == 25  # не обрезано до дефолтных 20
