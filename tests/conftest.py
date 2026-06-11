@@ -6,6 +6,22 @@ import bot.hde_api as hde_api_module
 
 
 @pytest.fixture(autouse=True)
+def reset_embeddings_cache():
+    """Drop the global embeddings cache around each test: every test gets its
+    own tmp DB, so rows/matrix cached by a previous test are always stale."""
+    import bot.knowledge.store as store_module
+    store_module.invalidate_embeddings_cache()
+    store_module._matrix_rows = None
+    store_module._matrix = None
+    store_module._matrix_norms = None
+    yield
+    store_module.invalidate_embeddings_cache()
+    store_module._matrix_rows = None
+    store_module._matrix = None
+    store_module._matrix_norms = None
+
+
+@pytest.fixture(autouse=True)
 def reset_hde_connector():
     """Drop the shared HDE connector around each test so a connector bound to
     one test's event loop never leaks into the next."""

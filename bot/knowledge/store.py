@@ -62,6 +62,23 @@ def invalidate_embeddings_cache() -> None:
     _cache_loaded_at = 0.0
 
 
+# Stacked scoring matrix derived from _cache_rows. Keyed by the rows object's
+# identity: a cache reload produces a new list, which triggers a rebuild here.
+_matrix_rows: list | None = None
+_matrix: np.ndarray | None = None
+_matrix_norms: np.ndarray | None = None
+
+
+def _scoring_arrays(rows: list[tuple[int, str, np.ndarray, str]]) -> tuple[np.ndarray, np.ndarray]:
+    """Return (matrix, row_norms) for the given cached rows, rebuilt on reload."""
+    global _matrix_rows, _matrix, _matrix_norms
+    if _matrix_rows is not rows:
+        _matrix = np.vstack([r[2] for r in rows])
+        _matrix_norms = np.linalg.norm(_matrix, axis=1)
+        _matrix_rows = rows
+    return _matrix, _matrix_norms  # type: ignore[return-value]
+
+
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     """Return cosine similarity in [-1, 1]. Handles zero vectors safely."""
     denom = np.linalg.norm(a) * np.linalg.norm(b)
@@ -94,19 +111,35 @@ async def find_similar(
     if not rows:
         return []
 
-    # Cosine scoring (embeddings are pre-parsed np.ndarrays in the cache)
-    cosine_scored: list[tuple[float, int, str, str]] = []
-    for row_id, content, emb, item_company_id in rows:
-        score = cosine_similarity(query_embedding, emb)
-        cosine_scored.append((score, row_id, content, item_company_id))
-    cosine_scored.sort(key=lambda x: x[0], reverse=True)
+    # Cosine scoring: one matrix multiply over the cached embeddings, then
+    # top limit*3 via argpartition instead of sorting the whole table.
+    matrix, row_norms = _scoring_arrays(rows)
+    query32 = query_embedding.astype(np.float32, copy=False)
+    q_norm = float(np.linalg.norm(query32))
+    if q_norm < 1e-8:
+        scores = np.zeros(len(rows), dtype=np.float32)
+    else:
+        denom = row_norms * q_norm
+        scores = np.where(denom < 1e-8, 0.0, (matrix @ query32) / np.maximum(denom, 1e-12))
+
+    pool_size = min(limit * 3, len(rows))
+    if pool_size < len(rows):
+        top_idx = np.argpartition(-scores, pool_size - 1)[:pool_size]
+    else:
+        top_idx = np.arange(len(rows))
+    # Stable sort keeps row order on ties — same tie-breaking as the old
+    # full list.sort over rows in cache order.
+    top_idx = top_idx[np.argsort(-scores[top_idx], kind="stable")]
 
     k = 60  # RRF constant
     rrf_scores: dict[int, float] = {}
     contents: dict[int, str] = {}
     cosine_top: dict[int, float] = {}
 
-    pool = cosine_scored[: limit * 3]
+    pool = [
+        (float(scores[i]), rows[i][0], rows[i][1], rows[i][3])
+        for i in top_idx
+    ]
 
     for rank, (score, item_id, content, _) in enumerate(pool):
         rrf_scores[item_id] = rrf_scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
