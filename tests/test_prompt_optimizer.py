@@ -119,6 +119,45 @@ async def test_llm_router_complete_all_returns_responses():
     assert errors == {}
 
 
+class _FakeClient:
+    def __init__(self, text=None, error=None):
+        self.text = text
+        self.error = error
+        self.called = False
+
+    async def complete(self, system, user):
+        self.called = True
+        if self.error:
+            raise RuntimeError(self.error)
+        return self.text
+
+
+@pytest.mark.asyncio
+async def test_complete_all_gemini_first_skips_groq_on_success():
+    from bot.optimizer.llm_router import LLMRouter
+    router = LLMRouter.__new__(LLMRouter)
+    gemini = _FakeClient(text="мутация от gemini")
+    llama = _FakeClient(text="мутация от llama")
+    router.clients = {"gemini": gemini, "llama": llama}
+
+    results, errors = await router.complete_all("s", "u")
+    assert results == {"gemini": "мутация от gemini"}
+    assert llama.called is False
+
+
+@pytest.mark.asyncio
+async def test_complete_all_falls_back_to_groq_when_gemini_fails():
+    from bot.optimizer.llm_router import LLMRouter
+    router = LLMRouter.__new__(LLMRouter)
+    gemini = _FakeClient(error="quota")
+    llama = _FakeClient(text="мутация от llama")
+    router.clients = {"gemini": gemini, "llama": llama}
+
+    results, errors = await router.complete_all("s", "u")
+    assert results == {"llama": "мутация от llama"}
+    assert "gemini" in errors
+
+
 @pytest.mark.asyncio
 async def test_groq_client_skipped_when_no_api_key():
     """GroqClient.complete raises ValueError if no api key."""

@@ -143,7 +143,7 @@ class LLMRouter:
     async def complete_all(
         self, system: str, user: str
     ) -> tuple[dict[str, str], dict[str, str]]:
-        """Try Groq clients first (in parallel); fall back to Gemini only if all Groq fail.
+        """Try Gemini first; fall back to Groq clients (in parallel) only if Gemini fails.
 
         Returns (results, errors) where:
           results: model_name → generated text (successful completions)
@@ -163,24 +163,25 @@ class LLMRouter:
         groq_clients = {k: v for k, v in self.clients.items() if k != "gemini"}
         gemini_client = self.clients.get("gemini")
 
+        results: dict[str, str] = {}
         errors: dict[str, str] = {}
 
-        # Try Groq models first (in parallel)
-        groq_tasks = [_safe_complete(name, client) for name, client in groq_clients.items()]
-        groq_results = await asyncio.gather(*groq_tasks)
-        results = {}
-        for name, text, err in groq_results:
-            if text is not None:
-                results[name] = text
-            elif err is not None:
-                errors[name] = err
-
-        # Fall back to Gemini only if every Groq call failed
-        if not results and gemini_client is not None:
+        # Gemini first — мутации самой умной модели. Groq остаётся резервом.
+        if gemini_client is not None:
             name, text, err = await _safe_complete("gemini", gemini_client)
             if text is not None:
                 results["gemini"] = text
             elif err is not None:
                 errors["gemini"] = err
+
+        # Fall back to Groq models (in parallel) only if Gemini failed
+        if not results:
+            groq_tasks = [_safe_complete(name, client) for name, client in groq_clients.items()]
+            groq_results = await asyncio.gather(*groq_tasks)
+            for name, text, err in groq_results:
+                if text is not None:
+                    results[name] = text
+                elif err is not None:
+                    errors[name] = err
 
         return results, errors
