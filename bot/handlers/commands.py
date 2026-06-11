@@ -988,7 +988,9 @@ async def cmd_aianalyze(message: Message) -> None:
     import aiosqlite
     from ..db import (
         save_solution_pattern,
-        pattern_exists_similar,
+        build_pattern_index,
+        pattern_similar_in_index,
+        list_solution_patterns,
         count_solution_patterns_by_equipment,
         mark_knowledge_items_analyzed,
         normalize_equipment,
@@ -1023,6 +1025,9 @@ async def cmd_aianalyze(message: Message) -> None:
     batch_size = 15
     created = 0
     skipped = 0
+    # Load existing patterns once; dedup runs in memory and the index is
+    # extended after each insert so same-run duplicates are caught too.
+    pattern_index = build_pattern_index(await list_solution_patterns(limit=100000))
 
     _ANALYZE_PROMPT = (
         "Ты анализируешь решённые тикеты технической поддержки кассового оборудования.\n"
@@ -1287,12 +1292,13 @@ async def cmd_aianalyze(message: Message) -> None:
                     st = (p.get("steps") or "").strip()
                     if not pt or not st:
                         continue
-                    if await pattern_exists_similar(eq, pt):
+                    if pattern_similar_in_index(pattern_index, eq, pt):
                         skipped += 1
                         continue
                     await save_solution_pattern(
                         problem_type=pt, steps=st, source="analyze", equipment=eq
                     )
+                    pattern_index.setdefault(eq, []).append(pt.lower())
                     created += 1
                 # Mark these items as analyzed so they're skipped next run
                 await mark_knowledge_items_analyzed(batch_ids)

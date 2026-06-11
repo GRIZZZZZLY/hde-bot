@@ -5,7 +5,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 import aiosqlite
 
@@ -1630,21 +1630,39 @@ async def list_solution_patterns(limit: int = 50) -> list[dict]:
             return [dict(row) for row in await cur.fetchall()]
 
 
+def build_pattern_index(patterns: Iterable[dict]) -> dict[Optional[str], list[str]]:
+    """Group lowercased problem_type strings by equipment for in-memory dedup."""
+    index: dict[Optional[str], list[str]] = {}
+    for p in patterns:
+        index.setdefault(p["equipment"], []).append(p["problem_type"].lower())
+    return index
+
+
+def pattern_similar_in_index(
+    index: dict[Optional[str], list[str]],
+    equipment: Optional[str],
+    problem_type: str,
+) -> bool:
+    """Fuzzy-match problem_type against indexed patterns of the same equipment."""
+    target = problem_type.lower()
+    for existing in index.get(equipment, ()):
+        if difflib.SequenceMatcher(None, existing, target).ratio() >= 0.7:
+            return True
+    return False
+
+
 async def pattern_exists_similar(
     equipment: Optional[str],
     problem_type: str,
 ) -> bool:
-    """Return True if a pattern with same equipment and similar problem_type exists."""
+    """Return True if a pattern with same equipment and similar problem_type exists.
+
+    One-shot convenience wrapper. Batch callers (e.g. /aianalyze) should load
+    patterns once via list_solution_patterns + build_pattern_index and call
+    pattern_similar_in_index per candidate instead.
+    """
     patterns = await list_solution_patterns(limit=200)
-    for p in patterns:
-        if p["equipment"] != equipment:
-            continue
-        ratio = difflib.SequenceMatcher(
-            None, p["problem_type"].lower(), problem_type.lower()
-        ).ratio()
-        if ratio >= 0.7:
-            return True
-    return False
+    return pattern_similar_in_index(build_pattern_index(patterns), equipment, problem_type)
 
 
 async def count_solution_patterns_by_equipment() -> dict[str, int]:

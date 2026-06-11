@@ -39,6 +39,25 @@ async def test_pattern_exists_similar_detects_duplicate():
     assert await _db.pattern_exists_similar("АТОЛ", "ошибка подключения ОФД") is True
     assert await _db.pattern_exists_similar("АТОЛ", "замена ФН регистратора") is False
 
+
+def test_pattern_index_in_memory_dedup():
+    patterns = [
+        {"equipment": "АТОЛ", "problem_type": "ошибка соединения ОФД"},
+        {"equipment": None, "problem_type": "не открывается смена"},
+    ]
+    index = _db.build_pattern_index(patterns)
+    # Похожая формулировка того же оборудования — дубль
+    assert _db.pattern_similar_in_index(index, "АТОЛ", "ошибка подключения ОФД") is True
+    # Та же формулировка, но другое оборудование — не дубль
+    assert _db.pattern_similar_in_index(index, "Эвотор", "ошибка соединения ОФД") is False
+    # Непохожая формулировка — не дубль
+    assert _db.pattern_similar_in_index(index, "АТОЛ", "замена ФН регистратора") is False
+    # equipment=None matched отдельной группой
+    assert _db.pattern_similar_in_index(index, None, "не открывается смена") is True
+    # Пополнение индекса ловит дубли той же пачки
+    index.setdefault("Эвотор", []).append("не печатает чек".lower())
+    assert _db.pattern_similar_in_index(index, "Эвотор", "не печатает чеки") is True
+
 @pytest.mark.asyncio
 async def test_count_patterns_by_equipment():
     await _db.init_db()
