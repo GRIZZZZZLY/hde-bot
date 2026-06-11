@@ -407,3 +407,63 @@ async def test_get_active_format_instructions_returns_db_version():
         from bot.ai_summary import get_active_format_instructions
         result = await get_active_format_instructions()
     assert result == "Кастомная инструкция"
+
+
+@pytest.mark.asyncio
+async def test_run_optimizer_applies_by_holdout_score(monkeypatch):
+    """Победитель и apply-гейт определяются holdout_score, а не train-скором."""
+    from bot.optimizer import agent
+
+    samples = [
+        {"id": i, "ticket_id": str(i), "title": "t", "history": f"h{i}",
+         "ai_answer": "a", "op_answer": "Клиенту: ответ", "outcome": "corrected"}
+        for i in range(20)
+    ]
+
+    async def fake_get_samples(days=30):
+        return samples
+
+    async def fake_combined(s, instructions, **kw):
+        return 0.5  # train-скор одинаковый у всех
+
+    holdout_calls = []
+
+    async def fake_holdout(s, instructions, **kw):
+        holdout_calls.append(instructions)
+        return 0.4 if instructions == "CURRENT" else 0.9
+
+    async def fake_get_active():
+        return "CURRENT"
+
+    class FakeRouter:
+        def __init__(self, *a, **kw): pass
+        async def complete_all(self, system, user):
+            return {"gemini": "MUTATED INSTRUCTIONS LONG ENOUGH TO PASS"}, {}
+
+    async def fake_save_version(content, score, proposed_by):
+        return 7
+
+    monkeypatch.setattr(agent.db, "get_optimization_samples", fake_get_samples)
+    monkeypatch.setattr(agent.db, "save_prompt_version", fake_save_version)
+    monkeypatch.setattr(agent, "combined_score", fake_combined)
+    monkeypatch.setattr(agent, "holdout_score", fake_holdout)
+    monkeypatch.setattr(agent, "get_active_format_instructions", fake_get_active)
+    monkeypatch.setattr(agent, "LLMRouter", FakeRouter)
+
+    sent = []
+
+    class FakeMsg:
+        async def edit_text(self, *a, **k):
+            pass
+
+    class FakeBot:
+        async def send_message(self, **kw):
+            sent.append(kw)
+            return FakeMsg()
+
+    await agent.run_optimizer(FakeBot())
+    # holdout_score вызван и для CURRENT (baseline), и для мутации
+    assert "CURRENT" in holdout_calls
+    assert any("MUTATED" in c for c in holdout_calls)
+    # отчёт с кнопкой apply отправлен (0.9 > 0.4 + 0.03)
+    assert any("opt:apply" in str(kw.get("reply_markup", "")) for kw in sent)

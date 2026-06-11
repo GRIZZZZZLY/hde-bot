@@ -11,7 +11,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from .. import db
 from ..ai_summary import get_active_format_instructions, invalidate_prompt_cache
 from ..config import config
+from .dataset import split_samples
 from .evaluator import combined_score
+from .judge import holdout_score
 from .llm_router import LLMRouter
 from .mutations import build_mutation_prompt
 
@@ -77,25 +79,30 @@ async def run_optimizer(bot: Bot) -> None:
                 pass
         return
 
+    train, holdout = split_samples(samples)
+    if not holdout or not train:
+        # слишком мало данных для честного сплита — оцениваем на всём
+        train, holdout = samples, samples
+
     if progress_msg:
         await _update_progress(progress_msg, 10, f"Данные загружены: {len(samples)} тикетов за 30 дней.\nСчитаю базовый скор...")
 
     current_instructions = await get_active_format_instructions()
 
     try:
-        baseline = await combined_score(samples, current_instructions)
+        baseline = await combined_score(train, current_instructions)
     except Exception as exc:
         logger.warning("Optimizer: baseline evaluation failed: %s", exc)
         if progress_msg:
             await _update_progress(progress_msg, 10, f"❌ Ошибка при расчёте базового скора: {exc}")
         return
-    logger.info("Optimizer: baseline score=%.3f on %d samples", baseline, len(samples))
+    logger.info("Optimizer: baseline score=%.3f on %d samples", baseline, len(train))
 
     if progress_msg:
         await _update_progress(progress_msg, 20, f"Базовый скор: {round(baseline * 100)} баллов.\nЗапрашиваю мутации у LLM...")
 
-    good = [s for s in samples if s["outcome"] in ("accepted", "sent")]
-    bad = [s for s in samples if s["outcome"] in ("rejected", "corrected")]
+    good = [s for s in train if s["outcome"] in ("accepted", "sent")]
+    bad = [s for s in train if s["outcome"] in ("rejected", "corrected")]
     system_prompt, user_prompt = build_mutation_prompt(current_instructions, good, bad)
 
     router = LLMRouter(
@@ -132,7 +139,7 @@ async def run_optimizer(bot: Bot) -> None:
         if not content or len(content) < 20:
             continue
         try:
-            score = await combined_score(samples, content)
+            score = await combined_score(train, content)
             scores[model_name] = (content, score)
             logger.info("Optimizer: %s score=%.3f", model_name, score)
             pct = 50 + round((i + 1) / len(mutations) * 25)
@@ -151,10 +158,29 @@ async def run_optimizer(bot: Bot) -> None:
         return
 
     if progress_msg:
-        await _update_progress(progress_msg, 80, "Сохраняю кандидатов...")
+        await _update_progress(progress_msg, 78, "Финальная проверка на holdout-наборе...")
 
-    winner_model = max(scores, key=lambda m: scores[m][1])
-    winner_content, winner_score = scores[winner_model]
+    # Holdout-гейт: топ-2 кандидата по train-скору пересчитываются судьёй
+    # на отложенных сэмплах; apply-решение — только по holdout.
+    top_models = sorted(scores, key=lambda m: scores[m][1], reverse=True)[:2]
+    try:
+        baseline_holdout = await holdout_score(holdout, current_instructions)
+        final_scores: dict[str, float] = {}
+        for model_name in top_models:
+            final_scores[model_name] = await holdout_score(holdout, scores[model_name][0])
+    except Exception as exc:
+        logger.warning("Optimizer: holdout evaluation failed: %s", exc)
+        if progress_msg:
+            await _update_progress(progress_msg, 78, f"❌ Ошибка holdout-оценки: {exc}")
+        return
+
+    winner_model = max(final_scores, key=lambda m: final_scores[m])
+    winner_content = scores[winner_model][0]
+    winner_score = final_scores[winner_model]
+    baseline = baseline_holdout  # гейт и отчёт сравнивают holdout с holdout
+
+    if progress_msg:
+        await _update_progress(progress_msg, 80, "Сохраняю кандидатов...")
 
     version_ids: dict[str, int] = {}
     for model_name, (content, score) in scores.items():
