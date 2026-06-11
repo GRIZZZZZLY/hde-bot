@@ -334,7 +334,7 @@ async def _transcribe_audio_posts(
     if not config.deepgram_api_key:
         return []
     auth = aiohttp.BasicAuth(config.hde_api_email, config.hde_api_key)
-    transcripts: list[str] = []
+    candidates: list[tuple[str, str, str]] = []  # (url, data_type, name)
     for post in posts:
         for file_info in (post.files or []):
             data_type = (file_info.get("data_type") or "").lower().lstrip(".")
@@ -343,17 +343,27 @@ async def _transcribe_audio_posts(
             url = file_info.get("url", "")
             if not url:
                 continue
+            candidates.append((url, data_type, file_info.get("name") or ""))
+    if not candidates:
+        return []
+
+    # Download + transcribe each file as one task, max 3 in flight;
+    # transcripts keep conversation order.
+    sem = asyncio.Semaphore(3)
+
+    async def _transcribe(url: str, data_type: str, name: str) -> str | None:
+        async with sem:
             try:
                 async with session.get(
                     url, auth=auth, timeout=aiohttp.ClientTimeout(total=30)
                 ) as resp:
                     if resp.status != 200:
                         logger.debug("Audio download failed %s: HTTP %s", url, resp.status)
-                        continue
+                        return None
                     audio_data = await resp.read()
             except Exception as exc:
                 logger.warning("Audio download error %s: %s", url, exc)
-                continue
+                return None
             mime_type = f"audio/{data_type}"
             try:
                 async with session.post(
@@ -369,7 +379,7 @@ async def _transcribe_audio_posts(
                     if resp.status != 200:
                         body = await resp.text()
                         logger.warning("Deepgram error %s: %s", resp.status, body[:200])
-                        continue
+                        return None
                     result = await resp.json()
                     transcript = (
                         result.get("results", {})
@@ -378,34 +388,48 @@ async def _transcribe_audio_posts(
                         .get("transcript", "")
                         .strip()
                     )
-                    if transcript:
-                        transcripts.append(transcript)
-                        logger.info(
-                            "Deepgram transcribed audio %s: %r...",
-                            file_info.get("name"), transcript[:80],
-                        )
             except Exception as exc:
                 logger.warning("Deepgram transcription failed for %s: %s", url, exc)
-    return transcripts
+                return None
+            if transcript:
+                logger.info(
+                    "Deepgram transcribed audio %s: %r...", name, transcript[:80]
+                )
+                return transcript
+            return None
+
+    results = await asyncio.gather(*(_transcribe(u, dt, n) for u, dt, n in candidates))
+    return [t for t in results if t]
 
 
 async def _collect_image_parts(
     posts: "list[HDEPost]",
     session: aiohttp.ClientSession,
 ) -> list[dict]:
-    """Download images from post attachments, return Gemini inlineData parts."""
-    parts: list[dict] = []
+    """Download images from post attachments, return Gemini inlineData parts.
+
+    Downloads run concurrently (max 4 at a time); parts keep conversation
+    order. Two extra candidates beyond _MAX_IMAGES cover failed downloads.
+    """
     auth = aiohttp.BasicAuth(config.hde_api_email, config.hde_api_key)
+    candidates: list[tuple[str, str, str]] = []  # (url, data_type, name)
     for post in posts:
         for file_info in (post.files or []):
-            if len(parts) >= _MAX_IMAGES:
-                break
             data_type = (file_info.get("data_type") or "").lower().lstrip(".")
             if data_type not in _IMAGE_TYPES:
                 continue
             url = file_info.get("url", "")
             if not url:
                 continue
+            candidates.append((url, data_type, file_info.get("name") or ""))
+    candidates = candidates[: _MAX_IMAGES + 2]
+    if not candidates:
+        return []
+
+    sem = asyncio.Semaphore(4)
+
+    async def _download(url: str, data_type: str, name: str) -> dict | None:
+        async with sem:
             try:
                 async with session.get(
                     url,
@@ -414,23 +438,25 @@ async def _collect_image_parts(
                 ) as resp:
                     if resp.status != 200:
                         logger.debug("Image download failed %s: HTTP %s", url, resp.status)
-                        continue
+                        return None
                     raw = await resp.read()
             except Exception as exc:
                 logger.debug("Image download error %s: %s", url, exc)
-                continue
-            if len(raw) > _MAX_IMAGE_BYTES:
-                logger.debug("Image too large (%d bytes), skipping %s", len(raw), url)
-                continue
-            mime = _GEMINI_MIME.get(data_type, "image/jpeg")
-            parts.append({
-                "inlineData": {
-                    "mimeType": mime,
-                    "data": base64.b64encode(raw).decode(),
-                }
-            })
-            logger.debug("Added image %s (%d bytes) to Gemini request", file_info.get("name"), len(raw))
-    return parts
+                return None
+        if len(raw) > _MAX_IMAGE_BYTES:
+            logger.debug("Image too large (%d bytes), skipping %s", len(raw), url)
+            return None
+        mime = _GEMINI_MIME.get(data_type, "image/jpeg")
+        logger.debug("Added image %s (%d bytes) to Gemini request", name, len(raw))
+        return {
+            "inlineData": {
+                "mimeType": mime,
+                "data": base64.b64encode(raw).decode(),
+            }
+        }
+
+    results = await asyncio.gather(*(_download(u, dt, n) for u, dt, n in candidates))
+    return [p for p in results if p is not None][:_MAX_IMAGES]
 
 
 async def generate_ticket_summary(
