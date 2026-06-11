@@ -69,7 +69,7 @@ Target: the system prompt passed to Gemini in `generate_ticket_summary()`.
 
 **Chain-of-thought:** Add hidden `<reasoning>` block before answer sections. Gemini fills it (not shown to user) to reason through the problem before generating output. Strip `<reasoning>...</reasoning>` from final output before display.
 
-**Few-shot examples:** Inject top-5 `accepted` samples from `feedback_samples.json` directly into system prompt as labeled examples. Refresh examples each time export script runs (not hardcoded).
+**Few-shot examples:** Inject 5 `accepted` samples from `feedback_samples.json` into system prompt as labeled examples. Selection: most recent 5 with outcome=`accepted`, one per unique company where possible (for diversity). Refresh by re-running export script + restarting service.
 
 ### 4. Few-shot Injection Architecture
 
