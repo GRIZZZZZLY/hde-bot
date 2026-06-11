@@ -673,7 +673,7 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
     import hashlib
     import aiosqlite
     from ..config import config
-    from ..db import DB_PATH, save_knowledge_item, set_setting
+    from ..db import DB_PATH, list_knowledge_content_hashes, save_knowledge_item, set_setting
     from ..hde_api import HDEApiClient, HDEApiError
     from ..ai_summary import _build_history_text
     from ..knowledge.indexer import index_knowledge_item
@@ -715,6 +715,11 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
     errors = 0
     last_edit_at = 0.0  # timestamp of last wait_msg edit
     org_cache: dict[str, tuple[str, str]] = {}  # user_id → (org_id, org_name)
+    # One query instead of a per-ticket SELECT; updated in-memory as we insert.
+    known_hashes = await list_knowledge_content_hashes()
+    # Wiki articles are built AFTER the import loop: each build costs 2 LLM
+    # calls, and sequential building avoids same-topic files racing each other.
+    wiki_queue: list[tuple[str, str, str]] = []  # (title, content, ticket_id)
 
     for owner_id in owner_ids:
         page = 1
@@ -750,14 +755,9 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                     errors += 1
                     continue
 
-                # Deduplication
+                # Deduplication (in-memory against the preloaded hash set)
                 content_hash = hashlib.sha256(f"hde:{ticket_id}".encode()).hexdigest()
-                async with aiosqlite.connect(DB_PATH) as db:
-                    async with db.execute(
-                        "SELECT id FROM knowledge_items WHERE content_hash = ?", (content_hash,)
-                    ) as cur:
-                        exists = await cur.fetchone()
-                if exists:
+                if content_hash in known_hashes:
                     skipped += 1
                     continue
 
@@ -820,16 +820,8 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                         company_name=company_name,
                     )
                 added += 1
-                # Update wiki article (non-fatal)
-                try:
-                    from ..wiki.builder import build_or_update_wiki_article
-                    await build_or_update_wiki_article(
-                        title=ticket_title,
-                        content=content,
-                        ticket_id=ticket_id,
-                    )
-                except Exception as exc:
-                    logger.warning("Wiki update failed for ticket %s: %s", ticket_id, exc)
+                known_hashes.add(content_hash)
+                wiki_queue.append((ticket_title, content, ticket_id))
 
                 now = asyncio.get_event_loop().time()
                 if now - last_edit_at >= 2.0:
@@ -846,6 +838,30 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                 await asyncio.sleep(0.5)
 
             page += 1
+
+    # Wiki phase: knowledge items are already searchable via RAG at this point;
+    # article synthesis (2 LLM calls each) runs as a follow-up pass.
+    if wiki_queue:
+        from ..wiki.builder import build_or_update_wiki_article
+        for i, (w_title, w_content, w_ticket_id) in enumerate(wiki_queue, start=1):
+            try:
+                await build_or_update_wiki_article(
+                    title=w_title,
+                    content=w_content,
+                    ticket_id=w_ticket_id,
+                )
+            except Exception as exc:
+                logger.warning("Wiki update failed for ticket %s: %s", w_ticket_id, exc)
+            now = asyncio.get_event_loop().time()
+            if now - last_edit_at >= 2.0:
+                try:
+                    await wait_msg.edit_text(
+                        f"📚 Обновляю вики: {i}/{len(wiki_queue)}...",
+                        parse_mode="HTML",
+                    )
+                    last_edit_at = now
+                except Exception:
+                    pass
 
     await set_setting("last_bulk_import_at", datetime.now(timezone.utc).isoformat())
 

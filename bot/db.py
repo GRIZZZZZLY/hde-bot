@@ -1384,6 +1384,16 @@ async def save_knowledge_item(
         return row_id
 
 
+async def list_knowledge_content_hashes() -> set[str]:
+    """Return all non-null content_hash values in one query (bulk dedup)."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute(
+            "SELECT content_hash FROM knowledge_items WHERE content_hash IS NOT NULL"
+        ) as cur:
+            rows = await cur.fetchall()
+    return {row[0] for row in rows}
+
+
 async def update_knowledge_embedding(item_id: int, embedding: bytes) -> None:
     """Store the embedding blob for an existing knowledge item."""
     async with aiosqlite.connect(DB_PATH) as db:

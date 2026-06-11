@@ -285,3 +285,25 @@ async def test_find_similar_updates_last_used_at():
         ) as cur:
             row = await cur.fetchone()
     assert row[0] is not None  # обновился после поиска
+
+
+# --- list_knowledge_content_hashes (bulk dedup for /aiimport) ---
+
+@pytest.mark.asyncio
+async def test_list_knowledge_content_hashes():
+    await _db.init_db()
+    # Пустая база — пустой set
+    assert await _db.list_knowledge_content_hashes() == set()
+
+    await _db.save_knowledge_item(
+        source="hde_closed", content="A", ticket_id="H1", content_hash="hash_a",
+    )
+    await _db.save_knowledge_item(
+        source="hde_closed", content="B", ticket_id="H2", content_hash="hash_b",
+    )
+    # Запись без хэша (NULL) не должна попадать в set
+    await _db.save_knowledge_item(
+        source="hde_closed", content="C", ticket_id="H3",
+    )
+
+    assert await _db.list_knowledge_content_hashes() == {"hash_a", "hash_b"}
