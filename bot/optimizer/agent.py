@@ -83,6 +83,11 @@ async def run_optimizer(bot: Bot) -> None:
     if not holdout or not train:
         # слишком мало данных для честного сплита — оцениваем на всём
         train, holdout = samples, samples
+        logger.warning(
+            "Optimizer: degenerate split (%d samples), train == holdout — "
+            "защита от переобучения ослаблена",
+            len(samples),
+        )
 
     if progress_msg:
         await _update_progress(progress_msg, 10, f"Данные загружены: {len(samples)} тикетов за 30 дней.\nСчитаю базовый скор...")

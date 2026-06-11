@@ -198,6 +198,7 @@ async def amain() -> int:
     train, holdout = split_samples(samples)
     if not holdout or not train:
         train = holdout = samples
+        print("⚠️  Сплит вырожден: train == holdout — оценка не защищена от переобучения.")
     print(f"Сэмплов: {len(samples)} (train {len(train)} / holdout {len(holdout)})")
 
     active_text = load_active_prompt(args.db)

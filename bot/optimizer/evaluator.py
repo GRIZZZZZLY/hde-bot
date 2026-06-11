@@ -76,9 +76,11 @@ async def combined_score(
 
     generate = _generate_fn or _generate_answer
 
-    # Limit to avoid excessive API cost
+    # Limit to avoid excessive API cost. Fixed seed: baseline and all
+    # candidates must be measured on the SAME subsample, otherwise their
+    # scores are not comparable.
     if max_samples is not None and len(samples) > max_samples:
-        eval_set = random.sample(samples, max_samples)
+        eval_set = random.Random(42).sample(samples, max_samples)
     else:
         eval_set = samples
 
