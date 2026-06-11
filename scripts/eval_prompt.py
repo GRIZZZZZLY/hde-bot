@@ -117,12 +117,14 @@ def load_active_prompt(db_path: str) -> str:
     row = conn.execute(
         "SELECT content FROM prompt_versions WHERE status='active' ORDER BY id DESC LIMIT 1"
     ).fetchone()
-    if not row:
-        raise SystemExit(
-            "В prompt_versions нет активной версии — сначала примените промт в боте "
-            "или передайте кандидата через --prompt"
-        )
-    return row[0]
+    if row:
+        return row[0]
+    # Нет активной версии в БД — бот в этом случае использует встроенную
+    # инструкцию (см. get_active_format_instructions), сравниваем с ней же.
+    from bot.ai_summary import _FORMAT_INSTRUCTIONS
+
+    print("В prompt_versions нет активной версии — за active берём встроенный _FORMAT_INSTRUCTIONS")
+    return _FORMAT_INSTRUCTIONS
 
 
 async def evaluate_prompt(
