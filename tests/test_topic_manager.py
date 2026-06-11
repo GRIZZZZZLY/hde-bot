@@ -526,6 +526,42 @@ async def test_scheduler_deletes_pending_topics(initialized_db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scheduler_hde_verify_called_once_per_pass(initialized_db, monkeypatch):
+    """One scheduler pass must hit HDE at most once per ticket: the countdown
+    loop and the reassurance loop share a single _hde_staff_replied_since
+    result. The cache must NOT survive into the next pass."""
+    import bot.scheduler as scheduler
+    import bot.work_schedule as work_schedule
+    monkeypatch.setattr(work_schedule, "is_work_time", lambda: True)
+    monkeypatch.setattr(work_schedule, "is_work_day", lambda: True)
+    monkeypatch.setattr(work_schedule, "was_yesterday_work_day", lambda: False)
+    # Active countdown (sent 2 min ago, >55s throttle) that is also inside the
+    # reassurance window: notify_at 9 min ago + 10 min warning ⇒ deadline in
+    # 1 min ≤ reassurance_minutes_before (2).
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Broken printer", priority="high", status="open",
+        owner_id="me", owner_name="Me",
+        hde_link="https://hde.example.com/tickets/1",
+        last_client_reply_at=to_storage(utcnow() - timedelta(minutes=20)),
+        pre_sla_notify_at=to_storage(utcnow() - timedelta(minutes=9)),
+        pre_sla_sent_at=to_storage(utcnow() - timedelta(minutes=2)),
+    )
+    await db_module.update_topic("TKT-1", pre_sla_message_id=555)
+    verify = AsyncMock(return_value=False)
+    monkeypatch.setattr(scheduler, "_hde_staff_replied_since", verify)
+    monkeypatch.setattr(scheduler, "update_pre_sla_alert", AsyncMock())
+    monkeypatch.setattr(scheduler, "send_reassurance_to_client", AsyncMock())
+    bot = make_bot()
+
+    await process_scheduled_actions(bot)
+    assert verify.await_count == 1  # countdown + reassurance share one check
+
+    await process_scheduled_actions(bot)
+    assert verify.await_count == 2  # next pass re-verifies (no cross-pass cache)
+
+
+@pytest.mark.asyncio
 async def test_post_ticket_history_autofill_called(monkeypatch):
     """apply_ticket_fields is awaited once after a successful AI summary."""
     from bot.hde_api import HDEPost, HDETicketInfo

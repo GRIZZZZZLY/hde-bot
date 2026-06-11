@@ -318,8 +318,20 @@ async def process_scheduled_actions(bot: Bot) -> None:
 
     now_value = to_storage(utcnow())
 
+    # One HDE check per (ticket, client-reply) per pass: the three loops below
+    # may ask about the same ticket. Cache lives only within this pass.
+    verify_cache: dict[tuple[str, Optional[str]], bool] = {}
+
+    async def _staff_replied(record) -> bool:
+        key = (record.ticket_id, record.last_client_reply_at)
+        if key not in verify_cache:
+            verify_cache[key] = await _hde_staff_replied_since(
+                record.ticket_id, record.last_client_reply_at
+            )
+        return verify_cache[key]
+
     for record in await db.list_due_pre_sla(now_value):
-        if await _hde_staff_replied_since(record.ticket_id, record.last_client_reply_at):
+        if await _staff_replied(record):
             logger.info(
                 "pre-SLA skipped for ticket %s: operator already replied in HDE (self-heal)",
                 record.ticket_id,
@@ -338,7 +350,7 @@ async def process_scheduled_actions(bot: Bot) -> None:
             last_update = parse_datetime(record.pre_sla_sent_at)
             if last_update and (utcnow() - last_update).total_seconds() < 55:
                 continue
-        if await _hde_staff_replied_since(record.ticket_id, record.last_client_reply_at):
+        if await _staff_replied(record):
             logger.info(
                 "pre-SLA countdown cleared for ticket %s: operator replied in HDE",
                 record.ticket_id,
@@ -368,7 +380,7 @@ async def process_scheduled_actions(bot: Bot) -> None:
         minutes_left = (sla_deadline - utcnow()).total_seconds() / 60
         if minutes_left > config.reassurance_minutes_before:
             continue
-        if await _hde_staff_replied_since(record.ticket_id, record.last_client_reply_at):
+        if await _staff_replied(record):
             await db.clear_pre_sla(record.ticket_id)
             continue
         try:
