@@ -1,5 +1,6 @@
 import logging
 from datetime import date, datetime, timedelta, timezone
+from io import BytesIO
 
 from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
@@ -25,6 +26,7 @@ from ..ticket_fields import (
     apply_ticket_fields,
 )
 from ..command_menu import hub_keyboard, submenu_keyboard, back_keyboard, HUB_TITLE, ARGS_HELP_TEXT
+from ..transcription import extract_audio_meta, process_call_recording
 from ..operator_replies import (
     OperatorReplyError,
     add_internal_note,
@@ -1499,6 +1501,52 @@ async def cb_rollback_apply(callback: CallbackQuery) -> None:
         )
     except Exception as exc:
         await callback.answer(f"❌ Ошибка: {exc}", show_alert=True)
+
+
+@router.message(F.message_thread_id.is_not(None), F.audio | F.document)
+async def handle_topic_call_recording(message: Message) -> None:
+    """Operator drops a call recording (.wav/.mp3) into a ticket topic:
+    transcribe via Deepgram, distill via Groq, index as source='transcription'.
+    """
+    # Keep attach-to-reply behavior: this handler shadows the catch-all below.
+    await cache_incoming_topic_media(message)
+
+    meta = extract_audio_meta(message)
+    if meta is None:
+        return
+    if not message.from_user or message.from_user.is_bot:
+        return
+    from ..config import config
+    if not config.is_operator_allowed(message.from_user.id):
+        return
+    record = await db.get_topic_by_topic_id(message.message_thread_id)
+    if record is None or record.is_deleted:
+        return
+
+    file_id, mime_type = meta
+    buffer = BytesIO()
+    try:
+        await message.bot.download(file_id, destination=buffer)
+    except Exception as exc:
+        logger.warning("Call recording download failed: %s", exc)
+        return
+
+    status = await message.reply("🎙️ Транскрибирую звонок...")
+    try:
+        item_id = await process_call_recording(
+            buffer.getvalue(),
+            mime_type,
+            ticket_id=record.ticket_id,
+            ticket_title=record.ticket_name,
+        )
+    except Exception as exc:
+        logger.warning("Call recording processing failed for ticket %s: %s",
+                       record.ticket_id, exc)
+        item_id = None
+    if item_id:
+        await status.edit_text("🎙️ Звонок транскрибирован — добавлен в базу знаний")
+    else:
+        await status.edit_text("⚠️ Не удалось транскрибировать звонок")
 
 
 @router.message()
