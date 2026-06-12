@@ -760,6 +760,14 @@ async def _handle_ticket_closed_locked(bot: Bot, payload: dict, ticket_id: str) 
         from .ticket_fields import log_env_outcome
         await log_env_outcome(ticket_id, record.env_option_id or None)
 
+    if record.priority_option_id is not None:
+        from .ticket_fields import log_pt_outcome
+        await log_pt_outcome(
+            ticket_id,
+            record.priority_option_id or None,
+            record.type_option_id or None,
+        )
+
     ok = await _delete_topic_now(bot, record)
     if ok:
         logger.info("Ticket %s completed, topic %d deleted immediately", ticket_id, record.topic_id)

@@ -271,3 +271,119 @@ async def test_apply_pt_type_vopros_zero_reaches_put(monkeypatch):
     assert fake_client.update_ticket_fields.await_args.kwargs["type_id"] == "0"
     pt_call = [c for c in update_topic.await_args_list if "priority_option_id" in c.kwargs]
     assert pt_call[0].kwargs["type_option_id"] == "0"
+
+
+# --- log_pt_outcome ---
+
+@pytest.mark.asyncio
+async def test_log_pt_outcome_writes_jsonl(tmp_path, monkeypatch):
+    import json
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_client = MagicMock()
+    fake_client.get_ticket_priority_type = AsyncMock(return_value=("10", "2"))
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+    out = tmp_path / "priority_corrections.jsonl"
+    monkeypatch.setattr(tf, "PT_CORRECTIONS_PATH", str(out))
+
+    await tf.log_pt_outcome("T1", "1", "3")
+
+    entry = json.loads(out.read_text(encoding="utf-8").strip())
+    assert entry["ticket_id"] == "T1"
+    assert entry["predicted_priority"] == "1"
+    assert entry["predicted_type"] == "3"
+    assert entry["final_priority"] == "10"
+    assert entry["final_type"] == "2"
+    assert entry["match"] is False
+
+
+@pytest.mark.asyncio
+async def test_log_pt_outcome_match_with_type_zero(tmp_path, monkeypatch):
+    import json
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_client = MagicMock()
+    fake_client.get_ticket_priority_type = AsyncMock(return_value=("3", "0"))
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+    out = tmp_path / "priority_corrections.jsonl"
+    monkeypatch.setattr(tf, "PT_CORRECTIONS_PATH", str(out))
+
+    await tf.log_pt_outcome("T1", "3", "0")
+
+    entry = json.loads(out.read_text(encoding="utf-8").strip())
+    assert entry["match"] is True
+
+
+@pytest.mark.asyncio
+async def test_log_pt_outcome_never_raises(monkeypatch):
+    import bot.ticket_fields as tf
+
+    def boom():
+        raise RuntimeError("no creds")
+
+    monkeypatch.setattr(tf, "HDEApiClient", boom)
+    await tf.log_pt_outcome("T1", "1", "3")  # не должно бросить
+
+
+# --- topic_manager close hook ---
+
+def _tm_payload(**overrides):
+    payload = {
+        "ticket_id": "TKT-1",
+        "unique_id": "ABC-123",
+        "ticket_name": "Касса не печатает",
+        "company_name": "ACME",
+        "priority": "high",
+        "status": "open",
+        "owner_id": "me",
+        "owner_name": "Me",
+        "user_name": "Alice",
+        "message": "Помогите",
+        "last_post_date": "2026-06-12 12:00:00",
+        "link": "https://hde.example.com/tickets/1",
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_ticket_closed_logs_pt_outcome(monkeypatch):
+    import bot.topic_manager as tm
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock
+
+    await _db.init_db()
+    await _db.upsert_topic("TKT-1", 999)
+    await _db.update_topic("TKT-1", priority_option_id="1", type_option_id="3")
+
+    monkeypatch.setattr(tf, "log_env_outcome", AsyncMock())
+    log = AsyncMock()
+    monkeypatch.setattr(tf, "log_pt_outcome", log)
+    monkeypatch.setattr(tm, "_delete_topic_now", AsyncMock(return_value=True))
+    monkeypatch.setattr(tm, "_try_delete_pre_sla_message", AsyncMock())
+
+    bot = AsyncMock()
+    await tm.handle_ticket_closed(bot, _tm_payload(status="closed"))
+    log.assert_awaited_once_with("TKT-1", "1", "3")
+
+
+@pytest.mark.asyncio
+async def test_ticket_closed_skips_pt_log_when_never_classified(monkeypatch):
+    import bot.topic_manager as tm
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock
+
+    await _db.init_db()
+    await _db.upsert_topic("TKT-1", 999)  # priority_option_id остаётся NULL
+
+    monkeypatch.setattr(tf, "log_env_outcome", AsyncMock())
+    log = AsyncMock()
+    monkeypatch.setattr(tf, "log_pt_outcome", log)
+    monkeypatch.setattr(tm, "_delete_topic_now", AsyncMock(return_value=True))
+    monkeypatch.setattr(tm, "_try_delete_pre_sla_message", AsyncMock())
+
+    bot = AsyncMock()
+    await tm.handle_ticket_closed(bot, _tm_payload(status="closed"))
+    log.assert_not_awaited()

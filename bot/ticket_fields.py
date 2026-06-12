@@ -497,6 +497,7 @@ async def retry_env_classification(bot: Bot, ticket_id: str, topic_id: int) -> N
 
 
 ENV_CORRECTIONS_PATH = "data/env_corrections.jsonl"
+PT_CORRECTIONS_PATH = "data/priority_corrections.jsonl"
 
 
 async def log_env_outcome(ticket_id: str, predicted: str | None) -> None:
@@ -523,3 +524,40 @@ async def log_env_outcome(ticket_id: str, predicted: str | None) -> None:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as exc:
         logger.warning("log_env_outcome failed for %s: %s", ticket_id, exc)
+
+
+async def log_pt_outcome(
+    ticket_id: str,
+    predicted_priority: str | None,
+    predicted_type: str | None,
+) -> None:
+    """При закрытии тикета фиксирует прогноз приоритета/типа vs финал.
+
+    Оператор мог поправить поля вручную — JSONL даёт метрику точности.
+    Never raises.
+    """
+    try:
+        client = HDEApiClient()
+        final = await client.get_ticket_priority_type(ticket_id)
+        if final is None:
+            return
+        final_priority, final_type = final
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "ticket_id": ticket_id,
+            "predicted_priority": predicted_priority,
+            "predicted_type": predicted_type,
+            "final_priority": final_priority or None,
+            "final_type": final_type if final_type != "" else None,
+            "match": (
+                predicted_priority is not None
+                and predicted_type is not None
+                and final_priority == predicted_priority
+                and final_type == predicted_type
+            ),
+        }
+        os.makedirs(os.path.dirname(PT_CORRECTIONS_PATH) or ".", exist_ok=True)
+        with open(PT_CORRECTIONS_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        logger.warning("log_pt_outcome failed for %s: %s", ticket_id, exc)
