@@ -169,7 +169,16 @@ async def find_similar(
 
     sorted_ids = sorted(rrf_scores, key=lambda x: rrf_scores[x], reverse=True)
     result = []
-    for item_id in sorted_ids[:limit]:
+    seen_contents: set[str] = set()
+    for item_id in sorted_ids:
+        if len(result) >= limit:
+            break
+        # КБ содержит буквальные дубли под разными id (один диалог,
+        # разные source) — копия не должна сжигать слот в top-k.
+        norm = " ".join(contents[item_id].split()).lower()
+        if norm in seen_contents:
+            continue
+        seen_contents.add(norm)
         score = cosine_top.get(item_id, 0.0)
         result.append((
             KnowledgeItem(id=item_id, source="", ticket_id=None, title=None,

@@ -499,3 +499,27 @@ async def test_get_rag_context_all_below_threshold_returns_empty(monkeypatch):
 
     assert examples == []
     assert confidence == 0
+
+
+@pytest.mark.asyncio
+async def test_find_similar_skips_duplicate_content():
+    """Identical KB items under different ids must not waste top-k slots."""
+    from bot.knowledge.store import invalidate_embeddings_cache
+
+    await _db.init_db()
+    dup_text = "АТОЛ порт недоступен, проверить USB кабель"
+    await _seed_item(dup_text, "DUP_A", np.array([1.0, 0.0, 0.0, 0.0]))
+    await _seed_item(dup_text, "DUP_B", np.array([0.99, 0.01, 0.0, 0.0]))
+    await _seed_item(
+        "Эвотор не печатает чек после обновления",
+        "UNIQ", np.array([0.9, 0.1, 0.0, 0.0]),
+    )
+    invalidate_embeddings_cache()
+
+    query = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)
+    result = await find_similar(query, limit=2)
+
+    contents = [item.content for item, _ in result]
+    assert len(contents) == 2
+    assert len(set(contents)) == 2, "дубликат должен быть пропущен"
+    assert any("Эвотор" in c for c in contents)
