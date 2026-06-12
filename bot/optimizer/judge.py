@@ -2,7 +2,8 @@
 
 Используется офлайн-харнессом (scripts/eval_prompt.py) и ночным
 оптимизатором (agent.py) для финальной оценки на holdout-наборе.
-Gemini 2.5 Flash, temperature=0, structured output (responseSchema).
+Groq gpt-oss-120b (другое семейство, чем генератор llama — без
+self-preference), temperature=0, JSON-режим.
 """
 from __future__ import annotations
 
@@ -18,27 +19,8 @@ from .evaluator import combined_score, _generate_answer
 
 logger = logging.getLogger(__name__)
 
-_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.5-flash:generateContent"
-)
-
-_RESPONSE_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "diagnosis_correct": {"type": "BOOLEAN"},
-        "equipment_named": {"type": "BOOLEAN"},
-        "format_ok": {"type": "BOOLEAN"},
-        "length_ok": {"type": "BOOLEAN"},
-        "sounds_human": {"type": "BOOLEAN"},
-        "overall": {"type": "INTEGER"},
-        "reason": {"type": "STRING"},
-    },
-    "required": [
-        "diagnosis_correct", "equipment_named", "format_ok",
-        "length_ok", "sounds_human", "overall", "reason",
-    ],
-}
+_URL = "https://api.groq.com/openai/v1/chat/completions"
+_MODEL = "openai/gpt-oss-120b"
 
 CallFn = Callable[[str, str], Awaitable[str]]
 JudgeFn = Callable[[str, str, str, str], Awaitable[dict | None]]
@@ -70,6 +52,9 @@ def build_judge_prompt(
         "БЕЗ перечисленных ниже ИИ-паттернов\n"
         "- overall: целое 0-10, общая оценка\n"
         "- reason: одна фраза, что главное не так (или «ок»)\n\n"
+        "Верни ТОЛЬКО JSON-объект с полями diagnosis_correct, equipment_named, "
+        "format_ok, length_ok, sounds_human (булевы), overall (целое 0-10), "
+        "reason (строка). Без пояснений вне JSON.\n\n"
         "Стайлгайд для sounds_human:\n"
         f"{_load_style_guide()}"
     )
@@ -82,33 +67,33 @@ def build_judge_prompt(
     return system, user
 
 
-async def _call_gemini(system: str, user: str) -> str:
+async def _call_groq_judge(system: str, user: str) -> str:
     from ..config import config
 
     payload = {
-        "system_instruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {
-            "temperature": 0,
-            "maxOutputTokens": 500,
-            "responseMimeType": "application/json",
-            "responseSchema": _RESPONSE_SCHEMA,
-        },
+        "model": _MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0,
+        "max_tokens": 500,
+        "response_format": {"type": "json_object"},
     }
     async with LLM_SEMAPHORE, aiohttp.ClientSession() as session:
         async with session.post(
             _URL,
-            params={"key": config.gemini_api_key},
+            headers={"Authorization": f"Bearer {config.groq_api_key}"},
             json=payload,
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
             data = await resp.json()
-    candidates = data.get("candidates")
-    if not candidates:
+    choices = data.get("choices")
+    if not choices:
         error = data.get("error", {})
         msg = error.get("message") if isinstance(error, dict) else str(data)
-        raise RuntimeError(f"Gemini judge returned no candidates: {msg}")
-    return candidates[0]["content"]["parts"][0]["text"].strip()
+        raise RuntimeError(f"Groq judge returned no choices: {msg}")
+    return choices[0]["message"]["content"].strip()
 
 
 async def judge_answer(
@@ -120,7 +105,7 @@ async def judge_answer(
     _call_fn: CallFn | None = None,
 ) -> dict | None:
     """Вердикт судьи или None (после одного повтора при битом JSON/ошибке)."""
-    call = _call_fn or _call_gemini
+    call = _call_fn or _call_groq_judge
     system, user = build_judge_prompt(history, title, candidate, op_answer)
     for attempt in (1, 2):
         try:
@@ -144,7 +129,7 @@ async def holdout_score(
     """Финальный скор на holdout: 0.5 * combined_score + 0.5 * judge.
 
     Генерация мемоизируется, чтобы combined_score и судья не дёргали
-    Gemini дважды за один сэмпл. Сэмплы без op_answer судьёй не
+    LLM дважды за один сэмпл. Сэмплы без op_answer судьёй не
     оцениваются; если таких нет вовсе — возвращается чистый combined_score.
     """
     raw_generate = _generate_fn or _generate_answer

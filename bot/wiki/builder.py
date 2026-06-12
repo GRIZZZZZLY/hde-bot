@@ -17,11 +17,8 @@ logger = logging.getLogger(__name__)
 
 _WIKI_DIR = "data/wiki"
 _INDEX_PATH = f"{_WIKI_DIR}/_index.json"
-_GEMINI_MODEL = "gemini-2.5-flash"
-_GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{_GEMINI_MODEL}:generateContent"
-)
+_GROQ_MODEL = "llama-3.3-70b-versatile"
+_GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
 def _topic_slug(topic: str) -> str:
@@ -53,30 +50,32 @@ def _article_path(slug: str) -> str:
     return f"{_WIKI_DIR}/{slug}.md"
 
 
-async def _call_gemini(
+async def _call_llm(
     prompt: str,
     session: aiohttp.ClientSession,
 ) -> str | None:
-    """Send a single-turn prompt to Gemini using the provided session."""
+    """Send a single-turn prompt to Groq using the provided session."""
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2000},
+        "model": _GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.3,
+        "max_tokens": 2000,
     }
     try:
         async with LLM_SEMAPHORE, session.post(
-            _GEMINI_URL,
+            _GROQ_URL,
             json=payload,
-            params={"key": config.gemini_api_key},
+            headers={"Authorization": f"Bearer {config.groq_api_key}"},
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
             if resp.status != 200:
                 body = await resp.text()
-                logger.warning("Gemini wiki error %s: %s", resp.status, body[:200])
+                logger.warning("Groq wiki error %s: %s", resp.status, body[:200])
                 return None
             data = await resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return data["choices"][0]["message"]["content"].strip()
     except Exception as exc:
-        logger.warning("Gemini wiki call failed: %s", exc)
+        logger.warning("Groq wiki call failed: %s", exc)
         return None
 
 
@@ -87,7 +86,7 @@ async def _extract_topic(title: str, content: str, session: aiohttp.ClientSessio
         "Верни ТОЛЬКО тему, без пояснений.\n\n"
         f"Тикет: «{title}»\n\n{content[:800]}"
     )
-    topic = await _call_gemini(prompt, session)
+    topic = await _call_llm(prompt, session)
     if topic:
         cleaned = re.sub(r'^[«"\']+|[»"\']+$', "", topic.strip()).strip(".")
         return cleaned if cleaned and len(cleaned) <= 80 else None
@@ -103,7 +102,7 @@ async def _create_article(topic: str, title: str, content: str, session: aiohttp
         "Без лишних слов, только суть.\n\n"
         f"Тикет:\nТема: {title}\n\n{content[:1500]}"
     )
-    return await _call_gemini(prompt, session)
+    return await _call_llm(prompt, session)
 
 
 async def _update_article(existing: str, title: str, content: str, session: aiohttp.ClientSession) -> str | None:
@@ -115,7 +114,7 @@ async def _update_article(existing: str, title: str, content: str, session: aioh
         f"Существующая статья:\n{existing}\n\n"
         f"---\n\nНовый тикет:\nТема: {title}\n\n{content[:1200]}"
     )
-    return await _call_gemini(prompt, session)
+    return await _call_llm(prompt, session)
 
 
 async def build_or_update_wiki_article(
@@ -128,8 +127,8 @@ async def build_or_update_wiki_article(
     Returns the article slug on success, None if skipped or failed.
     Errors are logged but never raised — callers should use try/except.
     """
-    if not config.gemini_api_key:
-        logger.debug("Wiki build skipped: no Gemini API key")
+    if not config.groq_api_key:
+        logger.debug("Wiki build skipped: no Groq API key")
         return None
 
     os.makedirs(_WIKI_DIR, exist_ok=True)

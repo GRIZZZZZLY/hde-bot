@@ -58,12 +58,6 @@ def _groq_resp(text: str, status: int = 200):
     return _resp({"choices": [{"message": {"content": text}}]}, status)
 
 
-def _gemini_resp(text: str, status: int = 200):
-    return _resp(
-        {"candidates": [{"content": {"parts": [{"text": text}]}}]}, status
-    )
-
-
 def _session_cm(post_return):
     session = MagicMock()
     session.post = MagicMock(return_value=post_return)
@@ -94,24 +88,24 @@ async def test_classify_environment_lenient_parse():
 
 
 @pytest.mark.asyncio
-async def test_classify_environment_gemini_fallback():
-    """Groq unavailable (no key) → Gemini fallback returns the id."""
-    with patch("bot.ticket_fields.config.groq_api_key", ""), \
-         patch("bot.ticket_fields.config.gemini_api_key", "g-key"), \
-         patch("bot.ticket_fields.aiohttp.ClientSession",
-               return_value=_session_cm(_gemini_resp("155"))):
+async def test_classify_environment_no_key_returns_none():
+    """No Groq key → no classification at all."""
+    with patch("bot.ticket_fields.config.groq_api_key", ""):
         result = await classify_environment("Клиент: ошибка на Штрих-М")
-    assert result == "155"
+    assert result is None
 
 
 @pytest.mark.asyncio
-async def test_classify_environment_groq_500_falls_back_to_gemini():
-    """Groq HTTP 500 → Gemini fallback used."""
-    calls = {"n": 0}
+async def test_classify_environment_groq_500_falls_back_to_scout():
+    """llama-3.3 HTTP 500 → Scout (separate quota) fallback used."""
+    from bot.ticket_fields import _GROQ_FALLBACK_MODEL
+
+    calls = {"n": 0, "models": []}
 
     def post(*a, **k):
         calls["n"] += 1
-        return _groq_resp("145", status=500) if calls["n"] == 1 else _gemini_resp("146")
+        calls["models"].append(k["json"]["model"])
+        return _groq_resp("145", status=500) if calls["n"] == 1 else _groq_resp("146")
 
     session = MagicMock()
     session.post = MagicMock(side_effect=post)
@@ -119,10 +113,10 @@ async def test_classify_environment_groq_500_falls_back_to_gemini():
     sess_cm.__aenter__ = AsyncMock(return_value=session)
     sess_cm.__aexit__ = AsyncMock(return_value=False)
     with patch("bot.ticket_fields.config.groq_api_key", "test-key"), \
-         patch("bot.ticket_fields.config.gemini_api_key", "g-key"), \
          patch("bot.ticket_fields.aiohttp.ClientSession", return_value=sess_cm):
         result = await classify_environment("Клиент: проблема")
     assert result == "146"
+    assert calls["models"][1] == _GROQ_FALLBACK_MODEL
 
 
 @pytest.mark.asyncio

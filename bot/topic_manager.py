@@ -1007,10 +1007,10 @@ async def _maybe_update_pattern(title: str, staff_text: str, ticket_id: str) -> 
             )
             return
 
-    # No existing pattern — extract new one via Gemini (non-fatal)
+    # No existing pattern — extract new one via Groq (non-fatal)
     import aiohttp as _aiohttp
     from .config import config as _cfg
-    if not _cfg.gemini_api_key:
+    if not _cfg.groq_api_key:
         return
 
     prompt = (
@@ -1025,21 +1025,20 @@ async def _maybe_update_pattern(title: str, staff_text: str, ticket_id: str) -> 
     try:
         async with LLM_SEMAPHORE, _aiohttp.ClientSession() as session:
             async with session.post(
-                (
-                    "https://generativelanguage.googleapis.com/v1beta/models/"
-                    "gemini-2.5-flash:generateContent"
-                ),
+                "https://api.groq.com/openai/v1/chat/completions",
                 json={
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {"temperature": 0.1, "maxOutputTokens": 300},
+                    "model": "llama-3.3-70b-versatile",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1,
+                    "max_tokens": 300,
                 },
-                params={"key": _cfg.gemini_api_key},
+                headers={"Authorization": f"Bearer {_cfg.groq_api_key}"},
                 timeout=_aiohttp.ClientTimeout(total=20),
             ) as resp:
                 if resp.status != 200:
                     return
                 data = await resp.json()
-                raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                raw = data["choices"][0]["message"]["content"].strip()
         import re as _re, json as _json
         raw = _re.sub(r"^```[^\n]*\n?", "", raw).rstrip("`").strip()
         parsed = _json.loads(raw)
@@ -1053,7 +1052,7 @@ async def _maybe_update_pattern(title: str, staff_text: str, ticket_id: str) -> 
                 "New implicit pattern created for ticket %s: %r", ticket_id, pt
             )
     except Exception as exc:
-        logger.warning("_maybe_update_pattern Gemini call failed: %s", exc)
+        logger.warning("_maybe_update_pattern Groq call failed: %s", exc)
 
 
 async def _implicit_feedback(record: "db.TicketTopic", staff_text: str) -> None:

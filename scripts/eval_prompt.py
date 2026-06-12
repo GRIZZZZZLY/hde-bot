@@ -7,7 +7,7 @@ Usage:
     python scripts/eval_prompt.py                            # active vs последний candidate
     python scripts/eval_prompt.py --no-judge                 # быстрый прогон без судьи
 
-Требуется GEMINI_API_KEY в окружении. Ответы кешируются в data/eval_cache.db —
+Требуется GROQ_API_KEY в окружении. Ответы кешируются в data/eval_cache.db —
 прерванный прогон продолжается с того же места, повторные прогоны бесплатны.
 """
 from __future__ import annotations

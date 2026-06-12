@@ -65,11 +65,8 @@ _OKRUZHENIE_CRITERIA: dict[str, str] = {
 
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 _GROQ_MODEL = "llama-3.3-70b-versatile"
-_GEMINI_MODEL = "gemini-2.5-flash"
-_GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{_GEMINI_MODEL}:generateContent"
-)
+# Fallback on a separate per-model Groq quota (survives llama-3.3 429/limits)
+_GROQ_FALLBACK_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 
 def _build_env_prompt() -> str:
@@ -101,11 +98,11 @@ def _parse_env_id(raw: str) -> str | None:
     return None
 
 
-async def _groq_classify(prompt: str, history: str) -> str | None:
+async def _groq_classify(prompt: str, history: str, model: str = _GROQ_MODEL) -> str | None:
     if not config.groq_api_key:
         return None
     payload = {
-        "model": _GROQ_MODEL,
+        "model": model,
         "messages": [
             {"role": "system", "content": prompt},
             {"role": "user", "content": f"Переписка:\n{history}"},
@@ -132,45 +129,18 @@ async def _groq_classify(prompt: str, history: str) -> str | None:
         return None
 
 
-async def _gemini_classify(prompt: str, history: str) -> str | None:
-    if not config.gemini_api_key:
-        return None
-    payload = {
-        "system_instruction": {"parts": [{"text": prompt}]},
-        "contents": [{"parts": [{"text": f"Переписка:\n{history}"}]}],
-        "generationConfig": {"temperature": 0.0, "maxOutputTokens": 64},
-    }
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                _GEMINI_URL,
-                json=payload,
-                params={"key": config.gemini_api_key},
-                timeout=aiohttp.ClientTimeout(total=20),
-            ) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    logger.warning("Env classifier Gemini HTTP %s: %s", resp.status, body[:200])
-                    return None
-                data = await resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as exc:
-        logger.warning("Env classifier Gemini failed: %s", exc)
-        return None
-
-
 async def classify_environment(history: str) -> str | None:
     """Return an Окружение option_id, or None if undetermined / unknown / error.
 
-    Groq first (fast); falls back to Gemini when Groq is unavailable
-    (e.g. daily token limit / 429) so classification keeps working.
+    llama-3.3 first (fast); falls back to Llama 4 Scout (separate Groq quota)
+    when llama-3.3 is unavailable (e.g. daily token limit / 429).
     """
     if not history.strip():
         return None
     prompt = _build_env_prompt()
     raw = await _groq_classify(prompt, history)
     if raw is None:
-        raw = await _gemini_classify(prompt, history)
+        raw = await _groq_classify(prompt, history, model=_GROQ_FALLBACK_MODEL)
     if raw is None:
         return None
     option_id = _parse_env_id(raw)

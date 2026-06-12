@@ -938,7 +938,7 @@ async def cmd_aibackfill(message: Message) -> None:
 async def cmd_aireindex(message: Message) -> None:
     """Regenerate embeddings for knowledge items that are missing them.
 
-    Use after /aiimport when Gemini key was not configured,
+    Use after /aiimport when the embedding step failed,
     or after switching LLM providers.
     """
     from ..db import list_knowledge_items_without_embedding, update_knowledge_embeddings
@@ -973,7 +973,7 @@ async def cmd_aireindex(message: Message) -> None:
 
     result = f"✅ <b>Переиндексировано: {done}</b> записей"
     if errors:
-        result += f"\n⚠️ Ошибок: {errors} (нет Gemini key или API недоступен)"
+        result += f"\n⚠️ Ошибок: {errors} (embedding-модель недоступна)"
     await message.answer(result, parse_mode="HTML")
 
 
@@ -997,8 +997,8 @@ async def cmd_aianalyze(message: Message) -> None:
     import time as _time
     import re as _re
 
-    if not _config.gemini_api_key and not _config.groq_api_key and not _config.openrouter_api_key:
-        await message.answer("❌ Ни GEMINI_API_KEY, ни GROQ_API_KEY, ни OPENROUTER_API_KEY не настроены")
+    if not _config.groq_api_key and not _config.openrouter_api_key:
+        await message.answer("❌ Ни GROQ_API_KEY, ни OPENROUTER_API_KEY не настроены")
         return
 
     # Load only items not yet analyzed
@@ -1039,10 +1039,10 @@ async def cmd_aianalyze(message: Message) -> None:
     )
 
     import asyncio as _asyncio
-    _RATE_DELAY = 8.0    # seconds between requests — Gemini 2.5 Flash free-tier ~8 RPM
-    _RETRY_DELAY = 120.0  # seconds to wait after a 429 before retrying the same batch
+    _RATE_DELAY = 8.0    # seconds between requests — keeps well under free-tier RPM limits
     _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
     _GROQ_MODEL = "llama-3.3-70b-versatile"
+    _GROQ_SCOUT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
     _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
     _OPENROUTER_MODEL = "google/gemma-4-31b-it:free"
 
@@ -1093,7 +1093,7 @@ async def cmd_aianalyze(message: Message) -> None:
             return None, type(exc).__name__
 
     async def _try_groq_batch(
-        session, prompt_text: str
+        session, prompt_text: str, model: str = _GROQ_MODEL
     ) -> tuple[list | None, str | None]:
         """Returns (patterns, reason). reason is short error string or None on success/skip."""
         if not _config.groq_api_key:
@@ -1103,7 +1103,7 @@ async def cmd_aianalyze(message: Message) -> None:
             async with LLM_SEMAPHORE, session.post(
                 _GROQ_URL,
                 json={
-                    "model": _GROQ_MODEL,
+                    "model": model,
                     "messages": [{"role": "user", "content": prompt_text}],
                     "temperature": 0.1,
                     "max_tokens": 2000,
@@ -1128,7 +1128,7 @@ async def cmd_aianalyze(message: Message) -> None:
             return None, type(exc).__name__
 
     # Per-model batch counters for the final report.
-    model_stats = {"gemma4": 0, "groq": 0, "gemini": 0, "failed": 0}
+    model_stats = {"gemma4": 0, "groq": 0, "scout": 0, "failed": 0}
     # Session-wide dedupe: each (from_model, reason) pair is announced at most once per run.
     notified_keys: set[tuple[str, str]] = set()
     # Circuit-breaker: abort after N consecutive "all 3 failed" batches.
@@ -1197,70 +1197,17 @@ async def cmd_aianalyze(message: Message) -> None:
                 else:
                     reasons["Groq"] = gq_reason or "unknown"
                     await _notify_fallback(
-                        batch_num, "Groq", gq_reason or "unknown", "Gemini 2.5 Flash"
+                        batch_num, "Groq", gq_reason or "unknown", "Llama 4 Scout"
                     )
 
-                    # --- Gemini 2.5 Flash fallback ---
-                    gemini_reason: str | None = None
-                    payload = {
-                        "contents": [{"parts": [{"text": full_prompt}]}],
-                        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 2000},
-                    }
-                    from ..llm_semaphore import LLM_SEMAPHORE as _LLM_SEM  # noqa: PLC0415
-                    for attempt in range(2):
-                        try:
-                            async with _LLM_SEM, session.post(
-                                (
-                                    "https://generativelanguage.googleapis.com/v1beta/models/"
-                                    "gemini-2.5-flash:generateContent"
-                                ),
-                                json=payload,
-                                params={"key": _config.gemini_api_key},
-                                timeout=aiohttp.ClientTimeout(total=60),
-                            ) as resp:
-                                if resp.status == 429:
-                                    if attempt == 0:
-                                        logger.warning(
-                                            "aianalyze batch %d: 429 rate limit, waiting %ss",
-                                            i, int(_RETRY_DELAY),
-                                        )
-                                        try:
-                                            await status_msg.edit_text(
-                                                f"⏳ Обработано {i}/{len(items)} — "
-                                                f"ожидаю сброса лимита Gemini (~1 мин)..."
-                                            )
-                                        except Exception:
-                                            pass
-                                        await _asyncio.sleep(_RETRY_DELAY)
-                                        continue
-                                    gemini_reason = "HTTP 429 (retry exhausted)"
-                                    break
-                                if resp.status != 200:
-                                    body = await resp.text()
-                                    logger.warning(
-                                        "aianalyze batch %d: Gemini HTTP %s: %s",
-                                        i, resp.status, body[:300],
-                                    )
-                                    gemini_reason = f"HTTP {resp.status}"
-                                    break
-                                data = await resp.json()
-                                raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                                patterns = _parse_json_list(raw)
-                                if patterns is None:
-                                    gemini_reason = "parse error"
-                                break
-                        except _asyncio.TimeoutError:
-                            gemini_reason = "timeout"
-                            break
-                        except Exception as exc:
-                            logger.warning("aianalyze batch %d Gemini failed: %s", i, exc)
-                            gemini_reason = type(exc).__name__
-                            break
-
+                    # --- Groq Llama 4 Scout fallback (separate per-model quota) ---
+                    patterns, scout_reason = await _try_groq_batch(
+                        session, full_prompt, model=_GROQ_SCOUT_MODEL
+                    )
                     if patterns is not None:
-                        model_stats["gemini"] += 1
+                        model_stats["scout"] += 1
                     else:
-                        reasons["Gemini"] = gemini_reason or "unknown"
+                        reasons["Scout"] = scout_reason or "unknown"
 
             if patterns is None:
                 # All 3 models failed for this batch — don't mark as analyzed.
@@ -1320,7 +1267,7 @@ async def cmd_aianalyze(message: Message) -> None:
     model_breakdown_lines = [
         f"• Gemma 4 31B (OpenRouter): {model_stats['gemma4']}/{total_batches} батчей",
         f"• Groq llama-3.3-70b: {model_stats['groq']}/{total_batches} батчей",
-        f"• Gemini 2.5 Flash: {model_stats['gemini']}/{total_batches} батчей",
+        f"• Llama 4 Scout: {model_stats['scout']}/{total_batches} батчей",
         f"• Упали все 3: {model_stats['failed']}/{total_batches} батчей",
     ]
     report = (

@@ -16,7 +16,7 @@ _OUTCOME_WEIGHTS = {
     "rejected": 0.0,
 }
 
-# Max samples to replay (limits API cost: 20 samples × 3 candidates = 60 Gemini calls)
+# Max samples to replay (limits API cost: 20 samples × 3 candidates = 60 LLM calls)
 _MAX_EVAL_SAMPLES = 20
 
 # Anti-degradation thresholds — penalise "lazy" short/structurally broken answers
@@ -137,7 +137,7 @@ async def combined_score(
 
 
 async def _generate_answer(history: str, title: str, format_instructions: str) -> str:
-    """Call Gemini with a custom format_instructions. Returns generated text."""
+    """Call Groq llama-3.3 (same model as prod summaries) with custom format_instructions."""
     import aiohttp
     from ..config import config
 
@@ -148,30 +148,31 @@ async def _generate_answer(history: str, title: str, format_instructions: str) -
     user = f"Тема тикета: {title}\n\n{history[-2000:]}"
 
     payload = {
-        "system_instruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 500},
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0.2,
+        "max_tokens": 500,
     }
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-2.5-flash:generateContent"
-    )
+    url = "https://api.groq.com/openai/v1/chat/completions"
     from ..llm_semaphore import LLM_SEMAPHORE  # local import: avoid cycle
     async with LLM_SEMAPHORE, aiohttp.ClientSession() as session:
         async with session.post(
             url,
-            params={"key": config.gemini_api_key},
+            headers={"Authorization": f"Bearer {config.groq_api_key}"},
             json=payload,
             timeout=aiohttp.ClientTimeout(total=30),
         ) as resp:
             data = await resp.json()
 
-    candidates = data.get("candidates")
-    if not candidates:
+    choices = data.get("choices")
+    if not choices:
         error = data.get("error", {})
         msg = error.get("message") if isinstance(error, dict) else str(data)
-        raise RuntimeError(f"Gemini returned no candidates: {msg}")
-    text = candidates[0]["content"]["parts"][0]["text"].strip()
+        raise RuntimeError(f"Groq returned no choices: {msg}")
+    text = choices[0]["message"]["content"].strip()
     # Extract only the "Ответ:" line if present
     for line in text.splitlines():
         if line.lower().startswith("ответ:"):

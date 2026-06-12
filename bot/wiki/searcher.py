@@ -37,7 +37,7 @@ def _match_score(topic: str, query: str) -> int:
 async def get_wiki_context(ticket_title: str) -> str | None:
     """Return the most relevant wiki article for the ticket title, or None.
 
-    Uses word-overlap scoring — no Gemini call needed.
+    Uses word-overlap scoring — no LLM call needed.
     """
     index = _load_index()
     if not index:

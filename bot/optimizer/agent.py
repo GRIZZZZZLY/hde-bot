@@ -111,7 +111,6 @@ async def run_optimizer(bot: Bot) -> None:
     system_prompt, user_prompt = build_mutation_prompt(current_instructions, good, bad)
 
     router = LLMRouter(
-        gemini_api_key=config.gemini_api_key,
         groq_api_key=config.groq_api_key,
         openrouter_api_key=config.openrouter_api_key,
     )

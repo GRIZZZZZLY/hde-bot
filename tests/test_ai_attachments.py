@@ -18,6 +18,14 @@ def _img(n: int, data_type: str = "png") -> dict:
     return {"name": f"img{n}.{data_type}", "url": f"https://hde/f/{n}", "data_type": data_type}
 
 
+def _part_bytes(part: dict) -> bytes:
+    """Decode image bytes from an OpenAI-style image_url data URI part."""
+    assert part["type"] == "image_url"
+    url = part["image_url"]["url"]
+    assert url.startswith("data:image/")
+    return base64.b64decode(url.split(";base64,", 1)[1])
+
+
 def _mock_session(responses: dict[str, tuple[int, bytes]]) -> MagicMock:
     """session.get(url) -> async CM with .status/.read() per the responses map."""
     def get(url, **kwargs):
@@ -42,7 +50,7 @@ async def test_collect_images_keeps_order_and_caps_at_max():
     parts = await _collect_image_parts([_post(files)], sess)
 
     assert len(parts) == _MAX_IMAGES
-    decoded = [base64.b64decode(p["inlineData"]["data"]) for p in parts]
+    decoded = [_part_bytes(p) for p in parts]
     assert decoded == [b"body0", b"body1", b"body2"]  # conversation order
 
 
@@ -59,7 +67,7 @@ async def test_collect_images_one_failure_does_not_block_others():
 
     parts = await _collect_image_parts([_post(files)], sess)
 
-    decoded = [base64.b64decode(p["inlineData"]["data"]) for p in parts]
+    decoded = [_part_bytes(p) for p in parts]
     assert decoded == [b"ok1", b"ok3"]
 
 
@@ -107,3 +115,32 @@ async def test_transcribe_audio_keeps_order_and_skips_failures(monkeypatch):
     transcripts = await _transcribe_audio_posts([_post(files)], sess)
 
     assert transcripts == ["первый звонок", "второй звонок"]
+
+
+@pytest.mark.asyncio
+async def test_groq_vision_fallback_sends_images(monkeypatch):
+    """Fallback summary goes to Groq Scout with OpenAI-style image parts."""
+    from bot.ai_summary import _call_groq_vision_for_summary, _GROQ_VISION_MODEL
+
+    resp = MagicMock()
+    resp.status = 200
+    resp.json = AsyncMock(return_value={
+        "choices": [{"message": {"content": "Суть: касса не печатает"}}]
+    })
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=resp)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    sess = MagicMock()
+    sess.post = MagicMock(return_value=cm)
+
+    monkeypatch.setattr(_config, "groq_api_key", "test-key")
+    parts = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,QUJD"}}]
+
+    text = await _call_groq_vision_for_summary("системный", "история", parts, "T1", sess)
+
+    assert text == "Суть: касса не печатает"
+    payload = sess.post.call_args.kwargs["json"]
+    assert payload["model"] == _GROQ_VISION_MODEL
+    user_content = payload["messages"][1]["content"]
+    assert any(p.get("type") == "image_url" for p in user_content)
+    assert any(p.get("type") == "text" and "история" in p["text"] for p in user_content)

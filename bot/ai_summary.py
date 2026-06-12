@@ -1,4 +1,4 @@
-"""Generate ticket summary via Google Gemini API."""
+"""Generate ticket summary via Groq API (llama-3.3 + Llama 4 Scout fallback)."""
 from __future__ import annotations
 
 import asyncio
@@ -38,27 +38,23 @@ def _strip_reasoning(text: str) -> str:
 _FEW_SHOT_EXAMPLES: list[dict] = _load_few_shot_examples()
 _VOICE_EXAMPLES: list[str] = load_voice_examples()
 
-_GEMINI_MODEL = "gemini-2.5-flash"
-_GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    f"{_GEMINI_MODEL}:generateContent"
-)
-
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 _GROQ_MODEL = "llama-3.3-70b-versatile"
+# Multimodal fallback: separate per-model quota on Groq + image support
+_GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 _AUDIO_TYPES = {"mp3", "ogg", "wav", "m4a", "opus", "aac", "flac", "oga"}
 _DEEPGRAM_URL = "https://api.deepgram.com/v1/listen"
 
 _IMAGE_TYPES = {"jpg", "jpeg", "png", "gif", "webp"}
-_GEMINI_MIME: dict[str, str] = {
+_IMAGE_MIME: dict[str, str] = {
     "jpg": "image/jpeg",
     "jpeg": "image/jpeg",
     "png": "image/png",
     "gif": "image/gif",
     "webp": "image/webp",
 }
-_MAX_IMAGES = 3          # max images per Gemini request
+_MAX_IMAGES = 3          # max images per vision request
 _MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 4 MB per image
 
 _EQUIPMENT_PATTERNS = [
@@ -74,7 +70,7 @@ _EQUIPMENT_PATTERNS = [
 
 
 async def _call_groq_for_summary(system_text: str, history: str, ticket_id: str) -> str | None:
-    """Fallback: generate summary via Groq when Gemini is unavailable."""
+    """Primary: text-only summary via Groq llama-3.3-70b."""
     if not config.groq_api_key:
         logger.info("Groq fallback skipped: GROQ_API_KEY not set")
         return None
@@ -105,6 +101,78 @@ async def _call_groq_for_summary(system_text: str, history: str, ticket_id: str)
     except Exception as exc:
         logger.warning("Groq request failed for ticket %s: %s", ticket_id, exc)
         return None
+
+
+async def _call_groq_vision_for_summary(
+    system_text: str,
+    history: str,
+    image_parts: list[dict],
+    ticket_id: str,
+    session: aiohttp.ClientSession,
+) -> str | None:
+    """Fallback: summary via Groq Llama 4 Scout (multimodal, separate quota).
+
+    Retries on 429/503 — Groq limits are per-minute, short waits suffice.
+    """
+    if not config.groq_api_key:
+        return None
+    content: list[dict] = [{"type": "text", "text": f"Переписка:\n{history}"}] + image_parts
+    payload = {
+        "model": _GROQ_VISION_MODEL,
+        "messages": [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": content},
+        ],
+        "max_tokens": 3000,
+        "temperature": 0.3,
+    }
+    for attempt in range(3):
+        try:
+            async with LLM_SEMAPHORE, session.post(
+                _GROQ_URL,
+                json=payload,
+                headers={"Authorization": f"Bearer {config.groq_api_key}"},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                status = resp.status
+                if status in (429, 503):
+                    await resp.read()  # drain connection
+                elif status != 200:
+                    body = await resp.text()
+                    logger.warning(
+                        "Groq vision API error %s for ticket %s: %s",
+                        status, ticket_id, body[:200],
+                    )
+                    return None  # non-retryable
+                else:
+                    data = await resp.json()
+                    text = (data["choices"][0]["message"]["content"] or "").strip()
+                    logger.info("Groq vision fallback succeeded for ticket %s", ticket_id)
+                    return text or None
+            if attempt < 2:
+                wait = 20 if status == 429 else 15
+                logger.warning(
+                    "Groq vision %s for ticket %s, retry in %ss (attempt %d/3)",
+                    status, ticket_id, wait, attempt + 1,
+                )
+                await asyncio.sleep(wait)
+                continue
+            logger.warning("Groq vision %s after 3 attempts for ticket %s", status, ticket_id)
+            return None
+        except (KeyError, IndexError, TypeError) as exc:
+            logger.warning("Unexpected Groq vision response for ticket %s: %s", ticket_id, exc)
+            return None
+        except Exception as exc:
+            if attempt < 2:
+                logger.warning(
+                    "Groq vision request error attempt %d for ticket %s: %s",
+                    attempt + 1, ticket_id, exc,
+                )
+                await asyncio.sleep(5)
+                continue
+            logger.warning("Groq vision failed after 3 attempts for ticket %s: %s", ticket_id, exc)
+            return None
+    return None
 
 
 def _detect_equipment(title: str, history: str) -> str | None:
@@ -415,7 +483,7 @@ async def _collect_image_parts(
     posts: "list[HDEPost]",
     session: aiohttp.ClientSession,
 ) -> list[dict]:
-    """Download images from post attachments, return Gemini inlineData parts.
+    """Download images from post attachments, return OpenAI-style image_url parts.
 
     Downloads run concurrently (max 4 at a time); parts keep conversation
     order. Two extra candidates beyond _MAX_IMAGES cover failed downloads.
@@ -455,13 +523,12 @@ async def _collect_image_parts(
         if len(raw) > _MAX_IMAGE_BYTES:
             logger.debug("Image too large (%d bytes), skipping %s", len(raw), url)
             return None
-        mime = _GEMINI_MIME.get(data_type, "image/jpeg")
-        logger.debug("Added image %s (%d bytes) to Gemini request", name, len(raw))
+        mime = _IMAGE_MIME.get(data_type, "image/jpeg")
+        logger.debug("Added image %s (%d bytes) to vision request", name, len(raw))
+        b64 = base64.b64encode(raw).decode()
         return {
-            "inlineData": {
-                "mimeType": mime,
-                "data": base64.b64encode(raw).decode(),
-            }
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{b64}"},
         }
 
     results = await asyncio.gather(*(_download(u, dt, n) for u, dt, n in candidates))
@@ -476,8 +543,8 @@ async def generate_ticket_summary(
     company_id: str = "",
 ) -> tuple[str, str, str, int] | None:
     """Return (suit_line, client_line, memo_line, confidence_pct) or None if disabled/failed."""
-    if not config.gemini_api_key:
-        logger.info("AI summary skipped: GEMINI_API_KEY not set")
+    if not config.groq_api_key:
+        logger.info("AI summary skipped: GROQ_API_KEY not set")
         return None
     if not posts:
         logger.info("AI summary skipped: no posts for ticket %s", ticket_id)
@@ -541,12 +608,11 @@ async def generate_ticket_summary(
         format_instructions=format_instructions,
     )
 
-    # Groq first — much faster than Gemini (text-only)
+    # Groq llama-3.3 first — fast, text-only
     raw_text: str | None = await _call_groq_for_summary(system_text, history, ticket_id)
 
-    # Gemini fallback if Groq unavailable or failed (also supports images/audio)
+    # Groq Scout fallback if llama failed (separate quota, supports images/audio)
     if raw_text is None:
-        gemini_data = None
         try:
             async with aiohttp.ClientSession() as session:
                 # Transcribe audio attachments via Deepgram (non-fatal)
@@ -563,68 +629,17 @@ async def generate_ticket_summary(
                     image_parts = await _collect_image_parts(posts, session)
                     if image_parts:
                         logger.info(
-                            "Including %d image(s) in Gemini request for ticket %s",
+                            "Including %d image(s) in vision request for ticket %s",
                             len(image_parts), ticket_id,
                         )
                 except Exception as exc:
                     logger.warning("Image collection failed: %s", exc)
 
-                content_parts: list[dict] = [{"text": f"Переписка:\n{history}"}] + image_parts
-
-                payload = {
-                    "system_instruction": {"parts": [{"text": system_text}]},
-                    "contents": [{"parts": content_parts}],
-                    "generationConfig": {
-                        "temperature": 0.3,
-                        "maxOutputTokens": 3000,
-                    },
-                }
-
-                for attempt in range(3):
-                    try:
-                        async with LLM_SEMAPHORE, session.post(
-                            _GEMINI_URL,
-                            json=payload,
-                            params={"key": config.gemini_api_key},
-                            timeout=aiohttp.ClientTimeout(total=30),
-                        ) as resp:
-                            status = resp.status
-                            if status in (429, 503):
-                                await resp.read()  # drain connection
-                            elif status != 200:
-                                body = await resp.text()
-                                logger.warning("Gemini API error %s for ticket %s: %s", status, ticket_id, body[:200])
-                                break  # non-retryable
-                            else:
-                                gemini_data = await resp.json()
-
-                        if status in (429, 503):
-                            if attempt < 2:
-                                wait = 65 if status == 429 else 15
-                                logger.warning(
-                                    "Gemini %s for ticket %s, retry in %ss (attempt %d/3)",
-                                    status, ticket_id, wait, attempt + 1,
-                                )
-                                await asyncio.sleep(wait)
-                                continue
-                            logger.warning("Gemini %s after 3 attempts for ticket %s", status, ticket_id)
-                            break
-                        break  # success
-                    except Exception as exc:
-                        if attempt < 2:
-                            logger.warning("Gemini request error attempt %d for ticket %s: %s", attempt + 1, ticket_id, exc)
-                            await asyncio.sleep(5)
-                            continue
-                        logger.warning("Gemini request failed after 3 attempts for ticket %s: %s", ticket_id, exc)
-                        break
+                raw_text = await _call_groq_vision_for_summary(
+                    system_text, history, image_parts, ticket_id, session
+                )
         except Exception as exc:
-            logger.warning("Gemini session failed for ticket %s: %s", ticket_id, exc)
-
-        if gemini_data is not None:
-            try:
-                raw_text = gemini_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-            except (KeyError, IndexError, TypeError) as exc:
-                logger.warning("Unexpected Gemini response structure for ticket %s: %s", ticket_id, exc)
+            logger.warning("Vision fallback session failed for ticket %s: %s", ticket_id, exc)
 
     if not raw_text:
         return None

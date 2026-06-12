@@ -1,4 +1,4 @@
-"""Tests for bot/vision.py (Gemini 2.5 Flash image description)."""
+"""Tests for bot/vision.py (Groq Llama 4 Scout image description)."""
 from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -6,17 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 
-@pytest.mark.asyncio
-async def test_describe_image_returns_text():
-    """Gemini returns candidates → describe_image returns trimmed text."""
-    from bot import vision
-
-    resp_body = {
-        "candidates": [{
-            "content": {"parts": [{"text": "  Ошибка ФН 234  "}]}
-        }]
-    }
-
+def _mock_session(resp_body: dict) -> MagicMock:
     mock_resp = AsyncMock()
     mock_resp.json = AsyncMock(return_value=resp_body)
     mock_resp.__aenter__.return_value = mock_resp
@@ -26,13 +16,32 @@ async def test_describe_image_returns_text():
     mock_session.post = MagicMock(return_value=mock_resp)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=None)
+    return mock_session
+
+
+@pytest.mark.asyncio
+async def test_describe_image_returns_text():
+    """Groq returns choices → describe_image returns trimmed text."""
+    from bot import vision
+
+    resp_body = {
+        "choices": [{"message": {"content": "  Ошибка ФН 234  "}}]
+    }
+    mock_session = _mock_session(resp_body)
 
     with patch("bot.vision.aiohttp.ClientSession", return_value=mock_session), \
          patch("bot.vision.config") as mock_config:
-        mock_config.gemini_api_key = "fake-key"
+        mock_config.groq_api_key = "fake-key"
         result = await vision.describe_image(b"\x89PNG\r\n\x1a\n fake", "photo.png")
 
     assert result == "Ошибка ФН 234"
+    # Image must go as OpenAI-style data URI to the vision model
+    payload = mock_session.post.call_args.kwargs["json"]
+    assert payload["model"] == vision._GROQ_MODEL
+    content = payload["messages"][0]["content"]
+    image_parts = [p for p in content if p.get("type") == "image_url"]
+    assert image_parts
+    assert image_parts[0]["image_url"]["url"].startswith("data:image/png;base64,")
 
 
 @pytest.mark.asyncio
@@ -40,7 +49,7 @@ async def test_describe_image_no_api_key_returns_none():
     from bot import vision
 
     with patch("bot.vision.config") as mock_config:
-        mock_config.gemini_api_key = ""
+        mock_config.groq_api_key = ""
         result = await vision.describe_image(b"bytes", "a.jpg")
 
     assert result is None
@@ -51,7 +60,7 @@ async def test_describe_image_empty_bytes_returns_none():
     from bot import vision
 
     with patch("bot.vision.config") as mock_config:
-        mock_config.gemini_api_key = "fake-key"
+        mock_config.groq_api_key = "fake-key"
         result = await vision.describe_image(b"", "a.jpg")
 
     assert result is None
@@ -63,7 +72,7 @@ async def test_describe_image_oversized_returns_none():
 
     big = b"x" * (vision._MAX_BYTES + 1)
     with patch("bot.vision.config") as mock_config:
-        mock_config.gemini_api_key = "fake-key"
+        mock_config.groq_api_key = "fake-key"
         result = await vision.describe_image(big, "big.jpg")
 
     assert result is None
@@ -71,23 +80,15 @@ async def test_describe_image_oversized_returns_none():
 
 @pytest.mark.asyncio
 async def test_describe_image_error_response_returns_none():
-    """Gemini error payload → describe_image returns None (non-fatal)."""
+    """Groq error payload → describe_image returns None (non-fatal)."""
     from bot import vision
 
     resp_body = {"error": {"message": "quota exceeded"}}
-    mock_resp = AsyncMock()
-    mock_resp.json = AsyncMock(return_value=resp_body)
-    mock_resp.__aenter__.return_value = mock_resp
-    mock_resp.__aexit__.return_value = None
-
-    mock_session = MagicMock()
-    mock_session.post = MagicMock(return_value=mock_resp)
-    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-    mock_session.__aexit__ = AsyncMock(return_value=None)
+    mock_session = _mock_session(resp_body)
 
     with patch("bot.vision.aiohttp.ClientSession", return_value=mock_session), \
          patch("bot.vision.config") as mock_config:
-        mock_config.gemini_api_key = "fake-key"
+        mock_config.groq_api_key = "fake-key"
         result = await vision.describe_image(b"bytes", "a.jpg")
 
     assert result is None

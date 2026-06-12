@@ -112,10 +112,10 @@ async def test_llm_router_complete_all_returns_responses():
         return "fake response"
 
     router = LLMRouter.__new__(LLMRouter)
-    router.clients = {"gemini": AsyncMock(complete=fake_complete)}
+    router.clients = {"llama": AsyncMock(complete=fake_complete)}
 
     results, errors = await router.complete_all(system="system", user="user")
-    assert results == {"gemini": "fake response"}
+    assert results == {"llama": "fake response"}
     assert errors == {}
 
 
@@ -132,30 +132,44 @@ class _FakeClient:
         return self.text
 
 
-@pytest.mark.asyncio
-async def test_complete_all_gemini_first_skips_groq_on_success():
+def test_router_has_no_gemini_and_no_dead_gemma2():
+    """All mutation clients are Groq; gemma2-9b-it is decommissioned on Groq."""
     from bot.optimizer.llm_router import LLMRouter
-    router = LLMRouter.__new__(LLMRouter)
-    gemini = _FakeClient(text="мутация от gemini")
-    llama = _FakeClient(text="мутация от llama")
-    router.clients = {"gemini": gemini, "llama": llama}
-
-    results, errors = await router.complete_all("s", "u")
-    assert results == {"gemini": "мутация от gemini"}
-    assert llama.called is False
+    router = LLMRouter(groq_api_key="k")
+    assert "gemini" not in router.clients
+    models = [getattr(c, "model", "") for c in router.clients.values()]
+    assert "gemma2-9b-it" not in models
 
 
 @pytest.mark.asyncio
-async def test_complete_all_falls_back_to_groq_when_gemini_fails():
+async def test_complete_all_runs_groq_clients_in_parallel():
+    """All Groq mutators contribute; OpenRouter stays untouched on success."""
     from bot.optimizer.llm_router import LLMRouter
     router = LLMRouter.__new__(LLMRouter)
-    gemini = _FakeClient(error="quota")
     llama = _FakeClient(text="мутация от llama")
-    router.clients = {"gemini": gemini, "llama": llama}
+    gptoss = _FakeClient(text="мутация от gpt-oss")
+    gemma4 = _FakeClient(text="мутация от gemma4")
+    router.clients = {"llama": llama, "gptoss120": gptoss, "gemma4": gemma4}
 
     results, errors = await router.complete_all("s", "u")
-    assert results == {"llama": "мутация от llama"}
-    assert "gemini" in errors
+    assert results == {
+        "llama": "мутация от llama",
+        "gptoss120": "мутация от gpt-oss",
+    }
+    assert gemma4.called is False
+
+
+@pytest.mark.asyncio
+async def test_complete_all_falls_back_to_openrouter_when_groq_fails():
+    from bot.optimizer.llm_router import LLMRouter
+    router = LLMRouter.__new__(LLMRouter)
+    llama = _FakeClient(error="quota")
+    gemma4 = _FakeClient(text="мутация от gemma4")
+    router.clients = {"llama": llama, "gemma4": gemma4}
+
+    results, errors = await router.complete_all("s", "u")
+    assert results == {"gemma4": "мутация от gemma4"}
+    assert "llama" in errors
 
 
 @pytest.mark.asyncio

@@ -17,41 +17,6 @@ class LLMClient(Protocol):
     async def complete(self, system: str, user: str) -> str: ...
 
 
-class GeminiClient:
-    """Thin wrapper around Gemini generateContent API."""
-
-    _URL_TEMPLATE = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        "{model}:generateContent"
-    )
-
-    def __init__(self, model: str, api_key: str) -> None:
-        self.model = model
-        self.api_key = api_key
-        self._url = self._URL_TEMPLATE.format(model=model)
-
-    async def complete(self, system: str, user: str) -> str:
-        payload = {
-            "system_instruction": {"parts": [{"text": system}]},
-            "contents": [{"role": "user", "parts": [{"text": user}]}],
-            "generationConfig": {"temperature": 0.7, "maxOutputTokens": 1000},
-        }
-        async with LLM_SEMAPHORE, aiohttp.ClientSession() as session:
-            async with session.post(
-                self._url,
-                params={"key": self.api_key},
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=30),
-            ) as resp:
-                data = await resp.json()
-        candidates = data.get("candidates")
-        if not candidates:
-            error = data.get("error", {})
-            msg = error.get("message") if isinstance(error, dict) else str(data)
-            raise RuntimeError(f"Gemini returned no candidates: {msg}")
-        return candidates[0]["content"]["parts"][0]["text"].strip()
-
-
 class GroqClient:
     """Thin wrapper around Groq OpenAI-compatible API."""
 
@@ -123,16 +88,15 @@ class LLMRouter:
 
     def __init__(
         self,
-        gemini_api_key: str,
         groq_api_key: str,
         openrouter_api_key: str = "",
     ) -> None:
+        # Разные семейства моделей на отдельных Groq-квотах — разнообразие
+        # мутаций без межпровайдерной маршрутизации.
         self.clients: dict[str, LLMClient] = {
-            "gemini": GeminiClient(model="gemini-2.5-flash", api_key=gemini_api_key),
-            # Use smaller/faster Groq models for mutations to avoid rate limits.
-            # Main AI summaries use llama-3.3-70b-versatile (separate quota).
+            "gptoss120": GroqClient(model="openai/gpt-oss-120b", api_key=groq_api_key),
+            "gptoss20": GroqClient(model="openai/gpt-oss-20b", api_key=groq_api_key),
             "llama": GroqClient(model="llama-3.1-8b-instant", api_key=groq_api_key),
-            "gemma": GroqClient(model="gemma2-9b-it", api_key=groq_api_key),
         }
         if openrouter_api_key:
             self.clients["gemma4"] = OpenRouterClient(
@@ -143,7 +107,7 @@ class LLMRouter:
     async def complete_all(
         self, system: str, user: str
     ) -> tuple[dict[str, str], dict[str, str]]:
-        """Try Gemini first; fall back to Groq clients (in parallel) only if Gemini fails.
+        """Run all Groq clients in parallel; OpenRouter only if every Groq fails.
 
         Returns (results, errors) where:
           results: model_name → generated text (successful completions)
@@ -160,28 +124,25 @@ class LLMRouter:
                 logger.warning("LLM client %s failed: %s", name, exc)
                 return name, None, str(exc)
 
-        groq_clients = {k: v for k, v in self.clients.items() if k != "gemini"}
-        gemini_client = self.clients.get("gemini")
+        groq_clients = {k: v for k, v in self.clients.items() if k != "gemma4"}
+        openrouter_client = self.clients.get("gemma4")
 
         results: dict[str, str] = {}
         errors: dict[str, str] = {}
 
-        # Gemini first — мутации самой умной модели. Groq остаётся резервом.
-        if gemini_client is not None:
-            name, text, err = await _safe_complete("gemini", gemini_client)
+        groq_tasks = [_safe_complete(name, client) for name, client in groq_clients.items()]
+        for name, text, err in await asyncio.gather(*groq_tasks):
             if text is not None:
-                results["gemini"] = text
+                results[name] = text
             elif err is not None:
-                errors["gemini"] = err
+                errors[name] = err
 
-        # Fall back to Groq models (in parallel) only if Gemini failed
-        if not results:
-            groq_tasks = [_safe_complete(name, client) for name, client in groq_clients.items()]
-            groq_results = await asyncio.gather(*groq_tasks)
-            for name, text, err in groq_results:
-                if text is not None:
-                    results[name] = text
-                elif err is not None:
-                    errors[name] = err
+        # OpenRouter — последний резерв, когда весь Groq недоступен
+        if not results and openrouter_client is not None:
+            name, text, err = await _safe_complete("gemma4", openrouter_client)
+            if text is not None:
+                results[name] = text
+            elif err is not None:
+                errors[name] = err
 
         return results, errors

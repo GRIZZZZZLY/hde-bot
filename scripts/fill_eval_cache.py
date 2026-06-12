@@ -1,6 +1,6 @@
 """Заливает готовые ответы (сгенерированные Claude-агентами) в data/eval_cache.db.
 
-После заливки scripts/eval_prompt.py считает скоры офлайн, не дёргая Gemini.
+После заливки scripts/eval_prompt.py считает скоры офлайн, не дёргая LLM API.
 Ключ кеша: sha1(prompt_hash | title | history) — title и history берутся из базы
 СЫРЫМИ (None форматируется как "None"), ровно как в eval_prompt.make_cached_generate.
 
