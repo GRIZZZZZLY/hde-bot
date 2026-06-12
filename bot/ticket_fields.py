@@ -5,9 +5,12 @@ tickets (HDE API does not expose select-field option lists).
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import aiohttp
 from aiogram import Bot
@@ -210,11 +213,35 @@ class AutofillResult:
     error: str | None = None
 
 
+async def _company_prior_hint(record, ticket_id: str) -> str:
+    """Человекочитаемый приор «Окружения» по прошлым тикетам той же компании."""
+    if record is None or not record.company_name:
+        return ""
+    try:
+        from . import db as _db
+        prior_id = await _db.get_common_env_for_company(
+            record.company_name, exclude_ticket_id=ticket_id
+        )
+    except Exception as exc:
+        logger.warning("env prior lookup failed for %s: %s", ticket_id, exc)
+        return ""
+    if prior_id in OKRUZHENIE_OPTIONS:
+        return OKRUZHENIE_OPTIONS[prior_id]
+    return ""
+
+
 async def apply_ticket_fields(
-    bot: Bot, ticket_id: str, topic_id: int, history: str
+    bot: Bot,
+    ticket_id: str,
+    topic_id: int,
+    history: str,
+    ticket_title: str = "",
+    posts: list | None = None,
 ) -> AutofillResult:
     """Auto-fill Классификация / Окружение / Роль after the AI summary.
 
+    history обогащается Vision-описаниями фото (из ticket_topics) и
+    Deepgram-транскриптами голосовых (по posts), плюс приор по компании.
     Never raises — any failure is logged so the summary flow is unaffected.
     Returns an AutofillResult; the auto-trigger hook ignores it.
     """
@@ -223,6 +250,28 @@ async def apply_ticket_fields(
     except Exception as exc:
         logger.warning("apply_ticket_fields: no HDE client: %s", exc)
         return AutofillResult(updated=False, error="HDE API недоступен")
+
+    from . import db as _db
+
+    record = None
+    try:
+        record = await _db.get_topic(ticket_id)
+    except Exception as exc:
+        logger.warning("apply_ticket_fields: topic read failed for %s: %s", ticket_id, exc)
+
+    enriched = history
+    if record is not None and record.photo_descriptions:
+        enriched += f"\n[Описание фото из тикета: {record.photo_descriptions}]"
+    if posts:
+        try:
+            from .ai_summary import _transcribe_audio_posts
+            async with aiohttp.ClientSession() as session:
+                for t in await _transcribe_audio_posts(posts, session):
+                    enriched += f"\n[Голосовое сообщение клиента: {t}]"
+        except Exception as exc:
+            logger.warning("apply_ticket_fields: transcription failed for %s: %s", ticket_id, exc)
+
+    prior_hint = await _company_prior_hint(record, ticket_id)
 
     fields: dict[str, str] = {FIELD_KLASSIFIKACIYA: KLASSIFIKACIYA_OBORUDOVANIE}
 
@@ -235,8 +284,8 @@ async def apply_ticket_fields(
     if current_rol == 0:
         fields[FIELD_ROL] = ROL_NE_VAZHNO
 
-    # Окружение: LLM classify; overwrite always when determined.
-    env_id = await classify_environment(history)
+    # Окружение: keyword pre-pass + LLM classify; overwrite always when determined.
+    env_id = await classify_environment(enriched, ticket_title, prior_hint)
     if env_id:
         fields[FIELD_OKRUZHENIE] = env_id
 
@@ -248,6 +297,13 @@ async def apply_ticket_fields(
         return AutofillResult(
             updated=False, fields=fields, env_id=env_id, error="ошибка записи в HDE"
         )
+
+    # Запоминаем исход: '' = «не определено» (триггер для реклассификации),
+    # цифры = выбранная опция (источник приора и сверки с оператором).
+    try:
+        await _db.update_topic(ticket_id, env_option_id=env_id or "")
+    except Exception as exc:
+        logger.warning("apply_ticket_fields: env store failed for %s: %s", ticket_id, exc)
 
     if env_id is None:
         try:
@@ -264,3 +320,81 @@ async def apply_ticket_fields(
             )
 
     return AutofillResult(updated=True, fields=fields, env_id=env_id)
+
+
+async def retry_env_classification(bot: Bot, ticket_id: str, topic_id: int) -> None:
+    """Повторная классификация «Окружения» после нового сообщения клиента.
+
+    Вызывается только когда прошлая попытка дала «не определено»
+    (env_option_id == ''). Тихая: при неудаче ничего не пишет в топик —
+    предупреждение уже было показано. Голосовые не транскрибируются повторно
+    (экономия Deepgram; поздние сообщения почти всегда текстовые).
+    Never raises.
+    """
+    try:
+        from . import db as _db
+        from .ai_summary import _build_history_text
+
+        client = HDEApiClient()
+        info = await client.get_ticket_info(ticket_id)
+        posts = await client.get_ticket_posts(ticket_id)
+        try:
+            comments = await client.get_ticket_comments(ticket_id)
+        except Exception:
+            comments = []
+        all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+        history = _build_history_text(all_posts, info)
+
+        record = await _db.get_topic(ticket_id)
+        ticket_title = record.ticket_name if record is not None else ""
+        if record is not None and record.photo_descriptions:
+            history += f"\n[Описание фото из тикета: {record.photo_descriptions}]"
+        prior_hint = await _company_prior_hint(record, ticket_id)
+
+        env_id = await classify_environment(history, ticket_title, prior_hint)
+        if not env_id:
+            return
+
+        await client.update_ticket_fields(ticket_id, {FIELD_OKRUZHENIE: env_id})
+        await _db.update_topic(ticket_id, env_option_id=env_id)
+        logger.info("retry_env_classification: ticket %s env=%s", ticket_id, env_id)
+        try:
+            await bot.send_message(
+                chat_id=config.group_chat_id,
+                message_thread_id=topic_id,
+                text=f"🧩 Окружение определено по новым сообщениям: {OKRUZHENIE_OPTIONS[env_id]}",
+                disable_notification=True,
+            )
+        except Exception as exc:
+            logger.warning("retry_env_classification: notify failed for %s: %s", ticket_id, exc)
+    except Exception as exc:
+        logger.warning("retry_env_classification failed for %s: %s", ticket_id, exc)
+
+
+ENV_CORRECTIONS_PATH = "data/env_corrections.jsonl"
+
+
+async def log_env_outcome(ticket_id: str, predicted: str | None) -> None:
+    """При закрытии тикета фиксирует наш прогноз vs финальное значение поля.
+
+    Оператор мог поправить «Окружение» вручную — JSONL даёт метрику точности
+    и материал для улучшения промпта. Never raises.
+    """
+    try:
+        client = HDEApiClient()
+        final = await client.get_ticket_field_value(ticket_id, int(FIELD_OKRUZHENIE))
+        if final is None:
+            return
+        final_str = str(final) if final else None
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "ticket_id": ticket_id,
+            "predicted": predicted,
+            "final": final_str,
+            "match": bool(predicted) and final_str == predicted,
+        }
+        os.makedirs(os.path.dirname(ENV_CORRECTIONS_PATH) or ".", exist_ok=True)
+        with open(ENV_CORRECTIONS_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        logger.warning("log_env_outcome failed for %s: %s", ticket_id, exc)

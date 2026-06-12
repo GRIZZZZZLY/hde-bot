@@ -16,6 +16,13 @@ from bot.ticket_fields import (
 )
 
 
+@pytest.fixture(autouse=True)
+def use_tmp_db(tmp_path, monkeypatch):
+    # apply_ticket_fields теперь читает/пишет ticket_topics — изолируем БД
+    from bot import db as _db
+    monkeypatch.setattr(_db, "DB_PATH", str(tmp_path / "test.db"))
+
+
 def test_field_ids_are_strings():
     assert FIELD_OKRUZHENIE == "2"
     assert FIELD_KLASSIFIKACIYA == "3"

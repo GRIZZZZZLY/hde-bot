@@ -101,6 +101,203 @@ async def test_classify_keyword_shortcut_skips_llm(monkeypatch):
     groq.assert_not_awaited()
 
 
+# --- apply_ticket_fields: enrichment + env storage ---
+
+def _fake_record(photo_descriptions="", company_name="", env_option_id=None, ticket_name=""):
+    from unittest.mock import MagicMock
+    rec = MagicMock()
+    rec.photo_descriptions = photo_descriptions
+    rec.company_name = company_name
+    rec.env_option_id = env_option_id
+    rec.ticket_name = ticket_name
+    return rec
+
+
+@pytest.mark.asyncio
+async def test_apply_enriches_history_and_stores_env(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_client = MagicMock()
+    fake_client.get_ticket_field_value = AsyncMock(return_value=199)
+    fake_client.update_ticket_fields = AsyncMock()
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+
+    classify = AsyncMock(return_value="146")
+    monkeypatch.setattr(tf, "classify_environment", classify)
+
+    monkeypatch.setattr(
+        _db, "get_topic",
+        AsyncMock(return_value=_fake_record(
+            photo_descriptions="смарт-терминал Эвотор, ошибка на экране",
+            company_name="ООО Ромашка",
+        )),
+    )
+    monkeypatch.setattr(_db, "get_common_env_for_company", AsyncMock(return_value="146"))
+    update_topic = AsyncMock()
+    monkeypatch.setattr(_db, "update_topic", update_topic)
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    res = await tf.apply_ticket_fields(
+        bot, "T1", 555, "Клиент: касса зависла", ticket_title="Зависла касса"
+    )
+
+    assert res.env_id == "146"
+    history_arg, title_arg, prior_arg = classify.await_args.args
+    assert "[Описание фото из тикета: смарт-терминал Эвотор" in history_arg
+    assert title_arg == "Зависла касса"
+    assert prior_arg == "Эвотор"
+    update_topic.assert_awaited_once_with("T1", env_option_id="146")
+
+
+@pytest.mark.asyncio
+async def test_apply_stores_empty_env_when_undetermined(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_client = MagicMock()
+    fake_client.get_ticket_field_value = AsyncMock(return_value=199)
+    fake_client.update_ticket_fields = AsyncMock()
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+    monkeypatch.setattr(tf, "classify_environment", AsyncMock(return_value=None))
+    monkeypatch.setattr(_db, "get_topic", AsyncMock(return_value=None))
+    update_topic = AsyncMock()
+    monkeypatch.setattr(_db, "update_topic", update_topic)
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: привет")
+    assert res.env_id is None
+    update_topic.assert_awaited_once_with("T1", env_option_id="")
+
+
+@pytest.mark.asyncio
+async def test_apply_appends_audio_transcripts(monkeypatch):
+    import bot.ticket_fields as tf
+    import bot.ai_summary as ai
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_client = MagicMock()
+    fake_client.get_ticket_field_value = AsyncMock(return_value=199)
+    fake_client.update_ticket_fields = AsyncMock()
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+
+    classify = AsyncMock(return_value="145")
+    monkeypatch.setattr(tf, "classify_environment", classify)
+    monkeypatch.setattr(_db, "get_topic", AsyncMock(return_value=None))
+    monkeypatch.setattr(_db, "update_topic", AsyncMock())
+    monkeypatch.setattr(ai, "_transcribe_audio_posts", AsyncMock(return_value=["алло, у нас касса атол"]))
+
+    sess = MagicMock()
+    sess_cm = MagicMock()
+    sess_cm.__aenter__ = AsyncMock(return_value=sess)
+    sess_cm.__aexit__ = AsyncMock(return_value=False)
+    monkeypatch.setattr(tf.aiohttp, "ClientSession", lambda: sess_cm)
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: голосовое", posts=[MagicMock()])
+
+    history_arg = classify.await_args.args[0]
+    assert "[Голосовое сообщение клиента: алло, у нас касса атол]" in history_arg
+
+
+# --- retry_env_classification ---
+
+@pytest.mark.asyncio
+async def test_retry_env_classification_success(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock, MagicMock
+
+    post = MagicMock()
+    post.date_created = "2026-06-12"
+    fake_client = MagicMock()
+    fake_client.get_ticket_info = AsyncMock(return_value=MagicMock())
+    fake_client.get_ticket_posts = AsyncMock(return_value=[post])
+    fake_client.get_ticket_comments = AsyncMock(return_value=[])
+    fake_client.update_ticket_fields = AsyncMock()
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+
+    import bot.ai_summary as ai
+    monkeypatch.setattr(ai, "_build_history_text", lambda posts, info: "Клиент: теперь атол")
+    monkeypatch.setattr(tf, "classify_environment", AsyncMock(return_value="145"))
+    monkeypatch.setattr(_db, "get_topic", AsyncMock(return_value=_fake_record(ticket_name="Касса")))
+    update_topic = AsyncMock()
+    monkeypatch.setattr(_db, "update_topic", update_topic)
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    await tf.retry_env_classification(bot, "T1", 555)
+
+    fake_client.update_ticket_fields.assert_awaited_once_with("T1", {"2": "145"})
+    update_topic.assert_awaited_once_with("T1", env_option_id="145")
+    assert "Окружение определено" in bot.send_message.call_args.kwargs["text"]
+
+
+@pytest.mark.asyncio
+async def test_retry_env_classification_still_undetermined_is_silent(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_client = MagicMock()
+    fake_client.get_ticket_info = AsyncMock(return_value=MagicMock())
+    fake_client.get_ticket_posts = AsyncMock(return_value=[])
+    fake_client.get_ticket_comments = AsyncMock(return_value=[])
+    fake_client.update_ticket_fields = AsyncMock()
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+    import bot.ai_summary as ai
+    monkeypatch.setattr(ai, "_build_history_text", lambda posts, info: "Клиент: привет")
+    monkeypatch.setattr(tf, "classify_environment", AsyncMock(return_value=None))
+    monkeypatch.setattr(_db, "get_topic", AsyncMock(return_value=None))
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    await tf.retry_env_classification(bot, "T1", 555)
+
+    fake_client.update_ticket_fields.assert_not_awaited()
+    bot.send_message.assert_not_awaited()
+
+
+# --- log_env_outcome ---
+
+@pytest.mark.asyncio
+async def test_log_env_outcome_writes_jsonl(tmp_path, monkeypatch):
+    import json
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_client = MagicMock()
+    fake_client.get_ticket_field_value = AsyncMock(return_value=146)
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+    out = tmp_path / "env_corrections.jsonl"
+    monkeypatch.setattr(tf, "ENV_CORRECTIONS_PATH", str(out))
+
+    await tf.log_env_outcome("T1", "145")
+
+    entry = json.loads(out.read_text(encoding="utf-8").strip())
+    assert entry["ticket_id"] == "T1"
+    assert entry["predicted"] == "145"
+    assert entry["final"] == "146"
+    assert entry["match"] is False
+
+
+@pytest.mark.asyncio
+async def test_log_env_outcome_never_raises(monkeypatch):
+    import bot.ticket_fields as tf
+
+    def boom():
+        raise RuntimeError("no creds")
+
+    monkeypatch.setattr(tf, "HDEApiClient", boom)
+    await tf.log_env_outcome("T1", "145")  # не должно бросить
+
+
 @pytest.mark.asyncio
 async def test_classify_title_and_prior_in_llm_content(monkeypatch):
     import bot.ticket_fields as tf
