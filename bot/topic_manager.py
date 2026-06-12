@@ -565,6 +565,12 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
         # Still update last_client_reply_at so we track the latest message time
         await db.update_topic(record.ticket_id, last_client_reply_at=to_storage(reply_at))
 
+    # Реклассификация «Окружения»: прошлая попытка дала «не определено» —
+    # новое сообщение клиента может содержать недостающий контекст.
+    if record.env_option_id == "":
+        from .ticket_fields import retry_env_classification
+        asyncio.create_task(retry_env_classification(bot, record.ticket_id, record.topic_id))
+
 
 async def _maybe_update_pattern(title: str, staff_text: str, ticket_id: str) -> None:
     """Strengthen existing pattern or create new one from high-quality operator reply."""
@@ -748,6 +754,11 @@ async def _handle_ticket_closed_locked(bot: Bot, payload: dict, ticket_id: str) 
         pre_sla_sent_at=None,
         pre_sla_message_id=None,
     )
+
+    # Сверка прогноза «Окружения» с финальным значением (оператор мог поправить)
+    if record.env_option_id is not None:
+        from .ticket_fields import log_env_outcome
+        await log_env_outcome(ticket_id, record.env_option_id or None)
 
     ok = await _delete_topic_now(bot, record)
     if ok:

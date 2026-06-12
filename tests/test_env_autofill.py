@@ -264,6 +264,110 @@ async def test_retry_env_classification_still_undetermined_is_silent(monkeypatch
     bot.send_message.assert_not_awaited()
 
 
+# --- topic_manager hooks ---
+
+def _tm_payload(**overrides):
+    payload = {
+        "ticket_id": "TKT-1",
+        "unique_id": "ABC-123",
+        "ticket_name": "Касса не печатает",
+        "company_name": "ACME",
+        "priority": "high",
+        "status": "open",
+        "owner_id": "me",
+        "owner_name": "Me",
+        "user_name": "Alice",
+        "message": "Помогите",
+        "last_post_date": "2026-06-12 12:00:00",
+        "link": "https://hde.example.com/tickets/1",
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_client_reply_schedules_env_retry_when_undetermined(monkeypatch):
+    import asyncio
+    import bot.topic_manager as tm
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock
+
+    await _db.init_db()
+    await _db.upsert_topic("TKT-1", 999, ticket_name="Касса", company_name="ACME")
+    await _db.update_topic("TKT-1", env_option_id="")
+
+    monkeypatch.setattr(tm, "_is_work_time", lambda: True)
+    retry = AsyncMock()
+    monkeypatch.setattr(tf, "retry_env_classification", retry)
+
+    bot = AsyncMock()
+    await tm.handle_client_reply(bot, _tm_payload())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    retry.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_client_reply_no_retry_when_env_already_set(monkeypatch):
+    import asyncio
+    import bot.topic_manager as tm
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock
+
+    await _db.init_db()
+    await _db.upsert_topic("TKT-1", 999, ticket_name="Касса", company_name="ACME")
+    await _db.update_topic("TKT-1", env_option_id="146")
+
+    monkeypatch.setattr(tm, "_is_work_time", lambda: True)
+    retry = AsyncMock()
+    monkeypatch.setattr(tf, "retry_env_classification", retry)
+
+    bot = AsyncMock()
+    await tm.handle_client_reply(bot, _tm_payload())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    retry.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ticket_closed_logs_env_outcome(monkeypatch):
+    import bot.topic_manager as tm
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock
+
+    await _db.init_db()
+    await _db.upsert_topic("TKT-1", 999)
+    await _db.update_topic("TKT-1", env_option_id="145")
+
+    log = AsyncMock()
+    monkeypatch.setattr(tf, "log_env_outcome", log)
+    monkeypatch.setattr(tm, "_delete_topic_now", AsyncMock(return_value=True))
+    monkeypatch.setattr(tm, "_try_delete_pre_sla_message", AsyncMock())
+
+    bot = AsyncMock()
+    await tm.handle_ticket_closed(bot, _tm_payload(status="closed"))
+    log.assert_awaited_once_with("TKT-1", "145")
+
+
+@pytest.mark.asyncio
+async def test_ticket_closed_skips_log_when_never_classified(monkeypatch):
+    import bot.topic_manager as tm
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock
+
+    await _db.init_db()
+    await _db.upsert_topic("TKT-1", 999)  # env_option_id остаётся NULL
+
+    log = AsyncMock()
+    monkeypatch.setattr(tf, "log_env_outcome", log)
+    monkeypatch.setattr(tm, "_delete_topic_now", AsyncMock(return_value=True))
+    monkeypatch.setattr(tm, "_try_delete_pre_sla_message", AsyncMock())
+
+    bot = AsyncMock()
+    await tm.handle_ticket_closed(bot, _tm_payload(status="closed"))
+    log.assert_not_awaited()
+
+
 # --- log_env_outcome ---
 
 @pytest.mark.asyncio
