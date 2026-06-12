@@ -88,15 +88,6 @@ def _effective_owner_match(payload: dict) -> bool:
     )
 
 
-def _parse_minutes(value: object) -> Optional[int]:
-    if value in (None, ""):
-        return None
-    try:
-        return int(str(value))
-    except (TypeError, ValueError):
-        return None
-
-
 def _relative_date(date_str: str | None) -> str | None:
     """Convert HDE date string to Russian relative label.
 
@@ -135,29 +126,6 @@ def _now_storage() -> str:
     return to_storage(utcnow())
 
 
-def _calculate_pre_sla_notify_at(payload: dict) -> str:
-    """Schedule pre-SLA alert based on reply SLA (default_reply_sla_minutes from last post).
-    If HDE reports a tighter deadline (sla_remaining_minutes < default_reply_sla_minutes),
-    that deadline wins instead.
-    """
-    now = utcnow()
-    warning_minutes = max(config.pre_sla_warning_minutes, 0)
-    total_sla_minutes = max(config.default_reply_sla_minutes, 0)
-
-    last_post_at = parse_datetime(payload.get("last_post_date")) or now
-    notify_at = last_post_at + timedelta(minutes=max(total_sla_minutes - warning_minutes, 0))
-
-    remaining_minutes = _parse_minutes(payload.get("sla_remaining_minutes"))
-    if remaining_minutes is not None and remaining_minutes < total_sla_minutes:
-        hde_notify_at = now + timedelta(minutes=max(remaining_minutes - warning_minutes, 0))
-        if hde_notify_at < notify_at:
-            notify_at = hde_notify_at
-
-    if notify_at < now:
-        notify_at = now
-    return to_storage(notify_at)
-
-
 async def _send_topic_message(bot: Bot, topic_id: int, text: str) -> None:
     await bot.send_message(
         chat_id=config.group_chat_id,
@@ -166,127 +134,6 @@ async def _send_topic_message(bot: Bot, topic_id: int, text: str) -> None:
         parse_mode="HTML",
         disable_web_page_preview=True,
     )
-
-
-async def _send_client_attachments(bot: Bot, topic_id: int, payload: dict) -> None:
-    attachment_refs = list(payload.get("attachments") or [])
-    if not attachment_refs:
-        return
-
-    photo_video_media: list[tuple[str, BufferedInputFile]] = []
-    single_items: list[tuple[str, BufferedInputFile]] = []
-    photo_blobs: list[tuple[bytes, str]] = []  # (content, filename) for Vision
-
-    for ref in attachment_refs:
-        try:
-            attachment = await download_client_attachment(ref)
-        except Exception as exc:
-            logger.error("Failed to download client attachment for ticket %s: %s", _payload_value(payload, "ticket_id"), exc)
-            continue
-
-        kind = detect_telegram_media_kind(attachment)
-        input_file = BufferedInputFile(attachment.content, filename=attachment.filename)
-        if kind in {"photo", "video"}:
-            photo_video_media.append((kind, input_file))
-            if kind == "photo":
-                photo_blobs.append((attachment.content, attachment.filename))
-        else:
-            single_items.append((kind, input_file))
-
-    for chunk in _chunked(photo_video_media, 10):
-        if len(chunk) == 1:
-            kind, media = chunk[0]
-            if kind == "photo":
-                await bot.send_photo(
-                    chat_id=config.group_chat_id,
-                    message_thread_id=topic_id,
-                    photo=media,
-                )
-            else:
-                await bot.send_video(
-                    chat_id=config.group_chat_id,
-                    message_thread_id=topic_id,
-                    video=media,
-                )
-            continue
-
-        media_group = []
-        for kind, media in chunk:
-            if kind == "photo":
-                media_group.append(InputMediaPhoto(media=media))
-            else:
-                media_group.append(InputMediaVideo(media=media))
-        await bot.send_media_group(
-            chat_id=config.group_chat_id,
-            message_thread_id=topic_id,
-            media=media_group,
-        )
-
-    for kind, media in single_items:
-        if kind == "voice":
-            await bot.send_voice(
-                chat_id=config.group_chat_id,
-                message_thread_id=topic_id,
-                voice=media,
-            )
-        elif kind == "audio":
-            await bot.send_audio(
-                chat_id=config.group_chat_id,
-                message_thread_id=topic_id,
-                audio=media,
-            )
-        else:
-            await bot.send_document(
-                chat_id=config.group_chat_id,
-                message_thread_id=topic_id,
-                document=media,
-            )
-
-    if photo_blobs:
-        await _describe_and_post_photos(bot, topic_id, photo_blobs, payload)
-
-
-async def _describe_and_post_photos(
-    bot: Bot,
-    topic_id: int,
-    photos: list[tuple[bytes, str]],
-    payload: dict,
-) -> None:
-    """Describe photos via Vision and post a single 🔍 summary message to the topic."""
-    from .vision import describe_image  # local import: keep vision lazy
-
-    tasks = [describe_image(content, filename) for content, filename in photos]
-    try:
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-    except Exception as exc:
-        logger.warning("vision: gather failed for ticket %s: %s", _payload_value(payload, "ticket_id"), exc)
-        return
-
-    descriptions: list[str] = []
-    for r in results:
-        if isinstance(r, str) and r.strip():
-            descriptions.append(r.strip())
-
-    if not descriptions:
-        return
-
-    ticket_id = str(_payload_value(payload, "ticket_id") or "")
-    if ticket_id:
-        try:
-            await db.append_photo_descriptions(ticket_id, descriptions)
-        except Exception as exc:
-            logger.warning("vision: failed to persist descriptions for ticket %s: %s", ticket_id, exc)
-
-    if len(descriptions) == 1:
-        text = f"🔍 На фото: {descriptions[0]}"
-    else:
-        lines = "\n".join(f"{i}. {d}" for i, d in enumerate(descriptions, 1))
-        text = f"🔍 На фото:\n{lines}"
-
-    try:
-        await _send_topic_message(bot, topic_id, text)
-    except Exception as exc:
-        logger.warning("vision: failed to post description for ticket %s: %s", ticket_id, exc)
 
 
 async def _create_topic(bot: Bot, payload: dict) -> int:
@@ -366,256 +213,6 @@ async def _generate_summary_with_retry(
             await asyncio.sleep(pause)
     logger.warning("AI summary failed after %d attempts for ticket %s", attempts, ticket_id)
     return None
-
-
-async def retry_missing_ai_summaries(bot: Bot) -> int:
-    """Find topics that never got an AI summary and retry. Returns number of summaries sent."""
-    from .hde_api import HDEApiClient, HDEApiError
-    from .handlers.ai_feedback import suit_feedback_kb, answer_feedback_kb, memo_feedback_kb, register_feedback_pending
-    from html import escape as _html_escape
-
-    records = await db.list_topics_missing_summary()
-    sent = 0
-    try:
-        client = HDEApiClient()
-    except HDEApiError as exc:
-        for record in records:
-            logger.warning("retry_missing_ai_summaries: can't fetch ticket %s: %s", record.ticket_id, exc)
-        return 0
-    except Exception as exc:
-        for record in records:
-            logger.error("retry_missing_ai_summaries: unexpected error for ticket %s: %s", record.ticket_id, exc)
-        return 0
-
-    for record in records:
-        ticket_id = record.ticket_id
-        topic_id = record.topic_id
-        try:
-            info = await client.get_ticket_info(ticket_id)
-            posts = await client.get_ticket_posts(ticket_id)
-            try:
-                comments = await client.get_ticket_comments(ticket_id)
-            except HDEApiError:
-                comments = []
-        except HDEApiError as exc:
-            logger.warning("retry_missing_ai_summaries: can't fetch ticket %s: %s", ticket_id, exc)
-            continue
-        except Exception as exc:
-            logger.error("retry_missing_ai_summaries: unexpected error for ticket %s: %s", ticket_id, exc)
-            continue
-
-        from .ai_summary import _build_history_text
-        all_posts = sorted(posts + comments, key=lambda p: p.date_created)
-        result = await _generate_summary_with_retry(
-            all_posts, info,
-            ticket_title=record.ticket_name or "",
-            ticket_id=ticket_id,
-            company_id="",
-        )
-        if result is None:
-            continue
-
-        suit_line, client_line, memo_line, confidence_pct = result
-        try:
-            suit_label = (
-                f"🧠 <b>Суть ({confidence_pct}%):</b>"
-                if confidence_pct >= 40
-                else "🧠 <b>Суть:</b>"
-            )
-            await bot.send_message(
-                chat_id=config.group_chat_id,
-                message_thread_id=topic_id,
-                text=f"{suit_label} {_html_escape(suit_line)}",
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-                disable_notification=True,
-                reply_markup=suit_feedback_kb(),
-            )
-            if client_line:
-                await bot.send_message(
-                    chat_id=config.group_chat_id,
-                    message_thread_id=topic_id,
-                    text=f"💬 <b>Ответ клиенту:</b>\n<i>«{_html_escape(client_line)}»</i>",
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                    disable_notification=True,
-                    reply_markup=answer_feedback_kb(),
-                )
-            if memo_line:
-                await bot.send_message(
-                    chat_id=config.group_chat_id,
-                    message_thread_id=topic_id,
-                    text=f"📋 <b>Памятка:</b>\n{_html_escape(memo_line)}",
-                    parse_mode="HTML",
-                    disable_web_page_preview=True,
-                    disable_notification=True,
-                    reply_markup=memo_feedback_kb(),
-                )
-            plain_history = _build_history_text(all_posts, info)
-            ai_full_text = (
-                f"Суть: {suit_line}\n"
-                f"Клиенту: {client_line}\n"
-                f"Памятка: {memo_line or '—'}"
-            )
-            await register_feedback_pending(
-                topic_id=topic_id,
-                ticket_id=ticket_id,
-                history=plain_history,
-                title=record.ticket_name or "",
-                answer_text=client_line,
-                ai_full_text=ai_full_text,
-            )
-            await db.update_topic(ticket_id, ai_summary_sent_at=to_storage(utcnow()))
-            sent += 1
-        except TelegramAPIError as exc:
-            logger.warning("retry_missing_ai_summaries: failed to post summary to topic %d: %s", topic_id, exc)
-
-    return sent
-
-
-async def _post_ticket_history(
-    bot: Bot,
-    ticket_id: str,
-    topic_id: int,
-    ticket_title: str = "",
-    company_id: str = "",
-) -> None:
-    """Fetch conversation history from HDE and post it to the topic (oldest→newest).
-
-    AI generation starts immediately in background; summary is posted after history.
-    """
-    if not config.has_hde_api_credentials():
-        return
-    from .hde_api import HDEApiClient, HDEApiError
-    try:
-        client = HDEApiClient()
-        info = await client.get_ticket_info(ticket_id)
-        posts = await client.get_ticket_posts(ticket_id)
-        try:
-            comments = await client.get_ticket_comments(ticket_id)
-        except HDEApiError:
-            comments = []
-    except HDEApiError as exc:
-        logger.warning("Could not fetch history for ticket %s: %s", ticket_id, exc)
-        return
-    except Exception as exc:
-        logger.error("Unexpected error fetching history for ticket %s: %s", ticket_id, exc)
-        return
-
-    # Merge posts and comments, sort by date_created ascending
-    all_posts = sorted(posts + comments, key=lambda p: p.date_created)
-
-    await _post_client_history(bot, topic_id, ticket_id, client=client, info=info)
-
-    if not all_posts:
-        logger.info("No posts for ticket %s, skipping history+summary", ticket_id)
-        return
-
-    # Start AI generation immediately — runs in parallel with history posting
-    from .ai_summary import generate_ticket_summary, _build_history_text
-    from .handlers.ai_feedback import suit_feedback_kb, answer_feedback_kb, memo_feedback_kb, register_feedback_pending
-    gen_task = asyncio.create_task(
-        _generate_summary_with_retry(
-            all_posts, info,
-            ticket_title=ticket_title,
-            ticket_id=ticket_id,
-            company_id=company_id,
-        )
-    )
-
-    # Post history while generation runs in background
-    messages = format_ticket_history(all_posts, info)
-    for text in messages:
-        try:
-            await bot.send_message(
-                chat_id=config.group_chat_id,
-                message_thread_id=topic_id,
-                text=text,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-                disable_notification=True,
-            )
-        except TelegramAPIError as exc:
-            logger.warning("Failed to post history message to topic %d: %s", topic_id, exc)
-            break
-
-    # Await generation result (was running during history posting)
-    from html import escape as _html_escape
-    result = await gen_task
-    if result is None:
-        logger.info("AI summary not generated for ticket %s", ticket_id)
-        return
-
-    suit_line, client_line, memo_line, confidence_pct = result
-    try:
-        # Message 1 — Суть
-        suit_label = (
-            f"🧠 <b>Суть ({confidence_pct}%):</b>"
-            if confidence_pct >= 40
-            else "🧠 <b>Суть:</b>"
-        )
-        suit_text = f"{suit_label} {_html_escape(suit_line)}"
-        await bot.send_message(
-            chat_id=config.group_chat_id,
-            message_thread_id=topic_id,
-            text=suit_text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-            disable_notification=True,
-            reply_markup=suit_feedback_kb(),
-        )
-        # Message 2 — Ответ клиенту
-        if client_line:
-            await bot.send_message(
-                chat_id=config.group_chat_id,
-                message_thread_id=topic_id,
-                text=(
-                    f"💬 <b>Ответ клиенту:</b>\n"
-                    f"<i>«{_html_escape(client_line)}»</i>"
-                ),
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-                disable_notification=True,
-                reply_markup=answer_feedback_kb(),
-            )
-        # Message 3 — Памятка для специалиста
-        if memo_line:
-            await bot.send_message(
-                chat_id=config.group_chat_id,
-                message_thread_id=topic_id,
-                text=(
-                    f"📋 <b>Памятка:</b>\n"
-                    f"{_html_escape(memo_line)}"
-                ),
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-                disable_notification=True,
-                reply_markup=memo_feedback_kb(),
-            )
-        plain_history = _build_history_text(all_posts, info)
-        ai_full_text = (
-            f"Суть: {suit_line}\n"
-            f"Клиенту: {client_line}\n"
-            f"Памятка: {memo_line or '—'}"
-        )
-        await register_feedback_pending(
-            topic_id=topic_id,
-            ticket_id=ticket_id,
-            history=plain_history,
-            title=ticket_title,
-            answer_text=client_line,
-            ai_full_text=ai_full_text,
-        )
-        await db.update_topic(ticket_id, ai_summary_sent_at=to_storage(utcnow()))
-    except TelegramAPIError as exc:
-        logger.warning("Failed to post AI summary to topic %d: %s", topic_id, exc)
-
-    try:
-        from .ticket_fields import apply_ticket_fields
-        autofill_history = _build_history_text(all_posts, info)
-        await apply_ticket_fields(bot, ticket_id, topic_id, autofill_history)
-    except Exception as exc:
-        logger.warning("Ticket field auto-fill failed for %s: %s", ticket_id, exc)
 
 
 async def _ensure_active_topic(
@@ -762,20 +359,6 @@ async def _ensure_active_topic(
                 logger.error("Failed to send assignment message to topic %d: %s", record.topic_id, exc)
 
     return record
-
-
-async def _schedule_pre_sla(ticket_id: str, payload: dict, last_client_reply_at: str) -> None:
-    notify_at = _calculate_pre_sla_notify_at(payload)
-    logger.info(
-        "PRESLA-DIAG schedule ticket=%s notify_at=%s lcr=%s",
-        ticket_id, notify_at, last_client_reply_at,
-    )
-    await db.update_topic(
-        ticket_id,
-        last_client_reply_at=last_client_reply_at,
-        pre_sla_notify_at=notify_at,
-        pre_sla_sent_at=None,
-    )
 
 
 async def _delete_topic_now(bot: Bot, record: db.TicketTopic) -> bool:
@@ -1055,112 +638,6 @@ async def _maybe_update_pattern(title: str, staff_text: str, ticket_id: str) -> 
         logger.warning("_maybe_update_pattern Groq call failed: %s", exc)
 
 
-async def _implicit_feedback(record: "db.TicketTopic", staff_text: str) -> None:
-    """Auto-learn from diff between AI suggestion and operator's actual reply."""
-    import difflib
-    import re as _re
-    from html import unescape
-
-    pending = await db.get_ai_feedback_pending(record.topic_id)
-    if not pending:
-        return
-
-    ai_text = (pending.get("answer_text") or "").strip()
-    # Strip HTML from staff reply
-    clean_staff = unescape(_re.sub(r"<[^>]+>", "", staff_text)).strip()
-    if not ai_text or not clean_staff:
-        return
-
-    ratio = difflib.SequenceMatcher(None, ai_text.lower(), clean_staff.lower()).ratio()
-    logger.debug(
-        "Implicit feedback for topic %d: ratio=%.2f ai=%r staff=%r",
-        record.topic_id, ratio, ai_text[:60], clean_staff[:60],
-    )
-
-    if ratio >= 0.7:
-        # Operator sent nearly the same text — AI suggestion was good
-        await db.delete_ai_feedback_pending(record.topic_id)
-        content = f"Тема: {pending['title']}\n\n{pending['history']}"
-        # Удалить старый implicit_good для этого тикета (один тикет = одна запись)
-        try:
-            await db.delete_knowledge_item_by_ticket(
-                pending["ticket_id"], "implicit_good"
-            )
-        except Exception as exc:
-            logger.warning("delete_knowledge_item_by_ticket failed: %s", exc)
-        from .knowledge.indexer import index_knowledge_item
-        await index_knowledge_item(
-            source="implicit_good",
-            content=content,
-            ticket_id=pending["ticket_id"],
-            title=pending["title"],
-            quality="good",
-        )
-        logger.info(
-            "Implicit 👍 for ticket %s (ratio=%.2f)", pending["ticket_id"], ratio
-        )
-        # Save sample for prompt optimizer
-        try:
-            await db.save_optimization_sample(
-                ticket_id=pending["ticket_id"],
-                title=pending.get("title", ""),
-                history=pending.get("history", ""),
-                ai_answer=pending.get("answer_text", ""),
-                op_answer=clean_staff,
-                outcome="accepted",
-            )
-        except Exception as exc:
-            logger.warning("save_optimization_sample failed: %s", exc)
-        # Reinforce or create solution pattern (only for high-confidence matches)
-        if ratio >= 0.85:
-            try:
-                await _maybe_update_pattern(pending["title"], clean_staff, pending["ticket_id"])
-            except Exception as exc:
-                logger.warning("Pattern update failed: %s", exc)
-    elif ratio <= 0.35:
-        # Operator wrote something significantly different — save as correction
-        await db.delete_ai_feedback_pending(record.topic_id)
-        content = (
-            f"Тема: {pending['title']}\n\n"
-            f"{pending['history']}\n\n"
-            f"Правильный ответ: {clean_staff}"
-        )
-        from .knowledge.indexer import index_knowledge_item
-        await index_knowledge_item(
-            source="implicit_corrected",
-            content=content,
-            ticket_id=pending["ticket_id"],
-            title=pending["title"],
-            quality="corrected",
-        )
-        logger.info(
-            "Implicit ✏️ for ticket %s (ratio=%.2f)", pending["ticket_id"], ratio
-        )
-        # Save sample for prompt optimizer
-        try:
-            await db.save_optimization_sample(
-                ticket_id=pending["ticket_id"],
-                title=pending.get("title", ""),
-                history=pending.get("history", ""),
-                ai_answer=pending.get("answer_text", ""),
-                op_answer=clean_staff,
-                outcome="corrected",
-            )
-        except Exception as exc:
-            logger.warning("save_optimization_sample failed: %s", exc)
-        # Update wiki article with operator's actual answer (non-fatal)
-        try:
-            from .wiki.builder import build_or_update_wiki_article
-            await build_or_update_wiki_article(
-                title=pending["title"],
-                content=content,
-                ticket_id=pending["ticket_id"],
-            )
-        except Exception as exc:
-            logger.warning("Wiki update failed after implicit correction: %s", exc)
-    # 0.35–0.7: ambiguous edit, skip to avoid noise
-
-
 async def handle_staff_reply(bot: Bot, payload: dict) -> None:
     ticket_id = _payload_value(payload, "ticket_id")
     async with _ticket_lock(ticket_id):
@@ -1282,48 +759,6 @@ async def _handle_ticket_closed_locked(bot: Bot, payload: dict, ticket_id: str) 
         )
 
 
-def _pre_sla_minutes_left(record: "db.TicketTopic") -> int:
-    """Вычисляет целые минуты до SLA (floor, как в HDE). 0 = меньше 1 минуты."""
-    import math
-    deadline = parse_datetime(record.pre_sla_notify_at)
-    if deadline is None:
-        return config.pre_sla_warning_minutes
-    sla_deadline = deadline + timedelta(minutes=config.pre_sla_warning_minutes)
-    remaining = (sla_deadline - utcnow()).total_seconds() / 60
-    return max(0, math.floor(remaining))
-
-
-def _pre_sla_destination(record: "db.TicketTopic") -> tuple[int, int | None]:
-    """Возвращает (chat_id, thread_id) для pre-SLA сообщения.
-
-    Если тикет назначен — топик тикета.
-    Если нет исполнителя — General (general_topic_id).
-    Fallback: если General не настроен, шлём в топик тикета.
-    """
-    has_owner = bool(record.owner_id.strip())
-    if has_owner:
-        return config.group_chat_id, record.topic_id
-    if config.general_topic_id is not None:
-        return config.group_chat_id, config.general_topic_id
-    return config.group_chat_id, record.topic_id
-
-
-def _pre_sla_text(record: "db.TicketTopic", minutes_left: int) -> str:
-    has_owner = bool(record.owner_id.strip())
-    if has_owner:
-        return format_pre_sla_alert_topic(
-            minutes_left=minutes_left,
-            ticket_name=record.ticket_name,
-            link=record.hde_link,
-        )
-    return format_pre_sla_alert_general(
-        minutes_left=minutes_left,
-        ticket_name=record.ticket_name,
-        company_name=record.company_name,
-        link=record.hde_link,
-    )
-
-
 async def _hde_staff_replied_since(ticket_id: str, since_storage: Optional[str]) -> bool:
     """Return True if operator posted in HDE after last client reply.
 
@@ -1366,82 +801,6 @@ async def _hde_staff_replied_since(ticket_id: str, since_storage: Optional[str])
     except Exception as exc:
         logger.warning("pre-SLA HDE verify failed for ticket %s: %s", ticket_id, exc)
         return False
-
-
-async def send_reassurance_to_client(bot: Bot, record: db.TicketTopic) -> None:
-    """Send reassurance post to client via HDE and notify topic. Idempotent via reassurance_sent_at."""
-    from .hde_api import HDEApiClient, HDEApiError
-    try:
-        client = HDEApiClient()
-        await client.add_post(record.ticket_id, config.reassurance_text)
-    except HDEApiError as exc:
-        logger.warning("Reassurance post failed for ticket %s: %s", record.ticket_id, exc)
-        return  # don't mark sent — retry next tick
-
-    await db.update_topic(record.ticket_id, reassurance_sent_at=to_storage(utcnow()))
-
-    try:
-        await bot.send_message(
-            chat_id=config.group_chat_id,
-            message_thread_id=record.topic_id,
-            text=(
-                "🤖 <b>Автоответ клиенту отправлен</b>\n"
-                f"<i>{config.reassurance_text}</i>"
-            ),
-            parse_mode="HTML",
-            disable_notification=True,
-        )
-    except TelegramAPIError as exc:
-        logger.warning("Failed to notify topic about reassurance for %s: %s", record.ticket_id, exc)
-
-
-async def send_pre_sla_alert(bot: Bot, record: db.TicketTopic) -> None:
-    minutes_left = _pre_sla_minutes_left(record)
-    chat_id, thread_id = _pre_sla_destination(record)
-    text = _pre_sla_text(record, minutes_left)
-
-    msg = await bot.send_message(
-        chat_id=chat_id,
-        message_thread_id=thread_id,
-        text=text,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-    )
-    await db.mark_pre_sla_sent(record.ticket_id, message_id=msg.message_id)
-
-
-async def update_pre_sla_alert(bot: Bot, record: db.TicketTopic) -> None:
-    """Удаляет старое pre-SLA сообщение и присылает новое с актуальным счётчиком."""
-    chat_id, thread_id = _pre_sla_destination(record)
-
-    if record.pre_sla_message_id:
-        try:
-            await bot.delete_message(chat_id=chat_id, message_id=record.pre_sla_message_id)
-        except TelegramAPIError:
-            pass
-
-    minutes_left = _pre_sla_minutes_left(record)
-    text = _pre_sla_text(record, minutes_left)
-
-    msg = await bot.send_message(
-        chat_id=chat_id,
-        message_thread_id=thread_id,
-        text=text,
-        parse_mode="HTML",
-        disable_web_page_preview=True,
-    )
-    await db.mark_pre_sla_sent(record.ticket_id, message_id=msg.message_id)
-
-
-async def _try_delete_pre_sla_message(bot: Bot, record: db.TicketTopic) -> None:
-    """Удаляет pre-SLA сообщение из Telegram если оно было отправлено."""
-    if not record.pre_sla_message_id:
-        return
-    chat_id, _ = _pre_sla_destination(record)
-    try:
-        await bot.delete_message(chat_id=chat_id, message_id=record.pre_sla_message_id)
-    except TelegramAPIError:
-        pass
 
 
 async def delete_pending_topic(bot: Bot, record: db.TicketTopic) -> bool:
@@ -1502,3 +861,33 @@ async def _post_client_history(
             )
     except Exception as exc:
         logger.warning("Client history failed for ticket %s: %s", ticket_id, exc)
+
+
+# ---------------------------------------------------------------------------
+# Re-exports: implementation mechanically moved to satellite modules.
+# Kept importable from bot.topic_manager so existing importers and tests
+# (`from bot.topic_manager import X`) keep working unchanged.
+# Imported at the bottom to avoid circular imports (the satellite modules
+# import bot.topic_manager lazily inside their functions).
+# ---------------------------------------------------------------------------
+from .topic_sla import (  # noqa: E402
+    _calculate_pre_sla_notify_at,
+    _parse_minutes,
+    _pre_sla_destination,
+    _pre_sla_minutes_left,
+    _pre_sla_text,
+    _schedule_pre_sla,
+    _try_delete_pre_sla_message,
+    send_pre_sla_alert,
+    send_reassurance_to_client,
+    update_pre_sla_alert,
+)
+from .topic_history import (  # noqa: E402
+    _post_ticket_history,
+    retry_missing_ai_summaries,
+)
+from .topic_media import (  # noqa: E402
+    _describe_and_post_photos,
+    _send_client_attachments,
+)
+from .topic_learning import _implicit_feedback  # noqa: E402
