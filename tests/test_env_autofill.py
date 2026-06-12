@@ -125,6 +125,7 @@ async def test_apply_enriches_history_and_stores_env(monkeypatch):
 
     classify = AsyncMock(return_value="146")
     monkeypatch.setattr(tf, "classify_environment", classify)
+    monkeypatch.setattr(tf, "classify_priority_type", AsyncMock(return_value=None))
 
     monkeypatch.setattr(
         _db, "get_topic",
@@ -149,7 +150,7 @@ async def test_apply_enriches_history_and_stores_env(monkeypatch):
     assert "[Описание фото из тикета: смарт-терминал Эвотор" in history_arg
     assert title_arg == "Зависла касса"
     assert prior_arg == "Эвотор"
-    update_topic.assert_awaited_once_with("T1", env_option_id="146")
+    update_topic.assert_any_await("T1", env_option_id="146")
 
 
 @pytest.mark.asyncio
@@ -162,6 +163,7 @@ async def test_apply_stores_empty_env_when_undetermined(monkeypatch):
     fake_client.update_ticket_fields = AsyncMock()
     monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
     monkeypatch.setattr(tf, "classify_environment", AsyncMock(return_value=None))
+    monkeypatch.setattr(tf, "classify_priority_type", AsyncMock(return_value=None))
     monkeypatch.setattr(_db, "get_topic", AsyncMock(return_value=None))
     update_topic = AsyncMock()
     monkeypatch.setattr(_db, "update_topic", update_topic)
@@ -171,7 +173,7 @@ async def test_apply_stores_empty_env_when_undetermined(monkeypatch):
 
     res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: привет")
     assert res.env_id is None
-    update_topic.assert_awaited_once_with("T1", env_option_id="")
+    update_topic.assert_any_await("T1", env_option_id="")
 
 
 @pytest.mark.asyncio
@@ -187,6 +189,7 @@ async def test_apply_appends_audio_transcripts(monkeypatch):
 
     classify = AsyncMock(return_value="145")
     monkeypatch.setattr(tf, "classify_environment", classify)
+    monkeypatch.setattr(tf, "classify_priority_type", AsyncMock(return_value=None))
     monkeypatch.setattr(_db, "get_topic", AsyncMock(return_value=None))
     monkeypatch.setattr(_db, "update_topic", AsyncMock())
     monkeypatch.setattr(ai, "_transcribe_audio_posts", AsyncMock(return_value=["алло, у нас касса атол"]))

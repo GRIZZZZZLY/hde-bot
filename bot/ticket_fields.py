@@ -284,18 +284,25 @@ async def classify_priority_type(
 ENV_UNDETERMINED_MSG = "⚠️ Окружение не определено автоматически — выставьте вручную"
 
 
+PT_UNDETERMINED_MSG = "⚠️ Приоритет и тип не определены — выставьте вручную"
+
+
 @dataclass
 class AutofillResult:
     """Outcome of apply_ticket_fields, for callers that want feedback.
 
-    updated: the HDE PUT succeeded.
-    fields:  the custom_fields map that was sent (empty if not updated).
-    env_id:  classified Окружение option_id, or None if undetermined.
-    error:   human-readable reason when not updated, else None.
+    updated:     the HDE PUT succeeded.
+    fields:      the custom_fields map that was sent (empty if not updated).
+    env_id:      classified Окружение option_id, or None if undetermined.
+    priority_id: выставленный приоритет, или None если не определено.
+    type_id:     выставленный тип, или None если не определено.
+    error:       human-readable reason when not updated, else None.
     """
     updated: bool
     fields: dict[str, str] = field(default_factory=dict)
     env_id: str | None = None
+    priority_id: str | None = None
+    type_id: str | None = None
     error: str | None = None
 
 
@@ -375,13 +382,21 @@ async def apply_ticket_fields(
     if env_id:
         fields[FIELD_OKRUZHENIE] = env_id
 
+    # Приоритет/Тип: однократно, при создании тикета; ручные правки
+    # оператора потом не перезаписываются (повторных попыток нет).
+    pt = await classify_priority_type(enriched, ticket_title)
+    priority_id, type_id = pt if pt else (None, None)
+
     try:
-        await client.update_ticket_fields(ticket_id, fields)
+        await client.update_ticket_fields(
+            ticket_id, fields, priority_id=priority_id, type_id=type_id
+        )
         logger.info("apply_ticket_fields: ticket %s updated %s", ticket_id, fields)
     except Exception as exc:
         logger.warning("apply_ticket_fields: update failed for %s: %s", ticket_id, exc)
         return AutofillResult(
-            updated=False, fields=fields, env_id=env_id, error="ошибка записи в HDE"
+            updated=False, fields=fields, env_id=env_id,
+            priority_id=priority_id, type_id=type_id, error="ошибка записи в HDE"
         )
 
     # Запоминаем исход: '' = «не определено» (триггер для реклассификации),
@@ -390,6 +405,15 @@ async def apply_ticket_fields(
         await _db.update_topic(ticket_id, env_option_id=env_id or "")
     except Exception as exc:
         logger.warning("apply_ticket_fields: env store failed for %s: %s", ticket_id, exc)
+
+    try:
+        await _db.update_topic(
+            ticket_id,
+            priority_option_id=priority_id if priority_id is not None else "",
+            type_option_id=type_id if type_id is not None else "",
+        )
+    except Exception as exc:
+        logger.warning("apply_ticket_fields: pt store failed for %s: %s", ticket_id, exc)
 
     if env_id is None:
         try:
@@ -405,7 +429,22 @@ async def apply_ticket_fields(
                 topic_id, exc,
             )
 
-    return AutofillResult(updated=True, fields=fields, env_id=env_id)
+    if pt is None:
+        try:
+            await bot.send_message(
+                chat_id=config.group_chat_id,
+                message_thread_id=topic_id,
+                text=PT_UNDETERMINED_MSG,
+                disable_notification=True,
+            )
+        except Exception as exc:
+            logger.warning(
+                "apply_ticket_fields: pt warn-message failed for topic %s: %s",
+                topic_id, exc,
+            )
+
+    return AutofillResult(updated=True, fields=fields, env_id=env_id,
+                          priority_id=priority_id, type_id=type_id)
 
 
 async def retry_env_classification(bot: Bot, ticket_id: str, topic_id: int) -> None:

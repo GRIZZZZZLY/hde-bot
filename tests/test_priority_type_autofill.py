@@ -175,3 +175,99 @@ async def test_pt_option_ids_default_none():
     rec = await _db.get_topic("t1")
     assert rec.priority_option_id is None
     assert rec.type_option_id is None
+
+
+# --- apply_ticket_fields wiring ---
+
+def _fake_record(photo_descriptions="", company_name="", env_option_id=None, ticket_name=""):
+    from unittest.mock import MagicMock
+    rec = MagicMock()
+    rec.photo_descriptions = photo_descriptions
+    rec.company_name = company_name
+    rec.env_option_id = env_option_id
+    rec.ticket_name = ticket_name
+    return rec
+
+
+def _patched_apply_env(monkeypatch, tf):
+    """Общая обвязка: HDE-клиент, env-классификатор, БД-моки."""
+    from unittest.mock import AsyncMock, MagicMock
+    fake_client = MagicMock()
+    fake_client.get_ticket_field_value = AsyncMock(return_value=199)
+    fake_client.update_ticket_fields = AsyncMock()
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+    monkeypatch.setattr(tf, "classify_environment", AsyncMock(return_value="146"))
+    monkeypatch.setattr(_db, "get_topic", AsyncMock(return_value=None))
+    update_topic = AsyncMock()
+    monkeypatch.setattr(_db, "update_topic", update_topic)
+    return fake_client, update_topic
+
+
+@pytest.mark.asyncio
+async def test_apply_sets_priority_and_type(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_client, update_topic = _patched_apply_env(monkeypatch, tf)
+    monkeypatch.setattr(tf, "classify_priority_type", AsyncMock(return_value=("1", "3")))
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: касса встала")
+
+    assert res.priority_id == "1"
+    assert res.type_id == "3"
+    kwargs = fake_client.update_ticket_fields.await_args.kwargs
+    assert kwargs["priority_id"] == "1"
+    assert kwargs["type_id"] == "3"
+    # предсказание сохранено в БД
+    pt_call = [c for c in update_topic.await_args_list if "priority_option_id" in c.kwargs]
+    assert pt_call and pt_call[0].kwargs["priority_option_id"] == "1"
+    assert pt_call[0].kwargs["type_option_id"] == "3"
+    bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apply_pt_undetermined_warns_and_skips_fields(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_client, update_topic = _patched_apply_env(monkeypatch, tf)
+    monkeypatch.setattr(tf, "classify_priority_type", AsyncMock(return_value=None))
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: привет")
+
+    assert res.priority_id is None and res.type_id is None
+    kwargs = fake_client.update_ticket_fields.await_args.kwargs
+    assert kwargs["priority_id"] is None
+    assert kwargs["type_id"] is None
+    # '' = «не определено» в БД
+    pt_call = [c for c in update_topic.await_args_list if "priority_option_id" in c.kwargs]
+    assert pt_call and pt_call[0].kwargs["priority_option_id"] == ""
+    assert pt_call[0].kwargs["type_option_id"] == ""
+    texts = [c.kwargs["text"] for c in bot.send_message.await_args_list]
+    assert any("Приоритет и тип не определены" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_apply_pt_type_vopros_zero_reaches_put(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock, MagicMock
+
+    fake_client, update_topic = _patched_apply_env(monkeypatch, tf)
+    monkeypatch.setattr(tf, "classify_priority_type", AsyncMock(return_value=("3", "0")))
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: как сделать X?")
+
+    # «Вопрос» = "0" не должен потеряться из-за falsy-проверок
+    assert res.type_id == "0"
+    assert fake_client.update_ticket_fields.await_args.kwargs["type_id"] == "0"
+    pt_call = [c for c in update_topic.await_args_list if "priority_option_id" in c.kwargs]
+    assert pt_call[0].kwargs["type_option_id"] == "0"
