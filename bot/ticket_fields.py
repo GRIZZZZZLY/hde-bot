@@ -92,6 +92,64 @@ def _keyword_match(text: str) -> str | None:
     return hits.pop() if len(hits) == 1 else None
 
 
+# --- Приоритет + Тип -------------------------------------------------------
+# Стандартные поля тикета (не custom_fields). ID из справочников HDE
+# GET /priorities/ и /types/ (проверено 2026-06-12).
+PRIORITY_USKORENNY_OBORUD = "1"   # «Ускоренный 2я\оборуд»
+PRIORITY_STANDART_OBORUD = "10"   # «Стандарт оборуд»
+PRIORITY_NIZKIY_OBORUD = "3"      # «Низкий 2я\оборуд»
+
+TYPE_VOPROS = "0"    # «Вопрос» — ноль валиден, проверять `is not None`!
+TYPE_ZADACHA = "2"   # «Задача»
+TYPE_OSHIBKA = "3"   # «Ошибка»
+
+# Номер комбинации -> (priority_id, type_id). Бот никогда не ставит
+# «Инцидент», «1я линия основной», «Стандарт 2я», «ИИ».
+_PT_COMBOS: dict[str, tuple[str, str]] = {
+    "1": (PRIORITY_USKORENNY_OBORUD, TYPE_OSHIBKA),
+    "2": (PRIORITY_STANDART_OBORUD, TYPE_OSHIBKA),
+    "3": (PRIORITY_USKORENNY_OBORUD, TYPE_ZADACHA),
+    "4": (PRIORITY_STANDART_OBORUD, TYPE_ZADACHA),
+    "5": (PRIORITY_NIZKIY_OBORUD, TYPE_VOPROS),
+    "6": (PRIORITY_NIZKIY_OBORUD, TYPE_ZADACHA),
+}
+
+
+def _build_pt_prompt() -> str:
+    return (
+        "Ты классифицируешь обращение в техподдержку кассового ПО/оборудования "
+        "по срочности (приоритет) и типу.\n"
+        "Допустимые комбинации (формат «номер = Приоритет + Тип — когда выбирать»):\n\n"
+        "1 = Ускоренный + Ошибка — торговля невозможна: не работает касса или "
+        "платёжный терминал, продажи остановлены\n"
+        "2 = Стандартный + Ошибка — что-то не работает, но торговля продолжается "
+        "(например, не печатает принтер этикеток)\n"
+        "3 = Ускоренный + Задача — приход инженера банка в магазин "
+        "(визит специалиста, который не будет ждать очереди)\n"
+        "4 = Стандартный + Задача — подключение, настройка или перенастройка "
+        "оборудования (касса, принтер, другой формат этикетки, смена IP)\n"
+        "5 = Низкий + Вопрос — вопрос или консультация, либо что-то непонятное, "
+        "требующее изучения и поиска решения\n"
+        "6 = Низкий + Задача — несрочная работа или доработка без чёткого срока "
+        "(редкий случай)\n\n"
+        "Прочитай переписку и выбери ровно одну комбинацию. Если уверенно "
+        "определить нельзя — ответь «НЕ ОПРЕДЕЛЕНО».\n"
+        "В конце ответа укажи только номер комбинации (или «НЕ ОПРЕДЕЛЕНО»)."
+    )
+
+
+def _parse_pt_combo(raw: str) -> tuple[str, str] | None:
+    """(priority_id, type_id) по первому валидному номеру комбинации в ответе.
+
+    Lenient, как _parse_env_id: терпит текст вокруг, отклоняет числа вне 1–6
+    («10» — это токен «10», на «1» не распадается).
+    """
+    for tok in re.findall(r"\d+", raw):
+        if tok in _PT_COMBOS:
+            return _PT_COMBOS[tok]
+    return None
+
+
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 _GROQ_MODEL = "llama-3.3-70b-versatile"
 # Fallback on a separate per-model Groq quota (survives llama-3.3 429/limits)
