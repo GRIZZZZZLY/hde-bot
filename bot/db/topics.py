@@ -142,6 +142,32 @@ async def update_topic(ticket_id: str, **fields: Any) -> None:
         await db.commit()
 
 
+async def get_common_env_for_company(
+    company_name: str, exclude_ticket_id: str = "", limit: int = 10
+) -> Optional[str]:
+    """Самое частое непустое env_option_id среди последних топиков компании.
+
+    Используется как слабый приор для классификатора «Окружение».
+    None, если компании нет или ни одного определённого окружения.
+    """
+    if not company_name.strip():
+        return None
+    async with aiosqlite.connect(db_path()) as db:
+        async with db.execute(
+            """
+            SELECT env_option_id, COUNT(*) AS cnt FROM (
+                SELECT env_option_id FROM ticket_topics
+                WHERE company_name = ? AND ticket_id != ?
+                  AND env_option_id IS NOT NULL AND env_option_id != ''
+                ORDER BY updated_at DESC LIMIT ?
+            ) GROUP BY env_option_id ORDER BY cnt DESC LIMIT 1
+            """,
+            (company_name, exclude_ticket_id, limit),
+        ) as cursor:
+            row = await cursor.fetchone()
+    return row[0] if row else None
+
+
 async def append_photo_descriptions(ticket_id: str, descriptions: list[str]) -> None:
     """Append Vision-generated photo descriptions to the topic (newline-joined).
 

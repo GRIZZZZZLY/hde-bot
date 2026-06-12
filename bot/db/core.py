@@ -81,6 +81,7 @@ TICKET_TOPIC_COLUMNS = {
     "last_assigned_at": "TEXT",
     "ai_summary_sent_at": "TEXT",
     "photo_descriptions": "TEXT DEFAULT ''",
+    "env_option_id": "TEXT",
 }
 
 UPDATABLE_FIELDS = {
@@ -105,6 +106,7 @@ UPDATABLE_FIELDS = {
     "last_assigned_at",
     "ai_summary_sent_at",
     "photo_descriptions",
+    "env_option_id",
 }
 
 
@@ -134,6 +136,8 @@ class TicketTopic:
     last_assigned_at: Optional[str]
     ai_summary_sent_at: Optional[str]
     photo_descriptions: str = ""
+    # Окружение autofill: None = не классифицировали, '' = не определено, цифры = option id
+    env_option_id: Optional[str] = None
 
     @property
     def is_active(self) -> bool:
@@ -595,6 +599,7 @@ def _row_to_topic(row: aiosqlite.Row) -> TicketTopic:
         last_assigned_at=row["last_assigned_at"],
         ai_summary_sent_at=row["ai_summary_sent_at"] if "ai_summary_sent_at" in row.keys() else None,
         photo_descriptions=row["photo_descriptions"] if "photo_descriptions" in row.keys() else "",
+        env_option_id=row["env_option_id"] if "env_option_id" in row.keys() else None,
     )
 
 
