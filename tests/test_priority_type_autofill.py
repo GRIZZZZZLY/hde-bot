@@ -154,3 +154,24 @@ async def test_get_ticket_priority_type_error_returns_none(monkeypatch):
     c.base_url = "https://x"
     c._get = AsyncMock(return_value=(500, {}))
     assert await c.get_ticket_priority_type("T1") is None
+
+
+# --- DB columns ---
+
+@pytest.mark.asyncio
+async def test_pt_option_ids_roundtrip():
+    await _db.init_db()
+    await _db.upsert_topic("t1", 100)
+    await _db.update_topic("t1", priority_option_id="1", type_option_id="0")
+    rec = await _db.get_topic("t1")
+    assert rec.priority_option_id == "1"
+    assert rec.type_option_id == "0"
+
+
+@pytest.mark.asyncio
+async def test_pt_option_ids_default_none():
+    await _db.init_db()
+    await _db.upsert_topic("t1", 100)
+    rec = await _db.get_topic("t1")
+    assert rec.priority_option_id is None
+    assert rec.type_option_id is None

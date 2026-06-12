@@ -82,6 +82,8 @@ TICKET_TOPIC_COLUMNS = {
     "ai_summary_sent_at": "TEXT",
     "photo_descriptions": "TEXT DEFAULT ''",
     "env_option_id": "TEXT",
+    "priority_option_id": "TEXT",
+    "type_option_id": "TEXT",
 }
 
 UPDATABLE_FIELDS = {
@@ -107,6 +109,8 @@ UPDATABLE_FIELDS = {
     "ai_summary_sent_at",
     "photo_descriptions",
     "env_option_id",
+    "priority_option_id",
+    "type_option_id",
 }
 
 
@@ -138,6 +142,10 @@ class TicketTopic:
     photo_descriptions: str = ""
     # Окружение autofill: None = не классифицировали, '' = не определено, цифры = option id
     env_option_id: Optional[str] = None
+    # Приоритет/Тип autofill: None = не классифицировали, '' = не определено,
+    # цифры = выставленный id (priority_id/type_id — top-level поля HDE)
+    priority_option_id: Optional[str] = None
+    type_option_id: Optional[str] = None
 
     @property
     def is_active(self) -> bool:
@@ -600,6 +608,8 @@ def _row_to_topic(row: aiosqlite.Row) -> TicketTopic:
         ai_summary_sent_at=row["ai_summary_sent_at"] if "ai_summary_sent_at" in row.keys() else None,
         photo_descriptions=row["photo_descriptions"] if "photo_descriptions" in row.keys() else "",
         env_option_id=row["env_option_id"] if "env_option_id" in row.keys() else None,
+        priority_option_id=row["priority_option_id"] if "priority_option_id" in row.keys() else None,
+        type_option_id=row["type_option_id"] if "type_option_id" in row.keys() else None,
     )
 
 
