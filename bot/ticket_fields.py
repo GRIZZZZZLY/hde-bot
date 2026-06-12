@@ -63,6 +63,32 @@ _OKRUZHENIE_CRITERIA: dict[str, str] = {
     "14": "ничего из перечисленного выше не подходит",
 }
 
+# Deterministic keyword pre-pass: (regex, option_id), проверяется до LLM.
+# Срабатывает только при РОВНО одном упомянутом окружении (иначе решает LLM).
+_KEYWORD_PATTERNS: list[tuple[str, str]] = [
+    (r"\bатол\b|atol", "145"),
+    (r"эвотор|evotor", "146"),
+    (r"ккм[\s-]?сервер|kkm[\s-]?server", "147"),
+    (r"\bакси\b|aqsi", "148"),
+    (r"viki\s*print|вики\s*принт", "156"),
+    (r"веб[\s-]?касс|web[\s-]?касс", "157"),
+    # Сбер/ИНПАС считаем только в эквайринговом контексте, иначе слишком шумно
+    (r"(?:терминал|эквайринг)[^.\n]{0,40}(?:сбер|sber)|(?:сбер|sber)[^.\n]{0,40}(?:терминал|эквайринг)", "149"),
+    (r"inpas|инпас", "150"),
+    (r"штрих(?![\s-]?код)|shtrih", "155"),
+    (r"принтер[\s\w]{0,20}чеков|чековый\s+принтер", "152"),
+    (r"принтер[\s\w]{0,20}этикеток", "153"),
+    (r"сканер", "154"),
+]
+
+
+def _keyword_match(text: str) -> str | None:
+    """Option id, если в тексте однозначно упомянуто ровно одно окружение."""
+    low = text.lower()
+    hits = {oid for pattern, oid in _KEYWORD_PATTERNS if re.search(pattern, low)}
+    return hits.pop() if len(hits) == 1 else None
+
+
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 _GROQ_MODEL = "llama-3.3-70b-versatile"
 # Fallback on a separate per-model Groq quota (survives llama-3.3 429/limits)

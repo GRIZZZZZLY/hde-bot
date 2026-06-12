@@ -3,6 +3,7 @@ company prior, keyword pre-pass, enriched classification context."""
 import pytest
 
 from bot import db as _db
+from bot.ticket_fields import _keyword_match
 
 
 @pytest.fixture(autouse=True)
@@ -49,3 +50,36 @@ async def test_get_common_env_for_company_excludes_current_and_empty():
     await _db.update_topic("t1", company_name="ООО Ромашка", env_option_id="")
     assert await _db.get_common_env_for_company("ООО Ромашка", exclude_ticket_id="t2") is None
     assert await _db.get_common_env_for_company("", exclude_ticket_id="t2") is None
+
+
+# --- keyword pre-pass ---
+
+def test_keyword_match_single_brand():
+    assert _keyword_match("касса атол не печатает чек") == "145"
+
+
+def test_keyword_match_latin_and_case():
+    assert _keyword_match("Проблема с Evotor после обновления") == "146"
+
+
+def test_keyword_match_two_brands_ambiguous():
+    assert _keyword_match("эвотор подключён к атол") is None
+
+
+def test_keyword_match_shtrihkod_not_shtrih():
+    # «штрихкод»/«штрих-код» не должны давать ККТ Штрих; «сканер» решает
+    assert _keyword_match("сканер штрихкодов не читает штрих-код") == "154"
+
+
+def test_keyword_match_shtrih_kkt():
+    assert _keyword_match("ккт штрих не фискализирует") == "155"
+
+
+def test_keyword_match_sber_requires_terminal_context():
+    # просто упоминание Сбера (оплата, приложение) — не эквайринговый терминал
+    assert _keyword_match("клиент оплатил через сбер онлайн") is None
+    assert _keyword_match("терминал сбер не проводит оплату") == "149"
+
+
+def test_keyword_match_nothing():
+    assert _keyword_match("не работает программа, помогите") is None
