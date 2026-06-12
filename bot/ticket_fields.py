@@ -253,6 +253,34 @@ async def classify_environment(
     return option_id
 
 
+async def classify_priority_type(
+    history: str, ticket_title: str = ""
+) -> tuple[str, str] | None:
+    """(priority_id, type_id) по матрице комбинаций, или None если не определено.
+
+    Один LLM-вызов на оба поля: приоритет и тип — одно решение.
+    llama-3.3 (fast), фолбэк Llama 4 Scout. Keyword pre-pass не делаем:
+    «блокирует/не блокирует торговлю» регулярками не различить.
+    """
+    if not history.strip() and not ticket_title.strip():
+        return None
+    parts: list[str] = []
+    if ticket_title.strip():
+        parts.append(f"Тема тикета: {ticket_title.strip()}")
+    parts.append(f"Переписка:\n{history}")
+    user_content = "\n\n".join(parts)
+    prompt = _build_pt_prompt()
+    raw = await _groq_classify(prompt, user_content)
+    if raw is None:
+        raw = await _groq_classify(prompt, user_content, model=_GROQ_FALLBACK_MODEL)
+    if raw is None:
+        return None
+    combo = _parse_pt_combo(raw)
+    if combo is None:
+        logger.info("PT classifier: no valid combo in response %r", raw[:80])
+    return combo
+
+
 ENV_UNDETERMINED_MSG = "⚠️ Окружение не определено автоматически — выставьте вручную"
 
 

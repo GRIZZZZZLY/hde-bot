@@ -59,3 +59,56 @@ def test_pt_prompt_contains_all_combos_and_undetermined():
         assert num in p
     assert "НЕ ОПРЕДЕЛЕНО" in p
     assert "инженера банка" in p.lower() or "инженер банка" in p.lower()
+
+
+# --- classify_priority_type ---
+
+@pytest.mark.asyncio
+async def test_classify_pt_returns_combo(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock
+
+    groq = AsyncMock(return_value="1")
+    monkeypatch.setattr(tf, "_groq_classify", groq)
+    result = await tf.classify_priority_type(
+        "Клиент: касса не включается, продавать не можем",
+        ticket_title="Касса не работает",
+    )
+    assert result == ("1", "3")
+    prompt_arg, user_content = groq.await_args.args
+    assert "НЕ ОПРЕДЕЛЕНО" in prompt_arg
+    assert "Тема тикета: Касса не работает" in user_content
+    assert "Переписка:\nКлиент: касса не включается" in user_content
+
+
+@pytest.mark.asyncio
+async def test_classify_pt_falls_back_to_scout(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock
+
+    groq = AsyncMock(side_effect=[None, "4"])
+    monkeypatch.setattr(tf, "_groq_classify", groq)
+    result = await tf.classify_priority_type("Клиент: настройте принтер")
+    assert result == ("10", "2")
+    assert groq.await_count == 2
+    assert groq.await_args_list[1].kwargs["model"] == tf._GROQ_FALLBACK_MODEL
+
+
+@pytest.mark.asyncio
+async def test_classify_pt_undetermined(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(tf, "_groq_classify", AsyncMock(return_value="НЕ ОПРЕДЕЛЕНО"))
+    assert await tf.classify_priority_type("Клиент: привет") is None
+
+
+@pytest.mark.asyncio
+async def test_classify_pt_empty_input_skips_llm(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock
+
+    groq = AsyncMock()
+    monkeypatch.setattr(tf, "_groq_classify", groq)
+    assert await tf.classify_priority_type("", ticket_title="") is None
+    groq.assert_not_awaited()
