@@ -210,6 +210,7 @@ async def test_apply_env_found_role_empty(monkeypatch):
     fake_client.update_ticket_fields = AsyncMock()
     monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
     monkeypatch.setattr(tf, "classify_environment", AsyncMock(return_value="11"))
+    monkeypatch.setattr(tf, "classify_priority_type", AsyncMock(return_value=None))
 
     bot = MagicMock()
     bot.send_message = AsyncMock()
@@ -217,9 +218,11 @@ async def test_apply_env_found_role_empty(monkeypatch):
     res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: касса POS не печатает")
 
     fake_client.update_ticket_fields.assert_awaited_once_with(
-        "T1", {"3": "20", "24": "197", "2": "11"}
+        "T1", {"3": "20", "24": "197", "2": "11"}, priority_id=None, type_id=None
     )
-    bot.send_message.assert_not_called()
+    # env is found → no env warning; pt is None → pt warning sent
+    all_texts = [c.kwargs["text"] for c in bot.send_message.await_args_list]
+    assert not any("Окружение не определено" in t for t in all_texts)
     assert res.updated is True
     assert res.env_id == "11"
     assert res.fields == {"3": "20", "24": "197", "2": "11"}
@@ -233,17 +236,21 @@ async def test_apply_env_undetermined_warns(monkeypatch):
     fake_client.update_ticket_fields = AsyncMock()
     monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
     monkeypatch.setattr(tf, "classify_environment", AsyncMock(return_value=None))
+    monkeypatch.setattr(tf, "classify_priority_type", AsyncMock(return_value=None))
 
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
     res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: здравствуйте")
 
-    fake_client.update_ticket_fields.assert_awaited_once_with("T1", {"3": "20"})
-    bot.send_message.assert_awaited_once()
-    kwargs = bot.send_message.call_args.kwargs
-    assert kwargs["message_thread_id"] == 555
-    assert "Окружение не определено" in kwargs["text"]
+    fake_client.update_ticket_fields.assert_awaited_once_with(
+        "T1", {"3": "20"}, priority_id=None, type_id=None
+    )
+    # Now two warnings are sent: env undetermined + pt undetermined.
+    # Verify the env warning is among them.
+    all_texts = [c.kwargs["text"] for c in bot.send_message.await_args_list]
+    assert any("Окружение не определено" in t for t in all_texts)
+    assert bot.send_message.await_args_list[0].kwargs["message_thread_id"] == 555
     assert res.updated is True
     assert res.env_id is None
     assert res.fields == {"3": "20"}
@@ -256,6 +263,7 @@ async def test_apply_role_unknown_state_skipped(monkeypatch):
     fake_client.update_ticket_fields = AsyncMock()
     monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
     monkeypatch.setattr(tf, "classify_environment", AsyncMock(return_value="146"))
+    monkeypatch.setattr(tf, "classify_priority_type", AsyncMock(return_value=None))
 
     bot = MagicMock()
     bot.send_message = AsyncMock()
@@ -263,7 +271,7 @@ async def test_apply_role_unknown_state_skipped(monkeypatch):
     res = await tf.apply_ticket_fields(bot, "T1", 555, "Эвотор завис")
 
     fake_client.update_ticket_fields.assert_awaited_once_with(
-        "T1", {"3": "20", "2": "146"}
+        "T1", {"3": "20", "2": "146"}, priority_id=None, type_id=None
     )
     assert res.updated is True
     assert res.env_id == "146"
