@@ -89,9 +89,9 @@ async def test_classify_environment_lenient_parse():
 
 @pytest.mark.asyncio
 async def test_classify_environment_no_key_returns_none():
-    """No Groq key → no classification at all."""
+    """No Groq key and no keyword hit → no classification."""
     with patch("bot.ticket_fields.config.groq_api_key", ""):
-        result = await classify_environment("Клиент: ошибка на Штрих-М")
+        result = await classify_environment("Клиент: ошибка в программе")
     assert result is None
 
 

@@ -83,3 +83,38 @@ def test_keyword_match_sber_requires_terminal_context():
 
 def test_keyword_match_nothing():
     assert _keyword_match("не работает программа, помогите") is None
+
+
+# --- classify_environment: pre-pass, title, prior ---
+
+@pytest.mark.asyncio
+async def test_classify_keyword_shortcut_skips_llm(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock
+
+    groq = AsyncMock()
+    monkeypatch.setattr(tf, "_groq_classify", groq)
+    # keyword из заголовка работает даже без Groq-ключа
+    monkeypatch.setattr(tf.config, "groq_api_key", "")
+    result = await tf.classify_environment("Клиент: не печатает", ticket_title="Атол 30Ф ошибка")
+    assert result == "145"
+    groq.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_classify_title_and_prior_in_llm_content(monkeypatch):
+    import bot.ticket_fields as tf
+    from unittest.mock import AsyncMock
+
+    groq = AsyncMock(return_value="146")
+    monkeypatch.setattr(tf, "_groq_classify", groq)
+    result = await tf.classify_environment(
+        "Клиент: касса зависла",
+        ticket_title="Проблема с кассой",
+        prior_hint="Эвотор",
+    )
+    assert result == "146"
+    user_content = groq.await_args.args[1]
+    assert "Тема тикета: Проблема с кассой" in user_content
+    assert "Эвотор" in user_content
+    assert "Переписка:\nКлиент: касса зависла" in user_content

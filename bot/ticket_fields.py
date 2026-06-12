@@ -124,14 +124,14 @@ def _parse_env_id(raw: str) -> str | None:
     return None
 
 
-async def _groq_classify(prompt: str, history: str, model: str = _GROQ_MODEL) -> str | None:
+async def _groq_classify(prompt: str, user_content: str, model: str = _GROQ_MODEL) -> str | None:
     if not config.groq_api_key:
         return None
     payload = {
         "model": model,
         "messages": [
             {"role": "system", "content": prompt},
-            {"role": "user", "content": f"Переписка:\n{history}"},
+            {"role": "user", "content": user_content},
         ],
         "temperature": 0.0,
         "max_tokens": 64,
@@ -155,18 +155,35 @@ async def _groq_classify(prompt: str, history: str, model: str = _GROQ_MODEL) ->
         return None
 
 
-async def classify_environment(history: str) -> str | None:
+async def classify_environment(
+    history: str, ticket_title: str = "", prior_hint: str = ""
+) -> str | None:
     """Return an Окружение option_id, or None if undetermined / unknown / error.
 
-    llama-3.3 first (fast); falls back to Llama 4 Scout (separate Groq quota)
-    when llama-3.3 is unavailable (e.g. daily token limit / 429).
+    Keyword pre-pass first (deterministic, no API). Then llama-3.3 (fast);
+    falls back to Llama 4 Scout (separate Groq quota) when llama-3.3 is
+    unavailable (e.g. daily token limit / 429).
     """
-    if not history.strip():
+    if not history.strip() and not ticket_title.strip():
         return None
+    kw = _keyword_match(f"{ticket_title}\n{history}")
+    if kw:
+        logger.info("Env classifier: keyword pre-pass hit %s", kw)
+        return kw
+    parts: list[str] = []
+    if ticket_title.strip():
+        parts.append(f"Тема тикета: {ticket_title.strip()}")
+    if prior_hint:
+        parts.append(
+            f"Подсказка: у этого клиента в прошлых тикетах чаще всего определялось "
+            f"окружение «{prior_hint}». Используй как слабый приор, а не как ответ."
+        )
+    parts.append(f"Переписка:\n{history}")
+    user_content = "\n\n".join(parts)
     prompt = _build_env_prompt()
-    raw = await _groq_classify(prompt, history)
+    raw = await _groq_classify(prompt, user_content)
     if raw is None:
-        raw = await _groq_classify(prompt, history, model=_GROQ_FALLBACK_MODEL)
+        raw = await _groq_classify(prompt, user_content, model=_GROQ_FALLBACK_MODEL)
     if raw is None:
         return None
     option_id = _parse_env_id(raw)
