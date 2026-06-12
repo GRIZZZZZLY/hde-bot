@@ -219,6 +219,24 @@ class HDEApiClient:
         except Exception:
             return None
 
+    async def get_ticket_priority_type(self, ticket_id: str) -> tuple[str, str] | None:
+        """Current (priority_id, type_id) as strings, or None on any error.
+
+        type_id may legitimately be "0" («Вопрос»)."""
+        try:
+            status, data = await self._get(f"{self.base_url}/tickets/{ticket_id}/")
+            if status >= 400:
+                return None
+            raw = data.get("data", data) if isinstance(data, dict) else {}
+            prio = raw.get("priority_id")
+            typ = raw.get("type_id")
+            return (
+                str(prio) if prio is not None else "",
+                str(typ) if typ is not None else "",
+            )
+        except Exception:
+            return None
+
     async def get_ticket_open_status(self, ticket_id: str) -> tuple[bool, str] | None:
         """Return (is_deletable, link_staff) or None on any error (fail-safe).
 
@@ -538,11 +556,33 @@ class HDEApiClient:
                     raise HDEApiError(message)
                 return HDEApiResult(status=response.status, data=data)
 
-    async def update_ticket_fields(self, ticket_id: str, custom_fields: dict[str, str]) -> HDEApiResult:
-        """Update custom fields of a ticket. Keys are field IDs (as strings)."""
+    @staticmethod
+    def _ticket_update_body(
+        custom_fields: dict[str, str],
+        priority_id: str | None = None,
+        type_id: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"custom_fields": custom_fields}
+        # type_id=0 («Вопрос») валиден — поэтому `is not None`, не truthiness
+        if priority_id is not None:
+            body["priority_id"] = int(priority_id)
+        if type_id is not None:
+            body["type_id"] = int(type_id)
+        return body
+
+    async def update_ticket_fields(
+        self,
+        ticket_id: str,
+        custom_fields: dict[str, str],
+        priority_id: str | None = None,
+        type_id: str | None = None,
+    ) -> HDEApiResult:
+        """Update custom fields (keys = field IDs as strings) and, optionally,
+        the standard priority_id/type_id of a ticket — one PUT for everything."""
         url = f"{self.base_url}/tickets/{ticket_id}/"
+        body = self._ticket_update_body(custom_fields, priority_id, type_id)
         async with self._make_session() as session:
-            async with session.put(url, json={"custom_fields": custom_fields}) as response:
+            async with session.put(url, json=body) as response:
                 data = await self._read_response(response)
                 if response.status >= 400:
                     message = self._extract_error_message(data) or f"HDE API error {response.status}"

@@ -112,3 +112,45 @@ async def test_classify_pt_empty_input_skips_llm(monkeypatch):
     monkeypatch.setattr(tf, "_groq_classify", groq)
     assert await tf.classify_priority_type("", ticket_title="") is None
     groq.assert_not_awaited()
+
+
+# --- HDE client extension ---
+
+def test_ticket_update_body_custom_only():
+    from bot.hde_api import HDEApiClient
+    assert HDEApiClient._ticket_update_body({"2": "145"}) == {"custom_fields": {"2": "145"}}
+
+
+def test_ticket_update_body_with_priority_and_type():
+    from bot.hde_api import HDEApiClient
+    body = HDEApiClient._ticket_update_body({"2": "145"}, priority_id="1", type_id="0")
+    # type_id=0 («Вопрос») falsy — обязан попасть в тело
+    assert body == {"custom_fields": {"2": "145"}, "priority_id": 1, "type_id": 0}
+
+
+def test_ticket_update_body_priority_only():
+    from bot.hde_api import HDEApiClient
+    body = HDEApiClient._ticket_update_body({}, priority_id="10")
+    assert body == {"custom_fields": {}, "priority_id": 10}
+
+
+@pytest.mark.asyncio
+async def test_get_ticket_priority_type_parses_ids(monkeypatch):
+    from bot.hde_api import HDEApiClient
+    from unittest.mock import AsyncMock
+
+    c = HDEApiClient.__new__(HDEApiClient)
+    c.base_url = "https://x"
+    c._get = AsyncMock(return_value=(200, {"data": {"priority_id": 10, "type_id": 0}}))
+    assert await c.get_ticket_priority_type("T1") == ("10", "0")
+
+
+@pytest.mark.asyncio
+async def test_get_ticket_priority_type_error_returns_none(monkeypatch):
+    from bot.hde_api import HDEApiClient
+    from unittest.mock import AsyncMock
+
+    c = HDEApiClient.__new__(HDEApiClient)
+    c.base_url = "https://x"
+    c._get = AsyncMock(return_value=(500, {}))
+    assert await c.get_ticket_priority_type("T1") is None
