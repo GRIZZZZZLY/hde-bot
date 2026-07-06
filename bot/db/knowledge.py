@@ -5,7 +5,7 @@ from typing import Optional
 
 import aiosqlite
 
-from .core import db_path, logger
+from .core import connect, logger
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ async def save_knowledge_item(
     company_name: str = "",
 ) -> int:
     """Insert a new knowledge item. Returns the new row id."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         cursor = await db.execute(
             """
             INSERT INTO knowledge_items
@@ -54,7 +54,7 @@ async def save_knowledge_item(
 
 async def list_knowledge_content_hashes() -> set[str]:
     """Return all non-null content_hash values in one query (bulk dedup)."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             "SELECT content_hash FROM knowledge_items WHERE content_hash IS NOT NULL"
         ) as cur:
@@ -64,7 +64,7 @@ async def list_knowledge_content_hashes() -> set[str]:
 
 async def update_knowledge_embedding(item_id: int, embedding: bytes) -> None:
     """Store the embedding blob for an existing knowledge item."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             "UPDATE knowledge_items SET embedding = ? WHERE id = ?",
             (embedding, item_id),
@@ -76,7 +76,7 @@ async def update_knowledge_embeddings(pairs: list[tuple[int, bytes]]) -> None:
     """Store embedding blobs for many knowledge items in one transaction."""
     if not pairs:
         return
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.executemany(
             "UPDATE knowledge_items SET embedding = ? WHERE id = ?",
             [(embedding, item_id) for item_id, embedding in pairs],
@@ -86,7 +86,7 @@ async def update_knowledge_embeddings(pairs: list[tuple[int, bytes]]) -> None:
 
 async def list_knowledge_items_without_embedding() -> list[tuple[int, str]]:
     """Return (id, content) for rows missing an embedding."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             "SELECT id, content FROM knowledge_items WHERE embedding IS NULL AND quality NOT IN ('bad', 'expired')"
         ) as cur:
@@ -95,7 +95,7 @@ async def list_knowledge_items_without_embedding() -> list[tuple[int, str]]:
 
 async def list_all_knowledge_embeddings() -> list[tuple[int, str, bytes, str]]:
     """Return (id, content, embedding, company_id) for all indexed items."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             "SELECT id, content, embedding, COALESCE(company_id, '') FROM knowledge_items "
             "WHERE embedding IS NOT NULL AND quality NOT IN ('bad', 'expired')"
@@ -105,7 +105,7 @@ async def list_all_knowledge_embeddings() -> list[tuple[int, str, bytes, str]]:
 
 async def count_knowledge_by_source() -> dict[str, int]:
     """Return {source: count} statistics."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             "SELECT source, COUNT(*) FROM knowledge_items GROUP BY source"
         ) as cur:
@@ -126,7 +126,7 @@ async def save_ai_feedback_pending(
     answer_text: str = "",
     ai_full_text: str = "",
 ) -> None:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             """
             INSERT OR REPLACE INTO ai_feedback_pending
@@ -140,7 +140,7 @@ async def save_ai_feedback_pending(
 
 async def get_ai_feedback_pending(topic_id: int) -> Optional[dict]:
     """Return pending correction state or None if expired/missing."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             "SELECT ticket_id, history, title, answer_text, ai_full_text, expires_at "
             "FROM ai_feedback_pending WHERE topic_id = ?",
@@ -164,7 +164,7 @@ async def get_ai_feedback_pending(topic_id: int) -> Optional[dict]:
 
 
 async def delete_ai_feedback_pending(topic_id: int) -> None:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             "DELETE FROM ai_feedback_pending WHERE topic_id = ?", (topic_id,)
         )
@@ -177,7 +177,7 @@ async def delete_ai_feedback_pending(topic_id: int) -> None:
 
 async def count_items_without_embedding() -> int:
     """Count knowledge_items that have no embedding blob (failed or pending)."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             "SELECT COUNT(*) FROM knowledge_items "
             "WHERE embedding IS NULL AND quality NOT IN ('bad', 'expired')"
@@ -188,7 +188,7 @@ async def count_items_without_embedding() -> int:
 
 async def get_last_knowledge_item_date() -> str | None:
     """Return ISO timestamp of the most recently created knowledge_item, or None."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             "SELECT MAX(created_at) FROM knowledge_items"
         ) as cur:
@@ -198,7 +198,7 @@ async def get_last_knowledge_item_date() -> str | None:
 
 async def list_items_without_company() -> list[tuple[int, str]]:
     """Return (id, ticket_id) for hde_closed items missing company_name."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             "SELECT id, ticket_id FROM knowledge_items "
             "WHERE source = 'hde_closed' "
@@ -210,7 +210,7 @@ async def list_items_without_company() -> list[tuple[int, str]]:
 
 async def update_knowledge_company(item_id: int, company_id: str, company_name: str) -> None:
     """Set company_id and company_name for an existing knowledge item."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             "UPDATE knowledge_items SET company_id = ?, company_name = ? WHERE id = ?",
             (company_id or None, company_name or None, item_id),
@@ -225,7 +225,7 @@ async def fts_search_knowledge(query: str, limit: int = 10) -> list[tuple[int, s
     clean = re.sub(r'["\(\)\^\*\-]', ' ', query).strip()
     if not clean:
         return []
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         try:
             async with db.execute(
                 "SELECT rowid, content FROM knowledge_fts WHERE content MATCH ? ORDER BY rank LIMIT ?",
@@ -258,7 +258,7 @@ async def upsert_knowledge_item(
     -> UPDATE content, title, reset embedding=NULL (triggers re-embedding), update FTS.
     Otherwise -> INSERT new row.
     """
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         if ticket_id:
             async with db.execute(
                 "SELECT id FROM knowledge_items WHERE ticket_id = ? AND source = ?",
@@ -313,7 +313,7 @@ async def upsert_knowledge_item(
 
 async def delete_knowledge_item_by_ticket(ticket_id: str, source: str) -> int:
     """Delete knowledge items by ticket_id and source. Also cleans FTS. Returns count deleted."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             "SELECT id FROM knowledge_items WHERE ticket_id = ? AND source = ?",
             (ticket_id, source),
@@ -335,7 +335,7 @@ async def delete_knowledge_item_by_ticket(ticket_id: str, source: str) -> int:
 async def dedup_knowledge_items() -> int:
     """Mark duplicate items (same ticket_id+source, keep newest id) as quality='bad'.
     Returns count of newly marked duplicates."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             """
             SELECT id FROM knowledge_items
@@ -366,7 +366,7 @@ async def dedup_knowledge_items() -> int:
 async def expire_stale_knowledge(expiry_days: int = 180) -> int:
     """Mark old unused hde_closed items as quality='expired'. Returns count marked."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=expiry_days)).isoformat()
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         cur = await db.execute(
             """
             UPDATE knowledge_items
@@ -387,7 +387,7 @@ async def mark_knowledge_items_analyzed(item_ids: list[int]) -> None:
     if not item_ids:
         return
     placeholders = ",".join("?" * len(item_ids))
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             f"UPDATE knowledge_items SET analyzed_at = datetime('now') WHERE id IN ({placeholders})",
             item_ids,
@@ -401,7 +401,7 @@ async def update_knowledge_last_used(item_ids: list[int]) -> None:
         return
     cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     placeholders = ",".join("?" * len(item_ids))
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             f"UPDATE knowledge_items SET last_used_at = datetime('now') "
             f"WHERE id IN ({placeholders}) "
@@ -414,7 +414,7 @@ async def update_knowledge_last_used(item_ids: list[int]) -> None:
 async def get_knowledge_metrics() -> dict:
     """Return metrics for /aimetrics command."""
     cutoff_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         # by_source (только active)
         async with db.execute(
             "SELECT source, COUNT(*) FROM knowledge_items "

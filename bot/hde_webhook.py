@@ -100,11 +100,14 @@ async def hde_webhook_handler(request: web.Request) -> web.Response:
         logger.warning("Invalid JSON in HDE webhook: %s", exc)
         return web.Response(status=400, text="Invalid JSON")
 
-    if config.hde_webhook_secret:
-        secret = str(raw_payload.get("secret") or "")
-        if secret != config.hde_webhook_secret:
-            logger.warning("Invalid webhook secret from %s", request.remote)
-            return web.Response(status=403, text="Forbidden")
+    if not config.hde_webhook_secret:
+        # Fail closed: without a configured secret the endpoint would be open.
+        logger.error("HDE_WEBHOOK_SECRET is not configured — rejecting webhook")
+        return web.Response(status=403, text="Forbidden")
+    secret = str(raw_payload.get("secret") or "")
+    if secret != config.hde_webhook_secret:
+        logger.warning("Invalid webhook secret from %s", request.remote)
+        return web.Response(status=403, text="Forbidden")
 
     payload = _normalize_payload(raw_payload)
     event_type = payload["event_type"]
@@ -124,9 +127,15 @@ async def hde_webhook_handler(request: web.Request) -> web.Response:
 
     should_dedupe = event_type in DEDUPED_EVENT_TYPES
     event_key = payload["event_key"] or _build_event_key(payload)
-    if should_dedupe and await db.was_processed(event_key):
-        logger.info("Skipping duplicate event %s for ticket %s", event_type, payload["ticket_id"])
-        return web.Response(status=200, text="Duplicate OK")
+    if should_dedupe:
+        # Claim before doing work: an HDE retry arriving while the first
+        # delivery is still processing must not run the handler twice.
+        claimed = await db.save_processed_event(event_key, event_type, payload["ticket_id"])
+        if not claimed:
+            logger.info(
+                "Skipping duplicate event %s for ticket %s", event_type, payload["ticket_id"]
+            )
+            return web.Response(status=200, text="Duplicate OK")
 
     bot: Bot = request.app["bot"]
     handler = HANDLERS[event_type]
@@ -135,6 +144,8 @@ async def hde_webhook_handler(request: web.Request) -> web.Response:
         await handler(bot, payload)
     except Exception as exc:
         logger.exception("Error handling event '%s': %s", event_type, exc)
+        if should_dedupe:
+            await db.delete_processed_event(event_key)
         return web.Response(status=500, text="Internal error")
 
     # General channel hooks — run after main handler, failures are non-fatal
@@ -150,7 +161,5 @@ async def hde_webhook_handler(request: web.Request) -> web.Response:
     except Exception as exc:
         logger.exception("General channel hook failed for event '%s': %s", event_type, exc)
 
-    if should_dedupe:
-        await db.save_processed_event(event_key, event_type, payload["ticket_id"])
     logger.info("Processed %s for ticket %s", event_type, payload["ticket_id"])
     return web.Response(status=200, text="OK")

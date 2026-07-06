@@ -6,7 +6,7 @@ from typing import Iterable, Optional
 
 import aiosqlite
 
-from .core import db_path
+from .core import connect
 
 
 # ---------------------------------------------------------------------------
@@ -20,7 +20,7 @@ async def save_solution_pattern(
     equipment: Optional[str] = None,
 ) -> int:
     """Insert a new solution pattern. Returns new row id."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         cursor = await db.execute(
             "INSERT INTO solution_patterns (equipment, problem_type, steps, source) VALUES (?, ?, ?, ?)",
             (equipment, problem_type, steps, source),
@@ -36,7 +36,7 @@ async def find_solution_pattern(
 ) -> Optional[dict]:
     """Return the best matching pattern for given equipment and keywords, or None."""
     words = {w for w in re.sub(r"[^\w\s]", " ", keywords.lower()).split() if len(w) >= 3}
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         candidates: list = []
         if equipment:
@@ -65,7 +65,7 @@ async def find_solution_pattern(
 
 
 async def increment_pattern_use(pattern_id: int) -> None:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             "UPDATE solution_patterns SET use_count = use_count + 1 WHERE id = ?",
             (pattern_id,),
@@ -74,7 +74,7 @@ async def increment_pattern_use(pattern_id: int) -> None:
 
 
 async def list_solution_patterns(limit: int = 50) -> list[dict]:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM solution_patterns ORDER BY use_count DESC, created_at DESC LIMIT ?",
@@ -120,7 +120,7 @@ async def pattern_exists_similar(
 
 async def count_solution_patterns_by_equipment() -> dict[str, int]:
     """Return {equipment_label: count} for reporting."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             "SELECT COALESCE(equipment, 'Без бренда'), COUNT(*) "
             "FROM solution_patterns GROUP BY equipment ORDER BY COUNT(*) DESC"

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 import aiosqlite
 
@@ -13,6 +14,19 @@ def db_path() -> str:
     """Call-time lookup so tests can monkeypatch bot.db.DB_PATH."""
     import bot.db as _pkg
     return _pkg.DB_PATH
+
+
+@asynccontextmanager
+async def connect() -> AsyncIterator[aiosqlite.Connection]:
+    """Open a DB connection with per-connection pragmas.
+
+    busy_timeout makes concurrent writers wait instead of raising
+    "database is locked"; synchronous=NORMAL is the recommended level with WAL.
+    """
+    async with aiosqlite.connect(db_path()) as db:
+        await db.execute("PRAGMA busy_timeout=5000")
+        await db.execute("PRAGMA synchronous=NORMAL")
+        yield db
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +218,9 @@ class KnowledgeItem:
 
 
 async def init_db() -> None:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
+        # WAL is a persistent DB property: readers no longer block the writer.
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS ticket_topics (
@@ -485,7 +501,7 @@ async def migrate_feedback_samples() -> int:
     yet have a matching optimization_samples row. Returns the number added.
     Called once at startup — idempotent (skips already-migrated tickets).
     """
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute("""
             SELECT ki.ticket_id, ki.title, ki.content, ki.created_at

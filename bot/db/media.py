@@ -10,12 +10,12 @@ from .core import (
     SentHdeMessage,
     _row_to_cached_topic_media,
     _row_to_draft,
-    db_path,
+    connect,
 )
 
 
 async def save_reply_draft(topic_id: int, ticket_id: str, text: str, created_by: int) -> None:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             """
             INSERT INTO reply_drafts (topic_id, ticket_id, text, created_by, updated_at)
@@ -32,7 +32,7 @@ async def save_reply_draft(topic_id: int, ticket_id: str, text: str, created_by:
 
 
 async def get_reply_draft(topic_id: int) -> Optional[ReplyDraft]:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM reply_drafts WHERE topic_id = ?",
@@ -43,7 +43,7 @@ async def get_reply_draft(topic_id: int) -> Optional[ReplyDraft]:
 
 
 async def delete_reply_draft(topic_id: int) -> None:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             "DELETE FROM reply_drafts WHERE topic_id = ?",
             (topic_id,),
@@ -62,7 +62,7 @@ async def cache_topic_media(
     content_type: str = "",
     text: str = "",
 ) -> None:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             """
             INSERT INTO topic_media_cache (
@@ -100,7 +100,7 @@ async def cache_topic_media(
 
 
 async def list_cached_topic_media_group(topic_id: int, media_group_id: str) -> list[CachedTopicMedia]:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """
@@ -116,7 +116,7 @@ async def list_cached_topic_media_group(topic_id: int, media_group_id: str) -> l
 
 
 async def delete_topic_media_cache(topic_id: int) -> None:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             "DELETE FROM topic_media_cache WHERE topic_id = ?",
             (topic_id,),
@@ -130,7 +130,7 @@ async def gc_stale_media_cache(hours: int = 1) -> int:
     Media groups arrive within seconds — rows older than an hour are guaranteed
     irrelevant for reply-stitching and otherwise accumulate until topic deletion.
     """
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         cursor = await db.execute(
             "DELETE FROM topic_media_cache WHERE created_at < datetime('now', ?)",
             (f"-{int(hours)} hours",),
@@ -147,7 +147,7 @@ async def save_sent_message(
     hde_entity_id: int,
     entity_type: str,
 ) -> None:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             """
             INSERT OR REPLACE INTO sent_hde_messages
@@ -163,7 +163,7 @@ async def get_sent_message(
     telegram_message_id: int,
     topic_id: int,
 ) -> Optional[SentHdeMessage]:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """
@@ -186,7 +186,7 @@ async def get_sent_message(
 
 
 async def delete_sent_message(telegram_message_id: int, topic_id: int) -> None:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             "DELETE FROM sent_hde_messages WHERE telegram_message_id = ? AND topic_id = ?",
             (telegram_message_id, topic_id),

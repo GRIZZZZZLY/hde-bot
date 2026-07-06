@@ -985,7 +985,6 @@ async def cmd_aireindex(message: Message) -> None:
 async def cmd_aianalyze(message: Message) -> None:
     """Analyze knowledge_items and populate solution_patterns table."""
     import aiohttp
-    import aiosqlite
     from ..db import (
         save_solution_pattern,
         build_pattern_index,
@@ -994,7 +993,7 @@ async def cmd_aianalyze(message: Message) -> None:
         count_solution_patterns_by_equipment,
         mark_knowledge_items_analyzed,
         normalize_equipment,
-        DB_PATH,
+        connect,
     )
     from ..config import config as _config
     import json as _json
@@ -1006,7 +1005,7 @@ async def cmd_aianalyze(message: Message) -> None:
         return
 
     # Load only items not yet analyzed
-    async with aiosqlite.connect(DB_PATH) as conn:
+    async with connect() as conn:
         async with conn.execute(
             "SELECT id, title, content FROM knowledge_items "
             "WHERE analyzed_at IS NULL "

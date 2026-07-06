@@ -5,12 +5,12 @@ from typing import Any, Optional
 import aiosqlite
 
 from ..time_utils import to_storage, utcnow
-from .core import TicketTopic, UPDATABLE_FIELDS, _row_to_topic, db_path
+from .core import TicketTopic, UPDATABLE_FIELDS, _row_to_topic, connect
 from .media import delete_reply_draft, delete_topic_media_cache
 
 
 async def get_topic(ticket_id: str) -> Optional[TicketTopic]:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM ticket_topics WHERE ticket_id = ?",
@@ -21,7 +21,7 @@ async def get_topic(ticket_id: str) -> Optional[TicketTopic]:
 
 
 async def get_topic_by_topic_id(topic_id: int) -> Optional[TicketTopic]:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM ticket_topics WHERE topic_id = ?",
@@ -51,7 +51,7 @@ async def upsert_topic(
     hde_link: str = "",
     deleted_at: Optional[str] = None,
 ) -> None:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             """
             INSERT INTO ticket_topics (
@@ -130,7 +130,7 @@ async def update_topic(ticket_id: str, **fields: Any) -> None:
     assignments.append("updated_at = datetime('now')")
     values.append(ticket_id)
 
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             f"""
             UPDATE ticket_topics
@@ -152,7 +152,7 @@ async def get_common_env_for_company(
     """
     if not company_name.strip():
         return None
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             """
             SELECT env_option_id, COUNT(*) AS cnt FROM (
@@ -179,7 +179,7 @@ async def append_photo_descriptions(ticket_id: str, descriptions: list[str]) -> 
     addition = "\n".join(d.strip() for d in descriptions if d and d.strip())
     if not addition:
         return
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             """
             UPDATE ticket_topics
@@ -256,7 +256,7 @@ async def mark_pre_sla_sent(ticket_id: str, message_id: int, sent_at: Optional[s
 
 
 async def list_due_pre_sla(now_value: str) -> list[TicketTopic]:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """
@@ -276,7 +276,7 @@ async def list_due_pre_sla(now_value: str) -> list[TicketTopic]:
 
 async def list_active_pre_sla() -> list[TicketTopic]:
     """Тикеты, у которых pre-SLA уже отправлен и ждёт обновления счётчика."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """
@@ -295,7 +295,7 @@ async def list_active_pre_sla() -> list[TicketTopic]:
 
 async def list_topics_missing_summary() -> list[TicketTopic]:
     """Активные топики где клиент писал, но AI саммари ещё не отправлялось."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """
@@ -312,7 +312,7 @@ async def list_topics_missing_summary() -> list[TicketTopic]:
 
 
 async def list_due_deletions(now_value: str) -> list[TicketTopic]:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """
@@ -348,7 +348,7 @@ async def count_total_topics() -> int:
 
 
 async def _count_topics(where_clause: str) -> int:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             f"SELECT COUNT(*) FROM ticket_topics WHERE {where_clause}"
         ) as cursor:
@@ -357,7 +357,7 @@ async def _count_topics(where_clause: str) -> int:
 
 
 async def save_processed_event(event_key: str, event_type: str, ticket_id: str) -> bool:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         cursor = await db.execute(
             """
             INSERT OR IGNORE INTO processed_events (event_key, event_type, ticket_id)
@@ -369,8 +369,18 @@ async def save_processed_event(event_key: str, event_type: str, ticket_id: str) 
     return cursor.rowcount > 0
 
 
+async def delete_processed_event(event_key: str) -> None:
+    """Release a dedup claim so a retried delivery can be processed again."""
+    async with connect() as db:
+        await db.execute(
+            "DELETE FROM processed_events WHERE event_key = ?",
+            (event_key,),
+        )
+        await db.commit()
+
+
 async def was_processed(event_key: str) -> bool:
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         async with db.execute(
             "SELECT 1 FROM processed_events WHERE event_key = ?",
             (event_key,),
@@ -381,7 +391,7 @@ async def was_processed(event_key: str) -> bool:
 
 async def list_overnight_assigned(night_start: str, night_end: str) -> list[TicketTopic]:
     """Return topics where last_assigned_at is between night_start and night_end (UTC strings)."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """
@@ -399,7 +409,7 @@ async def list_overnight_assigned(night_start: str, night_end: str) -> list[Tick
 
 async def list_active_topics() -> list[TicketTopic]:
     """Return all topics with topic_state = 'active'."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM ticket_topics WHERE topic_state = 'active' ORDER BY created_at ASC"
@@ -410,7 +420,7 @@ async def list_active_topics() -> list[TicketTopic]:
 
 async def list_topics_by_state(state: str) -> list[TicketTopic]:
     """Return all topics with the given topic_state."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT * FROM ticket_topics WHERE topic_state = ? ORDER BY created_at ASC",

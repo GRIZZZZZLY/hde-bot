@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-import aiosqlite
 
 from .. import db
 from .store import embedding_to_bytes, find_similar
@@ -174,7 +173,7 @@ async def index_knowledge_item(
     if embedding is not None:
         try:
             emb_bytes = embedding_to_bytes(embedding)
-            async with aiosqlite.connect(db.DB_PATH) as conn:
+            async with db.connect() as conn:
                 await conn.execute(
                     "UPDATE knowledge_items SET embedding=? WHERE id=?",
                     (emb_bytes, item_id),

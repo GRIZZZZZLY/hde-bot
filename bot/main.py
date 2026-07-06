@@ -63,7 +63,17 @@ async def _run_hde_server(bot: Bot, stop_event: asyncio.Event) -> None:
     await runner.cleanup()
 
 
+def _ensure_webhook_secret() -> None:
+    """Fail closed: refuse to start with an unauthenticated webhook endpoint."""
+    if not config.hde_webhook_secret:
+        raise SystemExit(
+            "HDE_WEBHOOK_SECRET is not set — the HDE webhook endpoint would be "
+            "open to anyone. Set it in the environment and restart."
+        )
+
+
 async def _main_async() -> None:
+    _ensure_webhook_secret()
     await init_db()
     migrated = await migrate_feedback_samples()
     if migrated:

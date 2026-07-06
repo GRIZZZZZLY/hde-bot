@@ -4,7 +4,7 @@ from datetime import datetime, timezone, timedelta
 
 import aiosqlite
 
-from .core import db_path
+from .core import connect
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +22,7 @@ async def save_optimization_sample(
     confidence: int | None = None,
 ) -> int:
     """Save a labelled operator feedback sample for prompt optimization."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         cursor = await db.execute(
             "INSERT INTO optimization_samples "
             "(ticket_id, title, history, ai_answer, op_answer, outcome, confidence) "
@@ -36,7 +36,7 @@ async def save_optimization_sample(
 async def get_optimization_samples(days: int = 30) -> list[dict]:
     """Return optimization samples from the last N days."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT id, ticket_id, title, history, ai_answer, op_answer, outcome, confidence "
@@ -49,7 +49,7 @@ async def get_optimization_samples(days: int = 30) -> list[dict]:
 
 async def get_active_prompt() -> str | None:
     """Return content of the active prompt version, or None if none applied yet."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT content FROM prompt_versions WHERE status='active' ORDER BY id DESC LIMIT 1"
@@ -60,7 +60,7 @@ async def get_active_prompt() -> str | None:
 
 async def get_prompt_version(version_id: int) -> dict | None:
     """Return a single prompt version row by id."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT id, content, score, proposed_by, status, created_at FROM prompt_versions WHERE id=?",
@@ -72,7 +72,7 @@ async def get_prompt_version(version_id: int) -> dict | None:
 
 async def save_prompt_version(content: str, score: float | None, proposed_by: str) -> int:
     """Save a candidate prompt version. Returns its id."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         cursor = await db.execute(
             "INSERT INTO prompt_versions (content, score, proposed_by, status) VALUES (?,?,?,?)",
             (content, score, proposed_by, "candidate"),
@@ -83,7 +83,7 @@ async def save_prompt_version(content: str, score: float | None, proposed_by: st
 
 async def apply_prompt_version(version_id: int) -> None:
     """Mark version as active, all others as rejected."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             "UPDATE prompt_versions SET status='rejected' WHERE status IN ('active', 'candidate')"
         )
@@ -96,7 +96,7 @@ async def apply_prompt_version(version_id: int) -> None:
 
 async def reject_all_prompt_candidates() -> None:
     """Mark all candidate prompt versions as rejected."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         await db.execute(
             "UPDATE prompt_versions SET status='rejected' WHERE status='candidate'"
         )
@@ -105,7 +105,7 @@ async def reject_all_prompt_candidates() -> None:
 
 async def list_prompt_versions(limit: int = 8) -> list[dict]:
     """Return last *limit* prompt versions newest-first."""
-    async with aiosqlite.connect(db_path()) as db:
+    async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT id, content, score, proposed_by, status, created_at FROM prompt_versions"
