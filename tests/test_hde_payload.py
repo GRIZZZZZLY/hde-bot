@@ -353,7 +353,7 @@ async def test_get_retries_once_on_stale_keepalive_connection(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_raises_after_second_disconnect(monkeypatch):
+async def test_get_raises_after_last_disconnect(monkeypatch):
     attempts = {"n": 0}
 
     class FakeResponse:
@@ -379,11 +379,16 @@ async def test_get_raises_after_second_disconnect(monkeypatch):
 
     monkeypatch.setattr("bot.hde_api.aiohttp.ClientSession", FakeSession)
 
+    async def fake_sleep(delay):
+        pass
+
+    monkeypatch.setattr("bot.hde_api.asyncio.sleep", fake_sleep)
+
     client = HDEApiClient()
     with pytest.raises(aiohttp.ServerDisconnectedError):
         await client.get_ticket_info("42")
 
-    assert attempts["n"] == 2
+    assert attempts["n"] == HDEApiClient._GET_ATTEMPTS
 
 
 @pytest.mark.asyncio

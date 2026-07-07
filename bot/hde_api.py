@@ -122,22 +122,41 @@ class HDEApiClient:
             timeout=_REQUEST_TIMEOUT,
         )
 
-    async def _get(self, url: str, params: dict[str, str] | None = None) -> tuple[int, Any]:
-        """GET returning (status, parsed body), with one retry on a keep-alive race.
+    # GETs are idempotent, so transient failures are retried with backoff.
+    # Writes are never retried.
+    _GET_ATTEMPTS = 3
+    _GET_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+    _GET_BACKOFF_BASE = 0.5  # seconds; zeroed in tests so retries don't sleep
 
-        The shared pool can hand out a connection the server has just closed;
-        aiohttp surfaces that as ServerDisconnectedError. GETs are idempotent,
-        so one immediate retry is safe. Writes are never retried.
+    async def _get(self, url: str, params: dict[str, str] | None = None) -> tuple[int, Any]:
+        """GET returning (status, parsed body), retrying transient failures.
+
+        Retries on 5xx/429 responses, timeouts, and connection errors (incl.
+        stale keep-alive connections from the shared pool) up to _GET_ATTEMPTS
+        times with exponential backoff. The last 5xx/429 response is returned
+        as-is so callers keep their existing status handling.
         """
-        for attempt in (1, 2):
+        for attempt in range(1, self._GET_ATTEMPTS + 1):
             try:
                 async with self._make_session() as session:
                     async with session.get(url, params=params) as response:
-                        return response.status, await self._read_response(response)
-            except aiohttp.ServerDisconnectedError:
-                if attempt == 2:
+                        if (
+                            response.status not in self._GET_RETRY_STATUSES
+                            or attempt == self._GET_ATTEMPTS
+                        ):
+                            return response.status, await self._read_response(response)
+                        logger.warning(
+                            "HDE GET %s: status %d, retry %d/%d",
+                            url, response.status, attempt, self._GET_ATTEMPTS,
+                        )
+            except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as exc:
+                if attempt == self._GET_ATTEMPTS:
                     raise
-                logger.warning("HDE GET %s: stale keep-alive connection, retrying once", url)
+                logger.warning(
+                    "HDE GET %s: %s, retry %d/%d",
+                    url, exc.__class__.__name__, attempt, self._GET_ATTEMPTS,
+                )
+            await asyncio.sleep(self._GET_BACKOFF_BASE * 2 ** (attempt - 1))
         raise AssertionError("unreachable")
 
     async def add_comment(

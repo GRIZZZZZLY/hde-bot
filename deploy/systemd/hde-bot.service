@@ -10,6 +10,9 @@ EnvironmentFile=/opt/hde-bot/.env
 ExecStart=/opt/hde-bot/.venv/bin/python -m bot.main
 Restart=always
 RestartSec=5
+# Bot sends WATCHDOG=1 every 30s (bot/main.py); a hung event loop stops the
+# pings and systemd force-restarts the service.
+WatchdogSec=90
 
 [Install]
 WantedBy=multi-user.target

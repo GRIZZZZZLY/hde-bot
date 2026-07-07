@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import weakref
 from datetime import datetime, timedelta
 from typing import Optional
 
-_ticket_locks: dict[str, asyncio.Lock] = {}
+# Weak values: an entry lives only while some coroutine holds the lock object
+# (e.g. inside `async with _ticket_lock(id):`), so the dict can't grow forever.
+_ticket_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
 
 
 def _ticket_lock(ticket_id: str) -> asyncio.Lock:
-    if ticket_id not in _ticket_locks:
-        _ticket_locks[ticket_id] = asyncio.Lock()
-    return _ticket_locks[ticket_id]
+    lock = _ticket_locks.get(ticket_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _ticket_locks[ticket_id] = lock
+    return lock
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError

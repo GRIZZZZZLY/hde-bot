@@ -1,6 +1,8 @@
 import asyncio
 import contextlib
 import logging
+import os
+import socket
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
@@ -63,6 +65,35 @@ async def _run_hde_server(bot: Bot, stop_event: asyncio.Event) -> None:
     await runner.cleanup()
 
 
+def _sd_notify(state: str) -> None:
+    """Send a notification to systemd (no-op outside a systemd unit).
+
+    Used for WatchdogSec keep-alive pings: if the event loop hangs, pings
+    stop and systemd restarts the service.
+    """
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr or not hasattr(socket, "AF_UNIX"):
+        return
+    if addr.startswith("@"):
+        addr = "\0" + addr[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(addr)
+            sock.sendall(state.encode())
+    except OSError as exc:
+        logger.warning("sd_notify failed: %s", exc)
+
+
+_WATCHDOG_INTERVAL_SECONDS = 30  # WatchdogSec=90 in the unit → 3x margin
+
+
+async def _watchdog_loop(stop_event: asyncio.Event, interval: float = _WATCHDOG_INTERVAL_SECONDS) -> None:
+    while not stop_event.is_set():
+        _sd_notify("WATCHDOG=1")
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+
+
 def _ensure_webhook_secret() -> None:
     """Fail closed: refuse to start with an unauthenticated webhook endpoint."""
     if not config.hde_webhook_secret:
@@ -94,12 +125,14 @@ async def _main_async() -> None:
 
     scheduler_task = asyncio.create_task(run_scheduler(bot, stop_event))
     hde_task = asyncio.create_task(_run_hde_server(bot, stop_event))
+    watchdog_task = asyncio.create_task(_watchdog_loop(stop_event))
+    _sd_notify("READY=1")
 
     try:
         await dp.start_polling(bot, allowed_updates=_ALLOWED_UPDATES, handle_signals=True)
     finally:
         stop_event.set()
-        for task in (scheduler_task, hde_task):
+        for task in (scheduler_task, hde_task, watchdog_task):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task

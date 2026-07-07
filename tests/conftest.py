@@ -33,6 +33,12 @@ def reset_hde_connector():
 
 
 @pytest.fixture(autouse=True)
+def zero_hde_retry_backoff(monkeypatch):
+    """No real sleeping between HDE GET retries inside tests."""
+    monkeypatch.setattr(hde_api_module.HDEApiClient, "_GET_BACKOFF_BASE", 0)
+
+
+@pytest.fixture(autouse=True)
 def reset_webhook_background_tasks():
     """Drop webhook background tasks around each test: a task left behind by a
     previous test is bound to that test's (closed) event loop, and gathering it
