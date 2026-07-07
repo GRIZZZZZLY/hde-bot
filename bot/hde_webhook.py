@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -140,13 +141,35 @@ async def hde_webhook_handler(request: web.Request) -> web.Response:
     bot: Bot = request.app["bot"]
     handler = HANDLERS[event_type]
 
+    # ACK immediately: HDE holds the HTTP connection open otherwise, and slow
+    # processing triggers delivery retries. The claim above already dedupes.
+    task = asyncio.create_task(
+        _process_event(bot, handler, event_type, payload, event_key, should_dedupe)
+    )
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return web.Response(status=200, text="OK")
+
+
+# Strong refs so background tasks aren't garbage-collected mid-run.
+_background_tasks: set[asyncio.Task] = set()
+
+
+async def _process_event(
+    bot: Bot,
+    handler: Callable[[Bot, dict], object],
+    event_type: str,
+    payload: dict,
+    event_key: str,
+    should_dedupe: bool,
+) -> None:
     try:
         await handler(bot, payload)
     except Exception as exc:
         logger.exception("Error handling event '%s': %s", event_type, exc)
         if should_dedupe:
             await db.delete_processed_event(event_key)
-        return web.Response(status=500, text="Internal error")
+        return
 
     # General channel hooks — run after main handler, failures are non-fatal
     try:
@@ -162,4 +185,3 @@ async def hde_webhook_handler(request: web.Request) -> web.Response:
         logger.exception("General channel hook failed for event '%s': %s", event_type, exc)
 
     logger.info("Processed %s for ticket %s", event_type, payload["ticket_id"])
-    return web.Response(status=200, text="OK")

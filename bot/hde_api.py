@@ -35,6 +35,12 @@ def _get_connector() -> aiohttp.TCPConnector:
     return _shared_connector
 
 
+def shared_session(**kwargs) -> aiohttp.ClientSession:
+    """ClientSession borrowing the process-wide connector: keep-alive connections
+    are reused across calls, so no TCP+TLS handshake per request."""
+    return aiohttp.ClientSession(connector=_get_connector(), connector_owner=False, **kwargs)
+
+
 async def close_shared_connector() -> None:
     """Close the shared connection pool. Call on bot shutdown."""
     global _shared_connector, _connector_loop
@@ -251,7 +257,7 @@ class HDEApiClient:
             raw = data.get("data", data) if isinstance(data, dict) else {}
             # HDE returns the status as `status_id` (e.g. open / 6 / v-processe /
             # closed). The only terminal status is "closed" ("Выполнено").
-            status = str(raw.get("status_id", "") or "")
+            status = str(raw.get("status_id") or raw.get("status") or "")
             link = raw.get("link_staff", "")
             is_deletable = status == "closed"
             return (is_deletable, link)

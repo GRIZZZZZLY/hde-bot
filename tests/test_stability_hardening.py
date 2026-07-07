@@ -60,6 +60,8 @@ async def test_duplicate_event_during_processing_is_skipped():
         started.set()
         await release.wait()
 
+    import bot.hde_webhook as hde_webhook_module
+
     with patch.dict("bot.hde_webhook.HANDLERS", {"client_reply": slow_handler}):
         first = asyncio.create_task(
             hde_webhook_handler(make_request(dict(CLIENT_REPLY_PAYLOAD)))
@@ -70,6 +72,8 @@ async def test_duplicate_event_during_processing_is_skipped():
         )
         release.set()
         original = await first
+        while hde_webhook_module._background_tasks:
+            await asyncio.gather(*list(hde_webhook_module._background_tasks))
 
     assert original.status == 200
     assert duplicate.status == 200
@@ -88,11 +92,19 @@ async def test_claim_released_when_handler_fails():
         if calls == 1:
             raise RuntimeError("boom")
 
+    import bot.hde_webhook as hde_webhook_module
+
+    async def drain():
+        while hde_webhook_module._background_tasks:
+            await asyncio.gather(*list(hde_webhook_module._background_tasks))
+
     with patch.dict("bot.hde_webhook.HANDLERS", {"client_reply": failing_then_ok}):
         first = await hde_webhook_handler(make_request(dict(CLIENT_REPLY_PAYLOAD)))
+        await drain()
         retry = await hde_webhook_handler(make_request(dict(CLIENT_REPLY_PAYLOAD)))
+        await drain()
 
-    assert first.status == 500
+    assert first.status == 200
     assert retry.status == 200
     assert calls == 2
 

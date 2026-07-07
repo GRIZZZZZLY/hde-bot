@@ -198,7 +198,7 @@ async def test_apply_appends_audio_transcripts(monkeypatch):
     sess_cm = MagicMock()
     sess_cm.__aenter__ = AsyncMock(return_value=sess)
     sess_cm.__aexit__ = AsyncMock(return_value=False)
-    monkeypatch.setattr(tf.aiohttp, "ClientSession", lambda: sess_cm)
+    monkeypatch.setattr(tf, "shared_session", lambda: sess_cm)
 
     bot = MagicMock()
     bot.send_message = AsyncMock()

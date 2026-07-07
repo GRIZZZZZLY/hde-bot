@@ -33,6 +33,17 @@ def reset_hde_connector():
 
 
 @pytest.fixture(autouse=True)
+def reset_webhook_background_tasks():
+    """Drop webhook background tasks around each test: a task left behind by a
+    previous test is bound to that test's (closed) event loop, and gathering it
+    from the next test's loop raises 'future belongs to a different loop'."""
+    import bot.hde_webhook as hde_webhook_module
+    hde_webhook_module._background_tasks.clear()
+    yield
+    hde_webhook_module._background_tasks.clear()
+
+
+@pytest.fixture(autouse=True)
 def set_test_db(tmp_path, monkeypatch):
     test_db = str(tmp_path / "test.db")
     monkeypatch.setattr(db_module, "DB_PATH", test_db)

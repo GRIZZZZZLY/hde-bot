@@ -7,6 +7,7 @@ import logging
 import aiohttp
 
 from .config import config
+from .hde_api import shared_session
 from .llm_semaphore import LLM_SEMAPHORE
 
 logger = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ async def describe_image(image_bytes: bytes, filename: str = "") -> str | None:
 
     try:
         async with LLM_SEMAPHORE:
-            async with aiohttp.ClientSession() as session:
+            async with shared_session() as session:
                 async with session.post(
                     _GROQ_URL,
                     headers={"Authorization": f"Bearer {config.groq_api_key}"},

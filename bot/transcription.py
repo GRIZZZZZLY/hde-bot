@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 
 from .config import config
+from .hde_api import shared_session
 from .knowledge.indexer import index_knowledge_item
 from .llm_semaphore import LLM_SEMAPHORE
 
@@ -157,7 +158,7 @@ async def process_call_recording(
     ticket_title: str,
 ) -> int | None:
     """Transcribe -> summarize -> index. Returns knowledge item id or None."""
-    async with aiohttp.ClientSession() as session:
+    async with shared_session() as session:
         transcript = await transcribe_audio(audio_data, mime_type, session)
         if not transcript:
             return None

@@ -1,9 +1,18 @@
 """Tests for general_channel hook integration in hde_webhook."""
+import asyncio
+
 import pytest
 from unittest.mock import AsyncMock, patch
 from aiohttp import web
 
+import bot.hde_webhook as hde_webhook_module
 from bot.hde_webhook import hde_webhook_handler
+
+
+async def _drain_background() -> None:
+    """Wait for the webhook's background processing task to finish."""
+    while hde_webhook_module._background_tasks:
+        await asyncio.gather(*list(hde_webhook_module._background_tasks))
 
 
 @pytest.fixture
@@ -45,6 +54,7 @@ async def test_webhook_calls_general_channel_hook_on_assigned_on_create(mock_req
         mock_handlers.__getitem__.return_value = AsyncMock()
         mock_gc_hook.return_value = None
         response = await hde_webhook_handler(mock_request)
+        await _drain_background()
 
     assert response.status == 200
     mock_gc_hook.assert_called_once()
@@ -67,6 +77,7 @@ async def test_webhook_calls_general_channel_hook_on_owner_changed(mock_request,
         mock_handlers.__getitem__.return_value = AsyncMock()
         mock_gc_hook.return_value = None
         response = await hde_webhook_handler(mock_request)
+        await _drain_background()
 
     assert response.status == 200
     mock_gc_hook.assert_called_once()
@@ -89,6 +100,7 @@ async def test_webhook_calls_general_channel_hook_on_ticket_updated(mock_request
         mock_handlers.__getitem__.return_value = AsyncMock()
         mock_gc_hook.return_value = None
         response = await hde_webhook_handler(mock_request)
+        await _drain_background()
 
     assert response.status == 200
     mock_gc_hook.assert_called_once()
@@ -111,6 +123,7 @@ async def test_webhook_calls_general_channel_hook_on_ticket_closed(mock_request,
         mock_handlers.__getitem__.return_value = AsyncMock()
         mock_gc_hook.return_value = None
         response = await hde_webhook_handler(mock_request)
+        await _drain_background()
 
     assert response.status == 200
     mock_gc_hook.assert_called_once()
@@ -134,6 +147,7 @@ async def test_webhook_general_channel_hook_failure_does_not_fail_request(mock_r
         # General channel hook raises an exception
         mock_gc_hook.side_effect = Exception("General channel failed")
         response = await hde_webhook_handler(mock_request)
+        await _drain_background()
 
     # Despite the general_channel hook failing, response should still be 200
     assert response.status == 200

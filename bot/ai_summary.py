@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 
 from .config import config
+from .hde_api import shared_session
 from .llm_semaphore import LLM_SEMAPHORE
 from .voice_profile import load_voice_examples
 
@@ -75,7 +76,7 @@ async def _call_groq_for_summary(system_text: str, history: str, ticket_id: str)
         logger.info("Groq fallback skipped: GROQ_API_KEY not set")
         return None
     try:
-        async with LLM_SEMAPHORE, aiohttp.ClientSession() as session:
+        async with LLM_SEMAPHORE, shared_session() as session:
             async with session.post(
                 _GROQ_URL,
                 json={
@@ -380,13 +381,22 @@ def _build_history_text(posts: "list[HDEPost]", info: "HDETicketInfo") -> str:
     return "\n".join(lines)
 
 
-def _log_generation(
+def _write_generation_log(entry: dict) -> None:
+    os.makedirs("data", exist_ok=True)
+    with open("data/ai_log.jsonl", "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+async def _log_generation(
     ticket_id: str,
     ticket_title: str,
     history: str,
     generated: str,
 ) -> None:
-    """Append a JSONL entry to data/ai_log.jsonl for future few-shot curation."""
+    """Append a JSONL entry to data/ai_log.jsonl for future few-shot curation.
+
+    File I/O runs in a worker thread so the event loop is never blocked.
+    """
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(),
         "ticket_id": ticket_id,
@@ -396,9 +406,7 @@ def _log_generation(
         "operator_reply": None,
     }
     try:
-        os.makedirs("data", exist_ok=True)
-        with open("data/ai_log.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        await asyncio.to_thread(_write_generation_log, entry)
     except OSError as exc:
         logger.warning("Could not write ai_log.jsonl: %s", exc)
 
@@ -614,7 +622,7 @@ async def generate_ticket_summary(
     # Groq Scout fallback if llama failed (separate quota, supports images/audio)
     if raw_text is None:
         try:
-            async with aiohttp.ClientSession() as session:
+            async with shared_session() as session:
                 # Transcribe audio attachments via Deepgram (non-fatal)
                 try:
                     transcripts = await _transcribe_audio_posts(posts, session)
@@ -647,7 +655,7 @@ async def generate_ticket_summary(
 
     # Log raw output for future curation
     if ticket_id:
-        _log_generation(ticket_id, ticket_title, history, text)
+        await _log_generation(ticket_id, ticket_title, history, text)
 
     # Parse "Суть: ...\nКлиенту: ...\nПамятка: ..."
     import re as _re

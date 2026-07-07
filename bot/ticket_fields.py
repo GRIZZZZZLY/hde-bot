@@ -5,6 +5,7 @@ tickets (HDE API does not expose select-field option lists).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -16,7 +17,7 @@ import aiohttp
 from aiogram import Bot
 
 from .config import config
-from .hde_api import HDEApiClient
+from .hde_api import HDEApiClient, shared_session
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +199,7 @@ async def _groq_classify(prompt: str, user_content: str, model: str = _GROQ_MODE
         "max_tokens": 64,
     }
     try:
-        async with aiohttp.ClientSession() as session:
+        async with shared_session() as session:
             async with session.post(
                 _GROQ_URL,
                 json=payload,
@@ -358,7 +359,7 @@ async def apply_ticket_fields(
     if posts:
         try:
             from .ai_summary import _transcribe_audio_posts
-            async with aiohttp.ClientSession() as session:
+            async with shared_session() as session:
                 for t in await _transcribe_audio_posts(posts, session):
                     enriched += f"\n[Голосовое сообщение клиента: {t}]"
         except Exception as exc:
@@ -519,11 +520,16 @@ async def log_env_outcome(ticket_id: str, predicted: str | None) -> None:
             "final": final_str,
             "match": bool(predicted) and final_str == predicted,
         }
-        os.makedirs(os.path.dirname(ENV_CORRECTIONS_PATH) or ".", exist_ok=True)
-        with open(ENV_CORRECTIONS_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        await asyncio.to_thread(_append_jsonl, ENV_CORRECTIONS_PATH, entry)
     except Exception as exc:
         logger.warning("log_env_outcome failed for %s: %s", ticket_id, exc)
+
+
+def _append_jsonl(path: str, entry: dict) -> None:
+    """Blocking append — call via asyncio.to_thread to keep the event loop free."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 async def log_pt_outcome(
@@ -556,8 +562,6 @@ async def log_pt_outcome(
                 and final_type == predicted_type
             ),
         }
-        os.makedirs(os.path.dirname(PT_CORRECTIONS_PATH) or ".", exist_ok=True)
-        with open(PT_CORRECTIONS_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        await asyncio.to_thread(_append_jsonl, PT_CORRECTIONS_PATH, entry)
     except Exception as exc:
         logger.warning("log_pt_outcome failed for %s: %s", ticket_id, exc)
