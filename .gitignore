@@ -37,3 +37,4 @@ data/macros/
 # Offline analysis tools and synced databases
 tools/analysis/
 hde_bot_local.db
+/*.png
