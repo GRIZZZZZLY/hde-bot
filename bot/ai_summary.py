@@ -6,12 +6,14 @@ import base64
 import json
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import aiohttp
 
+from . import metrics
 from .config import config
 from .hde_api import shared_session
 from .llm_semaphore import LLM_SEMAPHORE
@@ -70,11 +72,62 @@ _EQUIPMENT_PATTERNS = [
 ]
 
 
+async def call_groq_text(
+    prompt: str,
+    *,
+    system: str | None = None,
+    model: str = _GROQ_MODEL,
+    max_tokens: int = 300,
+    temperature: float = 0.1,
+    timeout_seconds: float = 20,
+) -> str | None:
+    """One-shot Groq chat completion via the shared session and LLM semaphore.
+
+    The single entry point for ad-hoc text calls outside the summary pipeline.
+    Returns the reply text, or None on any failure (missing key, non-200,
+    network error) — callers treat LLM output as optional.
+    """
+    if not config.groq_api_key:
+        return None
+    messages: list[dict] = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    started = time.monotonic()
+    try:
+        async with LLM_SEMAPHORE, shared_session() as session:
+            async with session.post(
+                _GROQ_URL,
+                json={
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                },
+                headers={"Authorization": f"Bearer {config.groq_api_key}"},
+                timeout=aiohttp.ClientTimeout(total=timeout_seconds),
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    logger.warning("Groq text call error %s: %s", resp.status, body[:200])
+                    metrics.inc("llm_failures")
+                    return None
+                data = await resp.json()
+        metrics.inc("llm_calls")
+        metrics.observe_llm_latency(time.monotonic() - started)
+        return data["choices"][0]["message"]["content"].strip()
+    except Exception as exc:
+        logger.warning("Groq text call failed: %s", exc)
+        metrics.inc("llm_failures")
+        return None
+
+
 async def _call_groq_for_summary(system_text: str, history: str, ticket_id: str) -> str | None:
     """Primary: text-only summary via Groq llama-3.3-70b."""
     if not config.groq_api_key:
         logger.info("Groq fallback skipped: GROQ_API_KEY not set")
         return None
+    started = time.monotonic()
     try:
         async with LLM_SEMAPHORE, shared_session() as session:
             async with session.post(
@@ -94,13 +147,17 @@ async def _call_groq_for_summary(system_text: str, history: str, ticket_id: str)
                 if resp.status != 200:
                     body = await resp.text()
                     logger.warning("Groq API error %s for ticket %s: %s", resp.status, ticket_id, body[:200])
+                    metrics.inc("llm_failures")
                     return None
                 data = await resp.json()
         text = data["choices"][0]["message"]["content"].strip()
+        metrics.inc("llm_calls")
+        metrics.observe_llm_latency(time.monotonic() - started)
         logger.info("Groq fallback succeeded for ticket %s", ticket_id)
         return text
     except Exception as exc:
         logger.warning("Groq request failed for ticket %s: %s", ticket_id, exc)
+        metrics.inc("llm_failures")
         return None
 
 

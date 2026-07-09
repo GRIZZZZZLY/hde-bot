@@ -8,6 +8,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.types import ErrorEvent, Update
 
+from . import metrics
 from .command_menu import build_command_scopes
 from .config import config
 from .db import init_db, migrate_feedback_samples
@@ -49,12 +50,16 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
     return dp
 
 
+async def _health_handler(request: web.Request | None) -> web.Response:
+    return web.json_response({"status": "ok", **metrics.snapshot()})
+
+
 async def _run_hde_server(bot: Bot, stop_event: asyncio.Event) -> None:
     """aiohttp server — only handles HDE webhooks."""
     app = web.Application()
     app["bot"] = bot
     app.router.add_post(config.webhook_path_hde, hde_webhook_handler)
-    app.router.add_get("/health", lambda r: web.Response(text="ok"))
+    app.router.add_get("/health", _health_handler)
 
     runner = web.AppRunner(app)
     await runner.setup()

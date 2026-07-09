@@ -11,6 +11,7 @@ from aiogram import Bot
 
 from . import db
 from . import general_channel
+from . import metrics
 from .client_media import extract_client_attachment_refs
 from .config import config
 from .topic_manager import (
@@ -95,6 +96,7 @@ def _build_event_key(payload: dict) -> str:
 
 
 async def hde_webhook_handler(request: web.Request) -> web.Response:
+    metrics.inc("webhook_received")
     try:
         raw_payload = await request.json()
     except (json.JSONDecodeError, Exception) as exc:
@@ -136,6 +138,7 @@ async def hde_webhook_handler(request: web.Request) -> web.Response:
             logger.info(
                 "Skipping duplicate event %s for ticket %s", event_type, payload["ticket_id"]
             )
+            metrics.inc("webhook_duplicate")
             return web.Response(status=200, text="Duplicate OK")
 
     bot: Bot = request.app["bot"]
@@ -167,6 +170,7 @@ async def _process_event(
         await handler(bot, payload)
     except Exception as exc:
         logger.exception("Error handling event '%s': %s", event_type, exc)
+        metrics.inc("webhook_failed")
         if should_dedupe:
             await db.delete_processed_event(event_key)
         return
@@ -184,4 +188,5 @@ async def _process_event(
     except Exception as exc:
         logger.exception("General channel hook failed for event '%s': %s", event_type, exc)
 
+    metrics.inc("webhook_processed")
     logger.info("Processed %s for ticket %s", event_type, payload["ticket_id"])
