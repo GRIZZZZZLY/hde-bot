@@ -95,8 +95,8 @@ async def cb_ai_good(callback: CallbackQuery) -> None:
     await callback.answer("✅ Сохранено в базу знаний", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("ai_feedback: reply markup cleanup failed: %s", exc)
     if pending is None:
         return
     await delete_ai_feedback_pending(topic_id)
@@ -120,8 +120,8 @@ async def cb_ai_good(callback: CallbackQuery) -> None:
             op_answer=None,
             outcome="accepted",
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("ai_feedback: optimization sample save failed: %s", exc)
     # Update wiki article (non-fatal)
     try:
         from ..wiki.builder import build_or_update_wiki_article
@@ -144,8 +144,8 @@ async def cb_ai_bad(callback: CallbackQuery) -> None:
     await callback.answer()
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("ai_feedback: reply markup cleanup failed: %s", exc)
     await delete_ai_feedback_pending(topic_id)
     logger.info("Marked summary as bad for topic %d", topic_id)
     # Save for prompt optimizer
@@ -160,8 +160,8 @@ async def cb_ai_bad(callback: CallbackQuery) -> None:
                 op_answer=None,
                 outcome="rejected",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("ai_feedback: optimization sample save failed: %s", exc)
 
 
 @router.callback_query(F.data == "ai:edit")
@@ -174,8 +174,8 @@ async def cb_ai_edit(callback: CallbackQuery) -> None:
     await callback.answer()
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("ai_feedback: reply markup cleanup failed: %s", exc)
     if pending is None:
         return
     await callback.message.answer(
@@ -202,8 +202,8 @@ async def cb_suit_good(callback: CallbackQuery) -> None:
     await callback.answer("👍 Диагноз отмечен верным", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("ai_feedback: reply markup cleanup failed: %s", exc)
 
 
 @router.callback_query(F.data == "suit:bad")
@@ -211,8 +211,8 @@ async def cb_suit_bad(callback: CallbackQuery) -> None:
     await callback.answer("👎 Отмечено", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("ai_feedback: reply markup cleanup failed: %s", exc)
 
 
 @router.callback_query(F.data == "memo:good")
@@ -220,8 +220,8 @@ async def cb_memo_good(callback: CallbackQuery) -> None:
     await callback.answer("👍 Отмечено", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("ai_feedback: reply markup cleanup failed: %s", exc)
 
 
 @router.callback_query(F.data == "memo:bad")
@@ -229,8 +229,8 @@ async def cb_memo_bad(callback: CallbackQuery) -> None:
     await callback.answer("👎 Отмечено", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("ai_feedback: reply markup cleanup failed: %s", exc)
 
 
 @router.callback_query(F.data.in_({"ai:send_post", "ai:send_comment"}))
@@ -275,8 +275,8 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
     except Exception:
         try:
             await callback.message.edit_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("ai_feedback: reply markup cleanup failed: %s", exc)
     logger.info("Sent AI answer to HDE ticket %s (%s)", pending["ticket_id"], label)
     # Save for prompt optimizer
     try:
@@ -289,8 +289,8 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
             op_answer=None,
             outcome="sent",
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("ai_feedback: optimization sample save failed: %s", exc)
 
 
 @router.message(_HasPendingCorrection(), F.text.is_not(None), _NOT_COMMAND)
@@ -324,8 +324,8 @@ async def capture_correction(message: Message) -> None:
             op_answer=correction_text,
             outcome="corrected",
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("ai_feedback: optimization sample save failed: %s", exc)
     # Update wiki article (non-fatal)
     try:
         from ..wiki.builder import build_or_update_wiki_article

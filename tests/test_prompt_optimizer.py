@@ -382,9 +382,9 @@ async def test_opt_apply_activates_version():
     callback.message = MagicMock()
     callback.message.edit_text = AsyncMock()
 
-    with patch("bot.handlers.commands.db", _db):
-        with patch("bot.handlers.commands.invalidate_prompt_cache") as mock_inv:
-            from bot.handlers.commands import cb_opt_apply
+    with patch("bot.handlers.optimizer_commands.db", _db):
+        with patch("bot.handlers.optimizer_commands.invalidate_prompt_cache") as mock_inv:
+            from bot.handlers.optimizer_commands import cb_opt_apply
             await cb_opt_apply(callback)
 
     active = await _db.get_active_prompt()

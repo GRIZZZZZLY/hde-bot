@@ -38,8 +38,8 @@ async def _update_progress(msg: Message, pct: int, status: str) -> None:
             f"{status}",
             parse_mode="HTML",
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("optimizer progress edit failed: %s", exc)
 
 
 async def run_optimizer(bot: Bot) -> None:
@@ -75,8 +75,8 @@ async def run_optimizer(bot: Bot) -> None:
                     f"⏭ Пропущено — недостаточно данных ({len(samples)} из {_MIN_SAMPLES} нужных).",
                     parse_mode="HTML",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("optimizer status message failed: %s", exc)
         return
 
     train, holdout = split_samples(samples)
@@ -207,8 +207,8 @@ async def run_optimizer(bot: Bot) -> None:
                     f"Лучший кандидат: {round(winner_score * 100)} баллов ({winner_model}).",
                     parse_mode="HTML",
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("optimizer status message failed: %s", exc)
         return
 
     if progress_msg:
@@ -236,8 +236,8 @@ async def run_optimizer(bot: Bot) -> None:
                 f"({round(winner_score * 100)} баллов, +{round((winner_score - baseline) / max(baseline, 0.01) * 100)}%).",
                 parse_mode="HTML",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("optimizer status message failed: %s", exc)
 
 
 async def _send_report(

@@ -257,7 +257,7 @@ def _topic_record(ticket_id="987", ticket_name="Не печатает чек"):
 
 @pytest.mark.asyncio
 async def test_topic_call_recording_indexed_and_confirmed(monkeypatch):
-    from bot.handlers import commands as cmd
+    from bot.handlers import media_commands as cmd
 
     msg, status = _topic_message()
     monkeypatch.setattr(_config, "is_operator_allowed", lambda uid: True)
@@ -278,7 +278,7 @@ async def test_topic_call_recording_indexed_and_confirmed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_topic_call_recording_failure_reports_error(monkeypatch):
-    from bot.handlers import commands as cmd
+    from bot.handlers import media_commands as cmd
 
     msg, status = _topic_message()
     monkeypatch.setattr(_config, "is_operator_allowed", lambda uid: True)
@@ -294,7 +294,7 @@ async def test_topic_call_recording_failure_reports_error(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_topic_call_recording_non_operator_ignored(monkeypatch):
-    from bot.handlers import commands as cmd
+    from bot.handlers import media_commands as cmd
 
     msg, status = _topic_message()
     monkeypatch.setattr(_config, "is_operator_allowed", lambda uid: False)
@@ -312,7 +312,7 @@ async def test_topic_call_recording_non_operator_ignored(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_topic_call_recording_no_linked_ticket_ignored(monkeypatch):
-    from bot.handlers import commands as cmd
+    from bot.handlers import media_commands as cmd
 
     msg, status = _topic_message()
     monkeypatch.setattr(_config, "is_operator_allowed", lambda uid: True)

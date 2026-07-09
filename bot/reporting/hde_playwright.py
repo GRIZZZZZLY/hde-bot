@@ -117,8 +117,8 @@ async def _fetch_once(
             try:
                 await page.screenshot(path=str(screenshot), full_page=True)
                 logger.error("Saved Playwright error screenshot to %s", screenshot)
-            except Exception:
-                pass
+            except Exception as shot_exc:
+                logger.debug("error screenshot failed: %s", shot_exc)
             raise RuntimeError(f"HDE report failed: {exc}") from exc
         finally:
             await browser.close()

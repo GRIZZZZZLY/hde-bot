@@ -364,8 +364,8 @@ async def process_scheduled_actions(bot: Bot) -> None:
             )
             try:
                 await _try_delete_pre_sla_message(bot, record)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("pre-SLA message cleanup failed for %s: %s", record.ticket_id, exc)
             await db.clear_pre_sla(record.ticket_id)
             continue
         try:
