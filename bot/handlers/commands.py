@@ -12,6 +12,7 @@ from ..db import (
     count_total_topics,
 )
 from .. import db
+from .. import metrics
 from ..ai_summary import _build_history_text
 from ..digest import send_morning_digest
 from ..formatter import format_refresh_result
@@ -52,6 +53,25 @@ async def _run_operator_command(
 
 
 
+def _format_metrics_block() -> str:
+    """Ops counters for /status. Reset on restart, so uptime frames them."""
+    snap = metrics.snapshot()
+    uptime_min = snap.get("uptime_seconds", 0) // 60
+    lines = [f"\n\n⚙️ <b>Метрики</b> (за {uptime_min} мин аптайма)"]
+    lines.append(
+        f"📨 Вебхуки: <b>{snap.get('webhook_received', 0)}</b> получено · "
+        f"{snap.get('webhook_processed', 0)} обработано · "
+        f"{snap.get('webhook_duplicate', 0)} дублей · "
+        f"{snap.get('webhook_failed', 0)} ошибок"
+    )
+    llm_calls = snap.get("llm_calls", 0)
+    llm_line = f"🧠 LLM: <b>{llm_calls}</b> вызовов · {snap.get('llm_failures', 0)} ошибок"
+    if "llm_latency_avg_ms" in snap:
+        llm_line += f" · ~{snap['llm_latency_avg_ms']} мс"
+    lines.append(llm_line)
+    return "\n".join(lines)
+
+
 @router.message(Command("status"))
 async def cmd_status(message: Message) -> None:
     active_topics = await count_active_topics()
@@ -64,7 +84,8 @@ async def cmd_status(message: Message) -> None:
         f"🟢 Активных topics: <b>{active_topics}</b>\n"
         f"⏳ Ожидают удаления: <b>{pending_delete}</b>\n"
         f"⏰ Ожидают pre-SLA: <b>{pending_pre_sla}</b>\n"
-        f"📚 Всего записей: <b>{total_topics}</b>",
+        f"📚 Всего записей: <b>{total_topics}</b>"
+        + _format_metrics_block(),
         parse_mode="HTML",
     )
 
