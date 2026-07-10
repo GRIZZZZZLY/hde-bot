@@ -20,7 +20,10 @@ def _anchor_post_id(posts) -> str | None:
 
 async def _default_posts_fn(ticket_id: str):
     from ..hde_api import HDEApiClient
-    return await HDEApiClient().get_ticket_posts(ticket_id)
+    client = HDEApiClient()
+    posts = await client.get_ticket_posts(ticket_id)
+    comments = await client.get_ticket_comments(ticket_id)
+    return list(posts) + list(comments)
 
 
 async def run_agent(
@@ -58,6 +61,7 @@ async def run_agent(
 
     started = time.monotonic()
     posts = list(posts)
+    original_anchor = _anchor_post_id(posts)
     client_text_quick = extract_client_text(posts, getattr(info, "client_id", ""))
 
     # 1-2. Дешёвый policy pre-check ДО retrieval
@@ -69,7 +73,7 @@ async def run_agent(
             self_check_status="n/a", action="ESCALATE",
         )
         await _record_nonfatal(
-            _record_fn, posts=posts, info=info, ticket_id=ticket_id,
+            _record_fn, anchor=original_anchor, info=info, ticket_id=ticket_id,
             topic_id=topic_id, ticket_title=ticket_title, history="",
             client_text=client_text_quick, client="", suit="", memo=memo,
             action="ESCALATE", self_status="n/a", evidence=[],
@@ -132,7 +136,7 @@ async def run_agent(
         stale_warning=stale_warning,
     )
     await _record_nonfatal(
-        _record_fn, posts=posts, info=info, ticket_id=ticket_id, topic_id=topic_id,
+        _record_fn, anchor=original_anchor, info=info, ticket_id=ticket_id, topic_id=topic_id,
         ticket_title=ticket_title, history=context["history"],
         client_text=context["client_text"], client=client, suit=suit, memo=memo,
         action=action, self_status=self_status, evidence=context["evidence"],
@@ -143,7 +147,7 @@ async def run_agent(
 
 
 async def _record_nonfatal(
-    record_fn, *, posts, info, ticket_id, topic_id, ticket_title, history,
+    record_fn, *, anchor, info, ticket_id, topic_id, ticket_title, history,
     client_text, client, suit, memo, action, self_status, evidence,
     retrieval_query, confidence, confidence_reason, started,
 ) -> None:
@@ -154,7 +158,7 @@ async def _record_nonfatal(
             ticket_id=ticket_id,
             topic_id=topic_id,
             trigger_source="first",
-            context_until_post_id=_anchor_post_id(posts),
+            context_until_post_id=anchor,
             client_id=str(getattr(info, "client_id", "") or "") or None,
             pipeline_version=config.agent_pipeline_version,
             prompt_version=prompt_version_tag(),

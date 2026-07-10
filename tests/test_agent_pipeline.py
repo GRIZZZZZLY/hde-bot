@@ -130,6 +130,48 @@ async def test_superseded_triggers_one_regeneration():
     assert "новое сообщение" not in memo
 
 
+async def test_superseded_records_original_anchor_not_fresh_anchor():
+    """Freshness re-fetch may return a higher anchor (e.g. a comment id
+    outranking all post ids, since posts and comments are separate id spaces
+    in HDE) even though no new client message actually arrived. The recorded
+    context_until_post_id must still equal the ORIGINAL anchor computed from
+    the input `posts`, so it dedupes with register_feedback_pending's
+    idempotency key (which is always based on the original all_posts anchor).
+    """
+    fresh_posts_with_higher_comment_id = [
+        SimpleNamespace(user_id=1, text="касса не печатает", post_id=5),
+        SimpleNamespace(user_id=2, text="внутренний комментарий", post_id=999),
+    ]
+
+    async def moving_posts(ticket_id):
+        return fresh_posts_with_higher_comment_id
+
+    calls = {"draft": 0}
+
+    async def draft(ctx, title, **k):
+        calls["draft"] += 1
+        return {"action": "ANSWER", "suit": "s", "client": f"ответ{calls['draft']}",
+                "memo": "m", "confidence": 80, "confidence_reason": ""}
+
+    async def sc(ct, gen, evidence, hist, **k):
+        return {"status": "supported", "fallback_action": "ASK", "fallback_client_text": ""}
+
+    recorded = {}
+
+    async def rec(**kw):
+        recorded.update(kw)
+        return 1
+
+    await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T9",
+        _context_fn=_ctx, _draft_fn=draft, _selfcheck_fn=sc,
+        _safety_pre=_PROCEED, _safety_post=_PROCEED,
+        _record_fn=rec, _posts_fn=moving_posts,
+    )
+    assert calls["draft"] == 2                           # still regenerates once
+    assert recorded["context_until_post_id"] == "5"       # original anchor, not 999
+
+
 async def test_post_safety_escalates_generated_answer():
     async def draft(ctx, title, **k):
         return {"action": "ANSWER", "suit": "s", "client": "Я сделаю возврат средств",
