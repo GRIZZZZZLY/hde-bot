@@ -7,7 +7,9 @@ gate против baseline — compare_to_baseline. Никакого влиян�
 from __future__ import annotations
 
 import hashlib
+import html as _html
 import json
+import re as _re
 from datetime import datetime, timezone
 
 ACTIONS = ("ANSWER", "ASK", "ESCALATE", "NO_ACTION")
@@ -258,3 +260,82 @@ def compare_to_baseline(baseline: dict, candidate: dict) -> dict:
         },
     ]
     return {"passed": all(ch["passed"] for ch in checks), "checks": checks}
+
+
+def _strip_html(text: str) -> str:
+    cleaned = _re.sub(r"<[^>]+>", " ", text or "")
+    cleaned = _html.unescape(cleaned)
+    return _re.sub(r"\s+", " ", cleaned).strip()
+
+
+def _guess_expected_action(client_text: str, reference_answer: str) -> str:
+    """Черновая эвристика для ручной валидации, не финальная разметка."""
+    from ..agent.safety import pre_generation_policy_check
+    if pre_generation_policy_check(client_text).action == "ESCALATE":
+        return "ESCALATE"
+    if "?" in reference_answer[:200]:
+        return "ASK"
+    return "ANSWER"
+
+
+async def _ticket_to_case(client, ticket: dict, owner_id: str) -> dict | None:
+    ticket_id = str(ticket.get("id") or ticket.get("ticket_id") or "")
+    if not ticket_id:
+        return None
+    posts = await client.get_ticket_posts(ticket_id)
+    posts = [p for p in posts if not getattr(p, "is_comment", False)]
+    staff_idx = next(
+        (i for i, p in enumerate(posts) if str(p.user_id) == str(owner_id)), None
+    )
+    if staff_idx is None or staff_idx == 0:
+        return None  # нет ответа оператора или нет клиентских сообщений до него
+    client_posts = [_strip_html(p.text) for p in posts[:staff_idx]]
+    client_posts = [t for t in client_posts if t]
+    if not client_posts:
+        return None
+    reference = _strip_html(posts[staff_idx].text)
+    if not reference:
+        return None
+    history = "\n".join(f"Клиент: {t}" for t in client_posts)
+    client_text = client_posts[-1]
+    return {
+        "case_id": "",  # проставляется после round-robin отбора
+        "ticket_id": ticket_id,
+        "title": _strip_html(str(ticket.get("name") or ticket.get("title") or "")),
+        "history": history,
+        "client_text": client_text,
+        "expected_action": _guess_expected_action(client_text, reference),
+        "reference_answer": reference,
+        "rubric": "",
+        "type_id": str(ticket.get("type_id") or ""),
+    }
+
+
+async def mine_candidates(
+    client, owner_id: str, *, target: int = 120, max_pages: int = 50
+) -> list[dict]:
+    """Собирает кейсы-кандидаты из закрытых тикетов HDE.
+
+    Разнообразие — round-robin по type_id-бакетам. expected_action — эвристика,
+    оператор правит вручную перед freeze."""
+    buckets: dict[str, list[dict]] = {}
+    page = 1
+    while page <= max_pages:
+        tickets, total_pages = await client.get_closed_tickets_page(owner_id, page)
+        for ticket in tickets:
+            case = await _ticket_to_case(client, ticket, owner_id)
+            if case is not None:
+                buckets.setdefault(case["type_id"], []).append(case)
+        if page >= total_pages or sum(len(b) for b in buckets.values()) >= target * 2:
+            break
+        page += 1
+
+    selected: list[dict] = []
+    queues = [list(b) for b in buckets.values()]
+    while len(selected) < target and any(queues):
+        for q in queues:
+            if q and len(selected) < target:
+                selected.append(q.pop(0))
+    for idx, case in enumerate(selected, start=1):
+        case["case_id"] = f"g{idx:03d}"
+    return selected

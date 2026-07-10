@@ -238,3 +238,67 @@ def test_gate_handles_none_metrics_safely():
     assert unsupported["candidate"] is None
     assert accuracy["candidate"] is None
     assert usefulness["candidate"] is None
+
+
+from types import SimpleNamespace
+
+from bot.optimizer.golden import _strip_html, mine_candidates
+
+
+def _post(pid, uid, text, is_comment=False):
+    return SimpleNamespace(post_id=pid, user_id=uid, text=text, is_comment=is_comment)
+
+
+class _FakeHDE:
+    def __init__(self, tickets, posts_by_ticket):
+        self._tickets = tickets
+        self._posts = posts_by_ticket
+
+    async def get_closed_tickets_page(self, owner_id, page=1):
+        return (self._tickets, 1) if page == 1 else ([], 1)
+
+    async def get_ticket_posts(self, ticket_id, limit=20):
+        return self._posts.get(str(ticket_id), [])
+
+
+def test_strip_html():
+    assert _strip_html("<p>касса <b>не</b> печатает</p>") == "касса не печатает"
+
+
+async def test_mine_candidates_builds_cases():
+    tickets = [
+        {"id": "T1", "name": "Не печатает чек", "type_id": "5"},
+        {"id": "T2", "name": "Вопрос по возврату", "type_id": "7"},
+        {"id": "T3", "name": "Без ответа оператора", "type_id": "5"},
+    ]
+    posts = {
+        "T1": [
+            _post(1, "client9", "<p>касса не печатает чек</p>"),
+            _post(2, "me", "Проверьте бумагу и перезапустите кассу."),
+        ],
+        "T2": [
+            _post(3, "client9", "как сделать возврат средств покупателю?"),
+            _post(4, "me", "Какая у вас модель кассы?"),
+        ],
+        "T3": [_post(5, "client9", "вопрос без ответа")],
+    }
+    cases = await mine_candidates(_FakeHDE(tickets, posts), "me", target=10)
+    by_ticket = {c["ticket_id"]: c for c in cases}
+    assert set(by_ticket) == {"T1", "T2"}          # T3 пропущен: нет ответа
+    t1 = by_ticket["T1"]
+    assert t1["reference_answer"] == "Проверьте бумагу и перезапустите кассу."
+    assert "касса не печатает чек" in t1["history"]
+    assert t1["expected_action"] == "ANSWER"
+    t2 = by_ticket["T2"]
+    assert t2["expected_action"] == "ESCALATE"     # policy-check: возврат средств
+    assert cases[0]["case_id"] == "g001"
+
+
+async def test_mine_candidates_respects_target():
+    tickets = [{"id": f"T{i}", "name": f"t{i}", "type_id": "1"} for i in range(5)]
+    posts = {
+        f"T{i}": [_post(1, "c", f"вопрос {i}"), _post(2, "me", f"ответ {i}")]
+        for i in range(5)
+    }
+    cases = await mine_candidates(_FakeHDE(tickets, posts), "me", target=3)
+    assert len(cases) == 3
