@@ -491,6 +491,78 @@ async def init_db() -> None:
                 applied_at  TEXT
             )
         """)
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ai_suggestions (
+                id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id                TEXT NOT NULL,
+                topic_id                 INTEGER,
+                trigger_source           TEXT NOT NULL DEFAULT 'first',
+                context_until_post_id    TEXT,
+                client_id                TEXT,
+                idempotency_key          TEXT UNIQUE,
+                title                    TEXT DEFAULT '',
+                history                  TEXT NOT NULL DEFAULT '',
+                client_text              TEXT DEFAULT '',
+                retrieval_query          TEXT,
+                retrieval_config_version TEXT,
+                embedding_model          TEXT,
+                retrieved_refs           TEXT,
+                pipeline_version         TEXT,
+                prompt_version           TEXT,
+                model                    TEXT,
+                action_type              TEXT,
+                ai_answer                TEXT DEFAULT '',
+                ai_full_text             TEXT DEFAULT '',
+                confidence               INTEGER,
+                confidence_reason        TEXT,
+                self_check               TEXT,
+                generation_status        TEXT NOT NULL DEFAULT 'completed',
+                review_status            TEXT NOT NULL DEFAULT 'pending',
+                delivery_status          TEXT NOT NULL DEFAULT 'not_sent',
+                evaluation_status        TEXT NOT NULL DEFAULT 'pending',
+                freshness_status         TEXT NOT NULL DEFAULT 'current',
+                final_sent_text          TEXT,
+                final_sent_post_id       TEXT,
+                reviewed_at              TEXT,
+                sent_at                  TEXT,
+                human_label              TEXT,
+                judge_label              TEXT,
+                judge_detail             TEXT,
+                judge_reference_answer   TEXT,
+                judged_at                TEXT,
+                effective_label          TEXT,
+                generation_ms            INTEGER,
+                tokens_in                INTEGER,
+                tokens_out               INTEGER,
+                error                    TEXT,
+                created_at               TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_suggestions_topic ON ai_suggestions(topic_id)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_suggestions_eval "
+            "ON ai_suggestions(evaluation_status)"
+        )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ai_suggestion_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                suggestion_id INTEGER NOT NULL,
+                event_type    TEXT NOT NULL,
+                payload       TEXT,
+                hde_post_id   TEXT,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ai_suggestion_events_sid "
+            "ON ai_suggestion_events(suggestion_id)"
+        )
         await db.commit()
 
 

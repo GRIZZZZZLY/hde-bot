@@ -130,3 +130,11 @@ from .optimizer_store import (
     save_optimization_sample,
     save_prompt_version,
 )
+from .suggestion_store import (
+    compute_idempotency_key,
+    derive_human_label,
+    get_open_suggestion_by_topic,
+    get_suggestion,
+    record_suggestion,
+    record_suggestion_event,
+)

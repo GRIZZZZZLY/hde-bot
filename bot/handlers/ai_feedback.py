@@ -11,6 +11,9 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from ..db import (
     delete_ai_feedback_pending,
     get_ai_feedback_pending,
+    get_open_suggestion_by_topic,
+    record_suggestion,
+    record_suggestion_event,
     save_ai_feedback_pending,
 )
 from ..knowledge.indexer import index_knowledge_item
@@ -73,14 +76,55 @@ async def register_feedback_pending(
     title: str,
     answer_text: str = "",
     ai_full_text: str = "",
+    *,
+    trigger_source: str = "first",
+    context_until_post_id: str | None = None,
+    client_id: str | None = None,
 ) -> None:
-    """Store pending feedback state so correction handler can pick it up."""
+    """Store pending feedback state so correction handler can pick it up, and
+    (non-fatally) record the suggestion row for tracing."""
     expires_at = (
         datetime.now(timezone.utc) + timedelta(hours=_TTL_HOURS)
     ).isoformat()
     await save_ai_feedback_pending(
         topic_id, ticket_id, history, title, expires_at, answer_text, ai_full_text
     )
+    try:
+        from ..config import config
+        await record_suggestion(
+            ticket_id=ticket_id,
+            topic_id=topic_id,
+            trigger_source=trigger_source,
+            context_until_post_id=context_until_post_id,
+            pipeline_version=config.agent_pipeline_version,
+            prompt_version="legacy",  # Phase 0 still uses _FORMAT_INSTRUCTIONS
+            title=title,
+            history=history,
+            ai_answer=answer_text,
+            ai_full_text=ai_full_text,
+            client_id=client_id,
+        )
+    except Exception as exc:
+        logger.warning("ai_feedback: suggestion record failed: %s", exc)
+
+
+async def _record_event(
+    topic_id: int,
+    event_type: str,
+    *,
+    payload: str | None = None,
+    hde_post_id: str | None = None,
+) -> None:
+    """Non-fatal: attach an operator-action event to the topic's latest suggestion."""
+    try:
+        suggestion = await get_open_suggestion_by_topic(topic_id)
+        if suggestion is None:
+            return
+        await record_suggestion_event(
+            suggestion["id"], event_type, payload=payload, hde_post_id=hde_post_id
+        )
+    except Exception as exc:
+        logger.warning("ai_feedback: event record failed (%s): %s", event_type, exc)
 
 
 # ── Callbacks ────────────────────────────────────────────────────────────────
@@ -91,6 +135,7 @@ async def cb_ai_good(callback: CallbackQuery) -> None:
         await callback.answer()
         return
     topic_id = callback.message.message_thread_id
+    await _record_event(topic_id, "approved")
     pending = await get_ai_feedback_pending(topic_id)
     await callback.answer("✅ Сохранено в базу знаний", show_alert=False)
     try:
@@ -140,6 +185,7 @@ async def cb_ai_bad(callback: CallbackQuery) -> None:
         await callback.answer()
         return
     topic_id = callback.message.message_thread_id
+    await _record_event(topic_id, "rejected")
     pending = await get_ai_feedback_pending(topic_id)
     await callback.answer()
     try:
@@ -170,6 +216,7 @@ async def cb_ai_edit(callback: CallbackQuery) -> None:
         await callback.answer()
         return
     topic_id = callback.message.message_thread_id
+    await _record_event(topic_id, "edit_started")
     pending = await get_ai_feedback_pending(topic_id)
     await callback.answer()
     try:
@@ -252,6 +299,7 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
         await callback.answer("⚠️ Текст ответа не найден", show_alert=True)
         return
 
+    await _record_event(topic_id, "send_requested")
     try:
         client = HDEApiClient()
         if callback.data == "ai:send_post":
@@ -261,10 +309,12 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
             await client.add_comment(pending["ticket_id"], answer_text)
             label = "как комментарий"
     except HDEApiError as exc:
+        await _record_event(topic_id, "send_failed", payload=str(exc))
         await callback.answer(f"❌ Ошибка HDE: {exc}", show_alert=True)
         return
 
     await callback.answer(f"✅ Отправлено {label}", show_alert=False)
+    await _record_event(topic_id, "sent", payload=answer_text)
     try:
         original = callback.message.html_text or callback.message.text or ""
         await callback.message.edit_text(
@@ -301,6 +351,7 @@ async def capture_correction(message: Message) -> None:
         return
     await delete_ai_feedback_pending(topic_id)
     correction_text = message.text.strip()
+    await _record_event(topic_id, "edited", payload=correction_text)
     content = (
         f"Тема: {pending['title']}\n\n"
         f"{pending['history']}\n\n"

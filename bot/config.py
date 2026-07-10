@@ -60,6 +60,11 @@ class Config:
     presla_hde_verify: bool
     reassurance_minutes_before: int
     reassurance_text: str
+    agent_enabled: bool
+    agent_pipeline_version: str
+    agent_auto_first_suggestion_enabled: bool
+    agent_dynamic_fewshot_enabled: bool
+    agent_call_fixation_enabled: bool
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -104,6 +109,17 @@ class Config:
             reassurance_text=os.getenv(
                 "REASSURANCE_TEXT",
                 "Я про вас не забыл, занимаюсь вашим вопросом",
+            ),
+            agent_enabled=_parse_bool(os.getenv("AGENT_ENABLED"), default=False),
+            agent_pipeline_version=os.getenv("AGENT_PIPELINE_VERSION", "v0").strip() or "v0",
+            agent_auto_first_suggestion_enabled=_parse_bool(
+                os.getenv("AGENT_AUTO_FIRST_SUGGESTION_ENABLED"), default=False
+            ),
+            agent_dynamic_fewshot_enabled=_parse_bool(
+                os.getenv("AGENT_DYNAMIC_FEWSHOT_ENABLED"), default=False
+            ),
+            agent_call_fixation_enabled=_parse_bool(
+                os.getenv("AGENT_CALL_FIXATION_ENABLED"), default=False
             ),
         )
 
