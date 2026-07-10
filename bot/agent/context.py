@@ -27,7 +27,7 @@ def build_history_budgeted(posts, info, *, budget: int = 3000, _history_fn=None)
         if len(candidate) > remaining:
             break
         tail_posts.insert(0, post)
-    skipped = len(posts) - 1 - len(tail_posts) - first_idx
+    skipped = len(posts) - 1 - len(tail_posts)
     marker = f"\n[...пропущено {max(skipped, 0)} сообщений...]\n" if skipped > 0 else "\n"
     tail = _history_fn(tail_posts, info) if tail_posts else ""
     return head + marker + tail

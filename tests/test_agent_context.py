@@ -91,3 +91,31 @@ async def test_build_agent_context_low_score_filtered():
     )
     assert ctx["evidence"] == []
     assert ctx["grounds"] == []
+
+
+def test_history_budgeted_skip_count_with_operator_before_client():
+    # Regression: operator message precedes client's first message (first_idx > 0)
+    posts = [
+        SimpleNamespace(user_id=99, text="operator1111", post_id=1),      # operator at index 0
+        SimpleNamespace(user_id=1, text="client1111", post_id=2),         # client's first (head)
+        SimpleNamespace(user_id=99, text="operator2222", post_id=3),      # operator between head/tail
+        SimpleNamespace(user_id=1, text="client2222", post_id=4),         # client (tail)
+    ]
+    info = SimpleNamespace(client_id=1)
+
+    def hist(p, i):
+        return "\n".join(f"C:{x.text}" if x.user_id == 1 else f"O:{x.text}" for x in p)
+
+    # Budget=35: forces truncation, keeps head (first client) + tail (last client),
+    # skips both operator messages (at indices 0 and 2)
+    result = build_history_budgeted(posts, info, budget=35, _history_fn=hist)
+
+    # Skipped = posts[0] + posts[2] = 2 messages
+    # Formula: len(posts) - 1 (head) - len(tail_posts) = 4 - 1 - 1 = 2
+    import re
+    match = re.search(r'\[\.\.\.пропущено (\d+) сообщений\.\.\.\]', result)
+    assert match is not None, f"Skip marker not found. Result:\n{result}"
+    skip_count = int(match.group(1))
+    assert skip_count == 2, f"Expected 2 skipped, got {skip_count}. Result:\n{result}"
+
+    assert "client1111" in result and "client2222" in result, "Head and tail should be present"
