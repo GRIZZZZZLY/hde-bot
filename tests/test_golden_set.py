@@ -361,3 +361,24 @@ async def test_evaluate_golden_non_rate_limit_error_isolated_not_retried():
     )
     assert calls["n"] == 1                       # не-rate-limit не ретраится
     assert report["aggregates"]["generation_failed"] == 1
+
+
+async def test_judge_golden_case_backs_off_on_rate_limit_then_succeeds():
+    import json as _j
+    calls = {"n": 0}
+    slept = []
+
+    async def flaky_call(system, user):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise RuntimeError("429 rate limit: tokens per minute")
+        return _j.dumps({"action_taken": "ANSWER", "unsupported_claims": 0,
+                         "correctness": 9, "usefulness": 8, "reason": "ок"})
+
+    async def noop_sleep(seconds):
+        slept.append(seconds)
+
+    verdict = await judge_golden_case(_case(), "ответ", _call_fn=flaky_call, _sleep=noop_sleep)
+    assert verdict is not None and verdict["correctness"] == 9
+    assert calls["n"] == 3          # 2 rate-limit + успех
+    assert len(slept) == 2          # backoff на каждый rate-limit
