@@ -131,6 +131,7 @@ from .optimizer_store import (
     save_prompt_version,
 )
 from .suggestion_store import (
+    collect_suggestion_daily_stats,
     compute_idempotency_key,
     derive_human_label,
     get_open_suggestion_by_topic,

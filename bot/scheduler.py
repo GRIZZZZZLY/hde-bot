@@ -36,6 +36,7 @@ _WEEKLY_SUMMARY_HM = (8, 30)
 _TRIGGER_WINDOW_MIN = 5  # fire if current MSK time is within [target, target+window)
 
 _last_digest_date: Optional[str] = None         # "YYYY-MM-DD" UTC date
+_last_value_report_date: Optional[str] = None   # daily AI-value report
 _last_general_flush_date: Optional[str] = None  # "YYYY-MM-DD" UTC date
 _last_general_reconcile_at: Optional[datetime] = None  # last in-hours reconcile time
 _GENERAL_RECONCILE_INTERVAL_SEC = 7 * 60
@@ -82,6 +83,24 @@ async def _maybe_send_digest(bot: Bot) -> None:
     _last_digest_date = today
     from .digest import send_morning_digest
     await send_morning_digest(bot)
+
+
+async def _maybe_send_daily_value_report(bot: Bot) -> None:
+    """Ежедневный отчёт пользы AI-подсказок (ревизия 3 roadmap) — тем же утром,
+    что и дайджест. Пустой день (0 подсказок) — не отправляется."""
+    global _last_value_report_date
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    if now.hour != config.digest_send_hour_utc:
+        return
+    if _last_value_report_date == today:
+        return
+    _last_value_report_date = today
+    from .agent.value_report import send_daily_value_report
+    try:
+        await send_daily_value_report(bot)
+    except Exception as exc:
+        logger.warning("Daily value report failed: %s", exc)
 
 
 async def _maybe_flush_general(bot: Bot) -> None:
@@ -333,6 +352,7 @@ async def process_scheduled_actions(bot: Bot) -> None:
     if is_work_day():
         await _maybe_flush_general(bot)
         await _maybe_send_digest(bot)
+        await _maybe_send_daily_value_report(bot)
 
     # Periodic HDE↔General reconciliation during work hours: catches direct-HDE
     # assignments when HDE doesn't fire a usable webhook (or sends one with
