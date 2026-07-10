@@ -302,3 +302,62 @@ async def test_mine_candidates_respects_target():
     }
     cases = await mine_candidates(_FakeHDE(tickets, posts), "me", target=3)
     assert len(cases) == 3
+
+
+async def test_evaluate_golden_retries_rate_limit_then_succeeds():
+    calls = {"n": 0}
+    slept = []
+
+    async def flaky_generate(history, title, instructions):
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise RuntimeError("Groq returned no choices: Rate limit reached (TPM)")
+        return "Клиенту: перезагрузите кассу"
+
+    async def ok_judge(case, generated, _call_fn=None):
+        return {"action_taken": "ANSWER", "unsupported_claims": 0,
+                "correctness": 8, "usefulness": 8, "reason": "ок"}
+
+    async def noop_sleep(seconds):
+        slept.append(seconds)
+
+    report = await evaluate_golden(
+        [_case("g001", "T1")], "инструкции",
+        _generate_fn=flaky_generate, _judge_fn=ok_judge, _sleep=noop_sleep,
+    )
+    assert calls["n"] == 3                      # два ретрая, затем успех
+    assert len(slept) == 2                      # два backoff-сна
+    assert report["aggregates"]["generation_failed"] == 0
+    assert report["aggregates"]["judged"] == 1
+
+
+async def test_evaluate_golden_isolates_persistent_rate_limit():
+    async def always_rate_limited(history, title, instructions):
+        raise RuntimeError("429 rate limit: tokens per minute")
+
+    async def noop_sleep(seconds):
+        pass
+
+    report = await evaluate_golden(
+        [_case("g001", "T1"), _case("g002", "T2")], "инструкции",
+        _generate_fn=always_rate_limited, _sleep=noop_sleep,
+    )
+    agg = report["aggregates"]
+    assert agg["generation_failed"] == 2        # оба изолированы, не крэш
+    assert agg["judged"] == 0
+    assert agg["judge_failed"] == 0             # генерация не дошла до судьи
+    assert report["cases"][0]["generation_failed"] is True
+
+
+async def test_evaluate_golden_non_rate_limit_error_isolated_not_retried():
+    calls = {"n": 0}
+
+    async def boom(history, title, instructions):
+        calls["n"] += 1
+        raise ValueError("bad prompt")
+
+    report = await evaluate_golden(
+        [_case("g001", "T1")], "инструкции", _generate_fn=boom,
+    )
+    assert calls["n"] == 1                       # не-rate-limit не ретраится
+    assert report["aggregates"]["generation_failed"] == 1

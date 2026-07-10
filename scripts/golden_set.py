@@ -77,7 +77,8 @@ async def cmd_eval(args: argparse.Namespace) -> None:
     agg = report["aggregates"]
     print(f"Отчёт -> {out}")
     print(f"  judged {agg['judged']}/{agg['cases_total']} "
-          f"(judge_failed {agg['judge_failed']})")
+          f"(judge_failed {agg['judge_failed']}, "
+          f"generation_failed {agg.get('generation_failed', 0)})")
     print(f"  action_accuracy={agg['action_accuracy']} "
           f"unsupported={agg['mean_unsupported']} "
           f"correctness={agg['mean_correctness']} "
