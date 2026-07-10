@@ -35,7 +35,10 @@ def _load_few_shot_examples() -> list[dict]:
 
 def _strip_reasoning(text: str) -> str:
     import re as _re
-    return _re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=_re.DOTALL).strip()
+    text = _re.sub(r"<reasoning>.*?</reasoning>", "", text, flags=_re.DOTALL)
+    # reasoning-модели (qwen3, gpt-oss) выдают <think>…</think> — тоже вырезаем
+    text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL)
+    return text.strip()
 
 
 _FEW_SHOT_EXAMPLES: list[dict] = _load_few_shot_examples()
@@ -80,12 +83,16 @@ async def call_groq_text(
     max_tokens: int = 300,
     temperature: float = 0.1,
     timeout_seconds: float = 20,
+    reasoning_effort: str = "",
 ) -> str | None:
     """One-shot Groq chat completion via the shared session and LLM semaphore.
 
     The single entry point for ad-hoc text calls outside the summary pipeline.
     Returns the reply text, or None on any failure (missing key, non-200,
     network error) — callers treat LLM output as optional.
+
+    reasoning_effort (напр. "none") прокидывается для reasoning-моделей (qwen3),
+    чтобы отключить <think> и не жечь токены; пусто — не передаётся.
     """
     if not config.groq_api_key:
         return None
@@ -93,17 +100,20 @@ async def call_groq_text(
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
+    payload: dict = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
     started = time.monotonic()
     try:
         async with LLM_SEMAPHORE, shared_session() as session:
             async with session.post(
                 _GROQ_URL,
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": max_tokens,
-                    "temperature": temperature,
-                },
+                json=payload,
                 headers={"Authorization": f"Bearer {config.groq_api_key}"},
                 timeout=aiohttp.ClientTimeout(total=timeout_seconds),
             ) as resp:
@@ -129,6 +139,7 @@ async def call_groq_json(
     model: str,
     temperature: float = 0.0,
     max_tokens: int = 600,
+    reasoning_effort: str = "",
 ) -> str | None:
     """Публичный JSON-вызов Groq для runtime-агента (self-check и т.п.)."""
     if not config.groq_api_key:
@@ -143,6 +154,8 @@ async def call_groq_json(
         "max_tokens": max_tokens,
         "response_format": {"type": "json_object"},
     }
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
     headers = {"Authorization": f"Bearer {config.groq_api_key}"}
     try:
         async with LLM_SEMAPHORE, shared_session() as session:
@@ -166,19 +179,22 @@ async def _call_groq_for_summary(system_text: str, history: str, ticket_id: str)
         logger.info("Groq fallback skipped: GROQ_API_KEY not set")
         return None
     started = time.monotonic()
+    summary_payload: dict = {
+        "model": config.groq_summary_model,
+        "messages": [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": f"Переписка:\n{history}"},
+        ],
+        "max_tokens": 3000,
+        "temperature": 0.3,
+    }
+    if config.groq_reasoning_effort:
+        summary_payload["reasoning_effort"] = config.groq_reasoning_effort
     try:
         async with LLM_SEMAPHORE, shared_session() as session:
             async with session.post(
                 _GROQ_URL,
-                json={
-                    "model": _GROQ_MODEL,
-                    "messages": [
-                        {"role": "system", "content": system_text},
-                        {"role": "user", "content": f"Переписка:\n{history}"},
-                    ],
-                    "max_tokens": 3000,
-                    "temperature": 0.3,
-                },
+                json=summary_payload,
                 headers={"Authorization": f"Bearer {config.groq_api_key}"},
                 timeout=aiohttp.ClientTimeout(total=30),
             ) as resp:
