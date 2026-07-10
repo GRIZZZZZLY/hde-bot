@@ -45,3 +45,67 @@ def derive_human_label(event_types: list[str]) -> str | None:
     if "edited" in s:
         return "corrected"
     return None
+
+
+async def record_suggestion(
+    *,
+    ticket_id: str,
+    topic_id: int | None,
+    trigger_source: str,
+    context_until_post_id: str | None,
+    pipeline_version: str | None,
+    prompt_version: str | None,
+    title: str = "",
+    history: str = "",
+    client_text: str = "",
+    ai_answer: str = "",
+    ai_full_text: str = "",
+    client_id: str | None = None,
+    model: str | None = None,
+) -> int:
+    """Insert a suggestion row (idempotent on idempotency_key). Returns its id."""
+    key = compute_idempotency_key(
+        ticket_id, trigger_source, context_until_post_id, pipeline_version, prompt_version
+    )
+    async with connect() as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO ai_suggestions "
+            "(ticket_id, topic_id, trigger_source, context_until_post_id, client_id, "
+            " idempotency_key, title, history, client_text, ai_answer, ai_full_text, "
+            " pipeline_version, prompt_version, model) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                ticket_id, topic_id, trigger_source, context_until_post_id, client_id,
+                key, title, history, client_text, ai_answer, ai_full_text,
+                pipeline_version, prompt_version, model,
+            ),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT id FROM ai_suggestions WHERE idempotency_key=?", (key,)
+        ) as cur:
+            row = await cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+async def get_suggestion(suggestion_id: int) -> dict | None:
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM ai_suggestions WHERE id=?", (suggestion_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    return dict(row) if row else None
+
+
+async def get_open_suggestion_by_topic(topic_id: int) -> dict | None:
+    """Most recent suggestion for a topic — the one the feedback buttons act on
+    (ai_feedback_pending is single-per-topic, so latest == the pending one)."""
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM ai_suggestions WHERE topic_id=? ORDER BY id DESC LIMIT 1",
+            (topic_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    return dict(row) if row else None

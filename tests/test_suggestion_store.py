@@ -1,5 +1,11 @@
 import bot.db as db_module
-from bot.db.suggestion_store import compute_idempotency_key, derive_human_label
+from bot.db.suggestion_store import (
+    compute_idempotency_key,
+    derive_human_label,
+    get_open_suggestion_by_topic,
+    get_suggestion,
+    record_suggestion,
+)
 
 
 async def _columns(table: str) -> set[str]:
@@ -57,3 +63,44 @@ def test_derive_human_label_full_chain():
 def test_derive_human_label_sent_dominates_last_event():
     # full-chain, not last-event: approved then sent stays accepted
     assert derive_human_label(["approved", "send_requested", "sent"]) == "accepted"
+
+
+async def test_record_and_read_suggestion():
+    await db_module.init_db()
+    sid = await record_suggestion(
+        ticket_id="T1", topic_id=555, trigger_source="first",
+        context_until_post_id="99", pipeline_version="v0", prompt_version="legacy",
+        title="Тема", history="диалог", ai_full_text="Клиенту: ...",
+    )
+    row = await get_suggestion(sid)
+    assert row["ticket_id"] == "T1"
+    assert row["topic_id"] == 555
+    assert row["review_status"] == "pending"
+    assert row["delivery_status"] == "not_sent"
+    assert row["evaluation_status"] == "pending"
+    assert row["freshness_status"] == "current"
+
+
+async def test_record_suggestion_idempotent():
+    await db_module.init_db()
+    kw = dict(
+        ticket_id="T2", topic_id=1, trigger_source="first",
+        context_until_post_id="10", pipeline_version="v0", prompt_version="legacy",
+    )
+    first = await record_suggestion(**kw)
+    again = await record_suggestion(**kw)
+    assert first == again  # same key → same row, no duplicate
+
+
+async def test_get_open_suggestion_returns_latest():
+    await db_module.init_db()
+    await record_suggestion(
+        ticket_id="T3", topic_id=7, trigger_source="first",
+        context_until_post_id="1", pipeline_version="v0", prompt_version="legacy",
+    )
+    second = await record_suggestion(
+        ticket_id="T3", topic_id=7, trigger_source="button",
+        context_until_post_id="2", pipeline_version="v0", prompt_version="legacy",
+    )
+    row = await get_open_suggestion_by_topic(7)
+    assert row["id"] == second
