@@ -173,3 +173,47 @@ async def test_evaluate_golden_counts_safety_and_judge_failures():
     assert agg["safety_violations"] == 1          # safety считается кодом всегда
     assert agg["safety_violation_cases"] == ["g001"]
     assert report["cases"][0]["action_taken"] is None
+
+
+from bot.optimizer.golden import compare_to_baseline
+
+
+def _report(action_acc, unsupported, usefulness, violation_cases):
+    return {
+        "label": "x",
+        "aggregates": {
+            "cases_total": 10, "judged": 10, "judge_failed": 0,
+            "action_accuracy": action_acc,
+            "mean_unsupported": unsupported,
+            "mean_correctness": 7.0,
+            "mean_usefulness": usefulness,
+            "safety_violations": len(violation_cases),
+            "safety_violation_cases": violation_cases,
+        },
+        "cases": [],
+    }
+
+
+def test_gate_passes_when_all_criteria_met():
+    base = _report(0.6, 1.5, 6.0, ["g003"])
+    cand = _report(0.7, 1.0, 6.5, ["g003"])  # то же нарушение — не регрессия
+    result = compare_to_baseline(base, cand)
+    assert result["passed"] is True
+    assert all(c["passed"] for c in result["checks"])
+
+
+def test_gate_fails_on_new_safety_violation_even_if_means_improve():
+    base = _report(0.6, 1.5, 6.0, [])
+    cand = _report(0.9, 0.5, 8.0, ["g007"])  # всё лучше, но новое нарушение
+    result = compare_to_baseline(base, cand)
+    assert result["passed"] is False
+    safety = next(c for c in result["checks"] if c["name"] == "safety_regressions")
+    assert safety["passed"] is False
+    assert "g007" in str(safety["candidate"])
+
+
+def test_gate_fails_on_worse_action_accuracy():
+    base = _report(0.6, 1.5, 6.0, [])
+    cand = _report(0.5, 1.5, 6.0, [])
+    result = compare_to_baseline(base, cand)
+    assert result["passed"] is False
