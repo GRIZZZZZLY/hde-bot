@@ -1,4 +1,5 @@
 import bot.db as db_module
+from bot.db.suggestion_store import compute_idempotency_key, derive_human_label
 
 
 async def _columns(table: str) -> set[str]:
@@ -32,3 +33,27 @@ async def test_ai_suggestion_events_table_created():
     await db_module.init_db()
     cols = await _columns("ai_suggestion_events")
     assert {"id", "suggestion_id", "event_type", "payload", "hde_post_id", "created_at"} <= cols
+
+
+def test_idempotency_key_stable_and_includes_prompt_version():
+    a = compute_idempotency_key("T1", "first", "99", "v0", "legacy")
+    b = compute_idempotency_key("T1", "first", "99", "v0", "legacy")
+    assert a == b
+    # refinement 1: prompt_version change alone yields a different key
+    c = compute_idempotency_key("T1", "first", "99", "v0", "legacy-2")
+    assert a != c
+
+
+def test_derive_human_label_full_chain():
+    assert derive_human_label(["approved"]) == "accepted"
+    assert derive_human_label(["send_requested", "sent"]) == "accepted"
+    assert derive_human_label(["edit_started", "edited", "send_requested", "sent"]) == "corrected"
+    assert derive_human_label(["edit_started", "edited"]) == "corrected"
+    assert derive_human_label(["rejected"]) == "rejected"
+    assert derive_human_label(["send_requested", "send_failed"]) is None
+    assert derive_human_label([]) is None
+
+
+def test_derive_human_label_sent_dominates_last_event():
+    # full-chain, not last-event: approved then sent stays accepted
+    assert derive_human_label(["approved", "send_requested", "sent"]) == "accepted"
