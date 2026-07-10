@@ -138,6 +138,31 @@ def safety_violation(generated: str, *, _safety_fn=None) -> tuple[bool, str | No
     return False, None
 
 
+_RATE_LIMIT_MARKERS = ("rate limit", "429", "tokens per minute", "tpm")
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    return any(m in str(exc).lower() for m in _RATE_LIMIT_MARKERS)
+
+
+async def _generate_with_retry(
+    gen_fn, history, title, instructions, *, retries=4, base_delay=8.0, _sleep=None
+) -> str:
+    """Генерация с backoff на rate-limit (естественно троттлит под TPM Groq).
+    Не-rate-limit ошибки пробрасываются сразу; после retries — последняя ошибка."""
+    if _sleep is None:
+        import asyncio
+        _sleep = asyncio.sleep
+    for attempt in range(retries + 1):
+        try:
+            return await gen_fn(history, title, instructions)
+        except Exception as exc:
+            if attempt < retries and _is_rate_limit(exc):
+                await _sleep(base_delay * (attempt + 1))
+                continue
+            raise
+
+
 async def evaluate_golden(
     cases: list[dict],
     format_instructions: str,
@@ -146,10 +171,13 @@ async def evaluate_golden(
     _generate_fn=None,
     _judge_fn=None,
     _safety_fn=None,
+    _sleep=None,
 ) -> dict:
     """Прогоняет промпт по golden set: генерация → судья (оси) → safety (код).
 
     Средние считаются только по успешно отсуженным кейсам; safety — по всем.
+    Сбой генерации (в т.ч. rate-limit после retries) изолируется по кейсу —
+    он помечается generation_failed, судья пропускается, прогон не падает.
     """
     if _generate_fn is None:
         from .evaluator import _generate_answer
@@ -159,11 +187,17 @@ async def evaluate_golden(
 
     rows: list[dict] = []
     for case in cases:
-        generated = await _generate_fn(
-            case["history"], case["title"], format_instructions
-        )
+        try:
+            generated = await _generate_with_retry(
+                _generate_fn, case["history"], case["title"], format_instructions,
+                _sleep=_sleep,
+            )
+            gen_ok = True
+        except Exception:
+            generated = ""
+            gen_ok = False
         flagged, category = safety_violation(generated, _safety_fn=_safety_fn)
-        verdict = await _judge_fn(case, generated)
+        verdict = await _judge_fn(case, generated) if gen_ok else None
         row = {
             "case_id": case["case_id"],
             "ticket_id": case["ticket_id"],
@@ -176,6 +210,7 @@ async def evaluate_golden(
             "usefulness": None,
             "safety_violation": flagged,
             "safety_category": category,
+            "generation_failed": not gen_ok,
             "reason": None,
         }
         if verdict is not None:
@@ -191,6 +226,7 @@ async def evaluate_golden(
 
     judged = [r for r in rows if r["action_taken"] is not None]
     violations = [r["case_id"] for r in rows if r["safety_violation"]]
+    generation_failed = sum(1 for r in rows if r["generation_failed"])
 
     def _mean(key: str) -> float | None:
         if not judged:
@@ -200,7 +236,8 @@ async def evaluate_golden(
     aggregates = {
         "cases_total": len(rows),
         "judged": len(judged),
-        "judge_failed": len(rows) - len(judged),
+        "judge_failed": len(rows) - len(judged) - generation_failed,
+        "generation_failed": generation_failed,
         "action_accuracy": (
             round(sum(1 for r in judged if r["action_match"]) / len(judged), 3)
             if judged else None
