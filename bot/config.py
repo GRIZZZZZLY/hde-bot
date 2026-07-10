@@ -67,6 +67,8 @@ class Config:
     agent_call_fixation_enabled: bool
     agent_draft_model: str
     agent_selfcheck_model: str
+    agent_staff_user_ids: tuple[str, ...]
+    agent_dialogue_mining_enabled: bool
     groq_summary_model: str
     groq_reasoning_effort: str
 
@@ -131,6 +133,10 @@ class Config:
             agent_selfcheck_model=os.getenv(
                 "AGENT_SELFCHECK_MODEL", "openai/gpt-oss-120b"
             ).strip() or "openai/gpt-oss-120b",
+            agent_staff_user_ids=_parse_csv(os.getenv("AGENT_STAFF_USER_IDS")),
+            agent_dialogue_mining_enabled=_parse_bool(
+                os.getenv("AGENT_DIALOGUE_MINING_ENABLED"), default=False
+            ),
             groq_summary_model=os.getenv(
                 "GROQ_SUMMARY_MODEL", "llama-3.3-70b-versatile"
             ).strip() or "llama-3.3-70b-versatile",

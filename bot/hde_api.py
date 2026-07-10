@@ -312,10 +312,19 @@ class HDEApiClient:
             if isinstance(item, dict)
         ][:limit]
 
-    async def get_ticket_posts(self, ticket_id: str, limit: int = 20) -> list[HDEPost]:
-        """Return up to *limit* posts (newest first from API, returned oldest-first)."""
+    async def get_ticket_posts(
+        self, ticket_id: str, limit: int = 20, page: int | None = None
+    ) -> list[HDEPost]:
+        """Return up to *limit* posts (newest first from API, returned oldest-first).
+
+        *page* is threaded into the query only when set — omitting it preserves the
+        legacy single-page behaviour and existing callers/tests.
+        """
         url = f"{self.base_url}/tickets/{ticket_id}/posts/"
-        status, data = await self._get(url, {"limit": str(limit)})
+        params = {"limit": str(limit)}
+        if page is not None:
+            params["page"] = str(page)
+        status, data = await self._get(url, params)
         if status >= 400:
             raise HDEApiError(self._extract_error_message(data) or f"HDE API error {status}")
         items = data.get("data", []) if isinstance(data, dict) else []
@@ -333,6 +342,29 @@ class HDEApiClient:
         ]
         posts.reverse()  # oldest first for display
         return posts
+
+    async def get_all_ticket_posts(
+        self, ticket_id, *, page_size: int = 20, max_pages: int = 25
+    ) -> list["HDEPost"]:
+        """Полная история постов тикета через пагинацию (не обрезается limit=20).
+
+        Пагинация /posts/ предполагается по аналогии с tickets-эндпоинтами (page
+        поддерживается там). Порядок между страницами не гарантирован — вызывающий
+        код (split_ticket_into_pairs) явно пересортирует посты. Если live-проверка
+        покажет, что /posts/ игнорирует page, переключиться на один вызов
+        get_ticket_posts(limit=200) — см. docs/superpowers/notes/hde-post-author-type.md.
+        """
+        collected: list = []
+        page = 1
+        while page <= max_pages:
+            batch = await self.get_ticket_posts(ticket_id, limit=page_size, page=page)
+            if not batch:
+                break
+            collected.extend(batch)
+            if len(batch) < page_size:
+                break
+            page += 1
+        return collected
 
     async def get_ticket_comments(self, ticket_id: str, limit: int = 20) -> list[HDEPost]:
         """Return up to *limit* internal comments (oldest-first)."""
