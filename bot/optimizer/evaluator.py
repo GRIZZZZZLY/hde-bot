@@ -136,19 +136,10 @@ async def combined_score(
     return acceptance
 
 
-async def _generate_answer(history: str, title: str, format_instructions: str) -> str:
-    """Call Groq llama-3.3 (same model as prod summaries) with custom format_instructions."""
-    import aiohttp
-    from ..config import config
-
-    system = (
-        f"Ты AI-ассистент специалиста 2-й линии поддержки кассового оборудования.\n\n"
-        f"{format_instructions}"
-    )
-    user = f"Тема тикета: {title}\n\n{history[-2000:]}"
-
+def _eval_payload(model: str, system: str, user: str, effort: str) -> dict:
+    """Payload для eval-генерации; reasoning_effort добавляется только если задан."""
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -156,6 +147,34 @@ async def _generate_answer(history: str, title: str, format_instructions: str) -
         "temperature": 0.2,
         "max_tokens": 500,
     }
+    if effort:
+        payload["reasoning_effort"] = effort
+    return payload
+
+
+async def _generate_answer(
+    history: str,
+    title: str,
+    format_instructions: str,
+    *,
+    model: str | None = None,
+    reasoning_effort: str | None = None,
+) -> str:
+    """Groq-генерация для golden/replay-оценки. model по умолчанию —
+    config.groq_summary_model (прод-модель); reasoning_effort=None берётся из
+    config, "" — явно не передаётся (для non-reasoning моделей типа llama)."""
+    import aiohttp
+    from ..config import config
+
+    model = model or config.groq_summary_model
+    effort = config.groq_reasoning_effort if reasoning_effort is None else reasoning_effort
+    system = (
+        f"Ты AI-ассистент специалиста 2-й линии поддержки кассового оборудования.\n\n"
+        f"{format_instructions}"
+    )
+    user = f"Тема тикета: {title}\n\n{history[-2000:]}"
+
+    payload = _eval_payload(model, system, user, effort)
     url = "https://api.groq.com/openai/v1/chat/completions"
     from ..llm_semaphore import LLM_SEMAPHORE  # local import: avoid cycle
     async with LLM_SEMAPHORE, aiohttp.ClientSession() as session:

@@ -69,8 +69,20 @@ async def cmd_eval(args: argparse.Namespace) -> None:
         from bot.ai_summary import _FORMAT_INSTRUCTIONS
         prompt = _FORMAT_INSTRUCTIONS
     print(f"Golden {golden['version']}: {len(golden['cases'])} кейсов, "
-          f"label={args.label}")
-    report = await evaluate_golden(golden["cases"], prompt, label=args.label)
+          f"label={args.label}, model={args.model or 'config'}, "
+          f"reasoning_effort={args.reasoning_effort!r}")
+    gen_fn = None
+    if args.model is not None or args.reasoning_effort is not None:
+        from bot.optimizer.evaluator import _generate_answer
+
+        async def gen_fn(history, title, instructions):
+            return await _generate_answer(
+                history, title, instructions,
+                model=args.model, reasoning_effort=args.reasoning_effort,
+            )
+    report = await evaluate_golden(
+        golden["cases"], prompt, label=args.label, _generate_fn=gen_fn
+    )
     out = GOLDEN_DIR / f"report_{args.label}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -114,6 +126,11 @@ def main() -> None:
                         help="файл промпта; по умолчанию _FORMAT_INSTRUCTIONS")
     p_eval.add_argument("--baseline", default=None,
                         help="report-файл baseline для gate-сравнения")
+    p_eval.add_argument("--model", default=None,
+                        help="модель генерации (по умолчанию config.groq_summary_model)")
+    p_eval.add_argument("--reasoning-effort", dest="reasoning_effort", default=None,
+                        help="none — отключить <think> для reasoning-моделей; "
+                             "'' — не передавать (для llama)")
 
     args = parser.parse_args()
     if args.command == "mine":

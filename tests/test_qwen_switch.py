@@ -73,3 +73,16 @@ async def test_call_groq_text_omits_reasoning_effort_when_empty(monkeypatch):
     monkeypatch.setattr(ai, "shared_session", lambda: _FakeSession(sink))
     await ai.call_groq_text("hi", model="llama-3.3-70b-versatile")
     assert "reasoning_effort" not in sink["payload"]
+
+
+def test_eval_payload_includes_reasoning_effort_when_set():
+    from bot.optimizer.evaluator import _eval_payload
+    p = _eval_payload("qwen/qwen3.6-27b", "sys", "usr", "none")
+    assert p["model"] == "qwen/qwen3.6-27b"
+    assert p["reasoning_effort"] == "none"
+
+
+def test_eval_payload_omits_reasoning_effort_when_empty():
+    from bot.optimizer.evaluator import _eval_payload
+    p = _eval_payload("llama-3.3-70b-versatile", "sys", "usr", "")
+    assert "reasoning_effort" not in p
