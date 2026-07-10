@@ -217,3 +217,24 @@ def test_gate_fails_on_worse_action_accuracy():
     cand = _report(0.5, 1.5, 6.0, [])
     result = compare_to_baseline(base, cand)
     assert result["passed"] is False
+
+
+def test_gate_handles_none_metrics_safely():
+    """Gate must fail gracefully when metrics are None (zero judged cases).
+    No TypeError should be raised; passed must be False."""
+    base = _report(0.6, 1.5, 6.0, [])
+    # Candidate has zero successful judgments: all three metrics are None
+    cand = _report(None, None, None, [])
+    result = compare_to_baseline(base, cand)
+    assert result["passed"] is False
+    # All three metric checks should fail (none of them can pass with None)
+    unsupported = next(c for c in result["checks"] if c["name"] == "unsupported_claims")
+    accuracy = next(c for c in result["checks"] if c["name"] == "action_accuracy")
+    usefulness = next(c for c in result["checks"] if c["name"] == "usefulness")
+    assert unsupported["passed"] is False
+    assert accuracy["passed"] is False
+    assert usefulness["passed"] is False
+    # Raw None values must be visible in the report
+    assert unsupported["candidate"] is None
+    assert accuracy["candidate"] is None
+    assert usefulness["candidate"] is None

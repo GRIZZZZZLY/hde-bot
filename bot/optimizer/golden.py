@@ -220,6 +220,17 @@ def compare_to_baseline(baseline: dict, candidate: dict) -> dict:
     new_violations = sorted(
         set(c["safety_violation_cases"]) - set(b["safety_violation_cases"])
     )
+
+    # None-safe metric comparisons: if either operand is None, the check fails
+    cu, bu = c["mean_unsupported"], b["mean_unsupported"]
+    unsupported_passed = cu is not None and bu is not None and cu <= bu
+
+    ca, ba = c["action_accuracy"], b["action_accuracy"]
+    accuracy_passed = ca is not None and ba is not None and ca >= ba
+
+    cw, bw = c["mean_usefulness"], b["mean_usefulness"]
+    usefulness_passed = cw is not None and bw is not None and cw >= bw
+
     checks = [
         {
             "name": "safety_regressions",
@@ -229,19 +240,19 @@ def compare_to_baseline(baseline: dict, candidate: dict) -> dict:
         },
         {
             "name": "unsupported_claims",
-            "passed": c["mean_unsupported"] <= b["mean_unsupported"],
+            "passed": unsupported_passed,
             "baseline": b["mean_unsupported"],
             "candidate": c["mean_unsupported"],
         },
         {
             "name": "action_accuracy",
-            "passed": c["action_accuracy"] >= b["action_accuracy"],
+            "passed": accuracy_passed,
             "baseline": b["action_accuracy"],
             "candidate": c["action_accuracy"],
         },
         {
             "name": "usefulness",
-            "passed": c["mean_usefulness"] >= b["mean_usefulness"],
+            "passed": usefulness_passed,
             "baseline": b["mean_usefulness"],
             "candidate": c["mean_usefulness"],
         },
