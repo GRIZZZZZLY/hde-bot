@@ -204,3 +204,38 @@ async def test_reembed_pending_fills_missing():
     n = await reembed_pending(_embed_fn=fake_embed, _list_fn=fake_list, _set_fn=fake_set)
     assert n == 1
     assert updates == [(7, "ready")]
+
+
+import bot.scheduler as scheduler_module
+
+
+async def test_nightly_skips_when_mining_disabled(monkeypatch):
+    cfg = config_module.config
+    monkeypatch.setattr(cfg, "agent_dialogue_mining_enabled", False)
+    called = {"mine": False}
+
+    async def fake_mine(*a, **k):
+        called["mine"] = True
+        return 0
+
+    monkeypatch.setattr("bot.agent.dialogue_mining.mine_ticket_pairs", fake_mine)
+    scheduler_module._last_dialogue_backfill_date = None
+    await scheduler_module._maybe_backfill_dialogue_pairs(bot=None)
+    assert called["mine"] is False
+
+
+async def test_nightly_independent_of_agent_enabled(monkeypatch):
+    cfg = config_module.config
+    # agent_enabled ON but mining flag OFF → still no mining
+    monkeypatch.setattr(cfg, "agent_enabled", True)
+    monkeypatch.setattr(cfg, "agent_dialogue_mining_enabled", False)
+    called = {"mine": False}
+
+    async def fake_mine(*a, **k):
+        called["mine"] = True
+        return 0
+
+    monkeypatch.setattr("bot.agent.dialogue_mining.mine_ticket_pairs", fake_mine)
+    scheduler_module._last_dialogue_backfill_date = None
+    await scheduler_module._maybe_backfill_dialogue_pairs(bot=None)
+    assert called["mine"] is False

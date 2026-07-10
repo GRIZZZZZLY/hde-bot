@@ -45,6 +45,7 @@ _thursday_evening_done: Optional[str] = None  # "YYYY-MM-DD" MSK date — Thu ev
 _weekly_summary_done: Optional[str] = None  # "YYYY-MM-DD" MSK date — Sunday summary flag
 _last_knowledge_expiry_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when weekly expiry runs
 _last_media_gc_hour: Optional[str] = None  # "YYYY-MM-DD HH" — set when hourly media GC runs
+_last_dialogue_backfill_date: Optional[str] = None  # "YYYY-MM-DD" MSK — nightly dialogue mining flag
 _ALLOWED_UPDATES = ["message", "callback_query"]
 
 
@@ -259,6 +260,66 @@ async def _maybe_weekly_summary(bot: Bot) -> None:
 
 
 
+def _resolved_before_cutoff(ticket: dict, now: datetime, days: int = 7) -> bool:
+    """True если тикет закрыт ≥*days* дней назад (свежие могут переоткрыться).
+
+    Дата закрытия/обновления берётся из первого доступного ключа raw-тикета.
+    Если поля нет или оно не парсится — возвращаем True (майним), т.к. точный
+    timestamp резолюции не гарантирован в списочном ответе (см. Task 0 note)."""
+    cutoff = now - timedelta(days=days)
+    for key in ("resolved_at", "date_resolved", "date_closed", "date_updated", "updated_at"):
+        raw = ticket.get(key)
+        if not raw:
+            continue
+        try:
+            dt = parse_datetime(str(raw))
+        except Exception:
+            dt = None
+        if dt is None:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt <= cutoff
+    return True
+
+
+async def _maybe_backfill_dialogue_pairs(bot) -> None:
+    """Ночной инкремент dialogue_pairs (Phase 2A). Отдельный флаг
+    agent_dialogue_mining_enabled — НЕ зависит от agent_enabled. Берёт только
+    тикеты, закрытые >7 дней назад (свежие могут переоткрыться)."""
+    global _last_dialogue_backfill_date
+    if not config.agent_dialogue_mining_enabled:
+        return
+    now = _now_msk()
+    today = now.strftime("%Y-%m-%d")
+    if _last_dialogue_backfill_date == today or now.hour != 1:
+        return
+    _last_dialogue_backfill_date = today
+    try:
+        from .agent.dialogue_mining import mine_ticket_pairs, staff_id_set
+        from .hde_api import HDEApiClient
+        client = HDEApiClient()
+        staff = staff_id_set(config.hde_owner_id, config.agent_staff_user_ids)
+        known = await db.dialogue_pair_hashes()
+        processed = await db.list_processed_ticket_ids()
+        tickets, _ = await client.get_closed_tickets_page(config.hde_owner_id, 1)
+        saved = 0
+        for ticket in tickets:
+            tid = str(ticket.get("id") or ticket.get("ticket_id") or "")
+            if not tid or tid in processed:
+                continue
+            if not _resolved_before_cutoff(ticket, now):  # 7-day rule
+                continue
+            try:
+                saved += await mine_ticket_pairs(client, ticket, staff, known_hashes=known)
+                await db.mark_ticket_processed(tid)
+            except Exception as exc:
+                await db.log_ticket_error(tid, str(exc))
+        logger.info("Nightly dialogue backfill: +%d pairs", saved)
+    except Exception as exc:
+        logger.warning("Nightly dialogue backfill failed: %s", exc)
+
+
 async def process_scheduled_actions(bot: Bot) -> None:
     from .work_schedule import is_work_day, is_work_time, last_work_day, was_yesterday_work_day
 
@@ -302,6 +363,9 @@ async def process_scheduled_actions(bot: Bot) -> None:
                 logger.info("Media cache GC: removed %d stale rows", deleted)
         except Exception as exc:
             logger.warning("Media cache GC failed: %s", exc)
+
+    # Nightly dialogue_pairs increment (Phase 2A) — own flag, 7-day cutoff.
+    await _maybe_backfill_dialogue_pairs(bot)
 
     # Weekly knowledge expiry (Sunday 00:xx UTC)
     global _last_knowledge_expiry_date
