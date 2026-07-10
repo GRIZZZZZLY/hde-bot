@@ -95,12 +95,35 @@ def split_ticket_into_pairs(ticket_id: str, posts: list, staff: set[str]) -> lis
             "source_message_id": str(client_prior[-1].post_id),
             "context_until_message_id": str(prior[-1].post_id),
             "operator_message_id": op_msg_id,
+            "operator_user_id": str(turn_posts[0].user_id),
             "operator_answer_at": getattr(turn_posts[0], "date_created", None),
             "context": context,
             "operator_answer": operator_answer,
             "content_hash": content_hash,
         })
     return pairs
+
+
+async def resolve_staff_ids(
+    client, user_ids: set[str], *, base: set[str], cache: dict
+) -> set[str]:
+    """Дополняет staff-set динамически: неизвестные user_id резолвятся через
+    HDE `GET /users/{id}` (group.type == 'staff'), результат кэшируется.
+    Команда поддержки в HDE ~10 человек и меняется — статический env-список
+    ломается на новом сотруднике; резолвер закрывает это."""
+    staff = set(base)
+    for uid in user_ids:
+        uid = str(uid)
+        if uid in staff:
+            continue
+        if uid not in cache:
+            try:
+                cache[uid] = await client.get_user_group_type(uid)
+            except Exception:
+                cache[uid] = None
+        if cache[uid] == "staff":
+            staff.add(uid)
+    return staff
 
 
 def build_embedding_text(pair: dict) -> str:
@@ -118,7 +141,8 @@ def _embedding_text_hash(text: str) -> str:
 
 async def mine_ticket_pairs(
     client, ticket: dict, staff: set[str], *,
-    known_hashes: set[str] | None = None, _embed_fn=None, _save_fn=None,
+    known_hashes: set[str] | None = None, staff_cache: dict | None = None,
+    _embed_fn=None, _save_fn=None,
 ) -> int:
     if _embed_fn is None:
         from ..knowledge.indexer import embed_text as _embed_fn
@@ -130,6 +154,9 @@ async def mine_ticket_pairs(
     if not ticket_id:
         return 0
     posts = await client.get_all_ticket_posts(ticket_id)
+    if staff_cache is not None:
+        authors = {str(getattr(p, "user_id", "")) for p in posts}
+        staff = await resolve_staff_ids(client, authors, base=staff, cache=staff_cache)
     pairs = split_ticket_into_pairs(ticket_id, posts, staff)
     if not pairs:
         return 0
@@ -156,6 +183,7 @@ async def mine_ticket_pairs(
             source_message_id=pair["source_message_id"],
             context_until_message_id=pair["context_until_message_id"],
             operator_message_id=pair["operator_message_id"],
+            operator_user_id=pair.get("operator_user_id"),
             operator_answer_at=pair.get("operator_answer_at"),
             issue_type=issue_type,
             client_id=client_id,

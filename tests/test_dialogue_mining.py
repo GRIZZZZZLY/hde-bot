@@ -239,3 +239,59 @@ async def test_nightly_independent_of_agent_enabled(monkeypatch):
     scheduler_module._last_dialogue_backfill_date = None
     await scheduler_module._maybe_backfill_dialogue_pairs(bot=None)
     assert called["mine"] is False
+
+
+async def test_resolve_staff_ids_uses_api_and_cache():
+    from bot.agent.dialogue_mining import resolve_staff_ids
+
+    calls = []
+
+    class _C:
+        async def get_user_group_type(self, uid):
+            calls.append(uid)
+            return "staff" if uid in ("67", "98") else "client"
+
+    cache = {}
+    staff = await resolve_staff_ids(
+        _C(), {"98", "67", "45425"}, base={"98"}, cache=cache
+    )
+    assert staff == {"98", "67"}                 # 45425 — client, не попал
+    assert "98" not in calls                     # base не резолвится
+    # повторный вызов — из кэша, без API
+    calls.clear()
+    staff2 = await resolve_staff_ids(_C(), {"67", "45425"}, base={"98"}, cache=cache)
+    assert staff2 == {"98", "67"}
+    assert calls == []
+
+
+def test_split_records_operator_user_id():
+    staff = {"op"}
+    posts = [_post(1, "client", "вопрос"), _post(2, "op", "ответ")]
+    pair = split_ticket_into_pairs("T1", posts, staff)[0]
+    assert pair["operator_user_id"] == "op"
+
+
+async def test_mine_passes_operator_user_id_and_resolves_staff():
+    posts = [
+        _post(1, "client", "вопрос"),
+        _post(2, "48268", "ответ Дины"),          # staff по API, не в base
+    ]
+    saved = {}
+
+    class _HDEWithUsers(_FakeHDE):
+        async def get_user_group_type(self, uid):
+            return "staff" if uid == "48268" else "client"
+
+    async def fake_embed(text, task_type="passage"):
+        return None
+
+    async def fake_save(**kw):
+        saved.update(kw)
+        return (1, True)
+
+    n = await mine_ticket_pairs(
+        _HDEWithUsers(posts), {"id": "T1"}, {"98"},
+        staff_cache={}, _embed_fn=fake_embed, _save_fn=fake_save,
+    )
+    assert n == 1
+    assert saved["operator_user_id"] == "48268"   # автор ответа зафиксирован

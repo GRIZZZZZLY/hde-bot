@@ -300,6 +300,7 @@ async def _maybe_backfill_dialogue_pairs(bot) -> None:
         from .hde_api import HDEApiClient
         client = HDEApiClient()
         staff = staff_id_set(config.hde_owner_id, config.agent_staff_user_ids)
+        staff_cache: dict = {}
         known = await db.dialogue_pair_hashes()
         processed = await db.list_processed_ticket_ids()
         tickets, _ = await client.get_closed_tickets_page(config.hde_owner_id, 1)
@@ -311,7 +312,10 @@ async def _maybe_backfill_dialogue_pairs(bot) -> None:
             if not _resolved_before_cutoff(ticket, now):  # 7-day rule
                 continue
             try:
-                saved += await mine_ticket_pairs(client, ticket, staff, known_hashes=known)
+                saved += await mine_ticket_pairs(
+                    client, ticket, staff,
+                    known_hashes=known, staff_cache=staff_cache,
+                )
                 await db.mark_ticket_processed(tid)
             except Exception as exc:
                 await db.log_ticket_error(tid, str(exc))

@@ -312,6 +312,21 @@ class HDEApiClient:
             if isinstance(item, dict)
         ][:limit]
 
+    async def get_user_group_type(self, user_id: str | int) -> str | None:
+        """Тип группы пользователя HDE: 'staff' для сотрудников, 'client' для
+        клиентов, None при 404/ошибке. Авторитетный способ отличить оператора
+        от клиента (в постах поле роли отсутствует)."""
+        url = f"{self.base_url}/users/{user_id}/"
+        try:
+            status, data = await self._get(url, {})
+        except Exception:
+            return None
+        if status >= 400 or not isinstance(data, dict):
+            return None
+        group = (data.get("data") or {}).get("group") or {}
+        gtype = group.get("type")
+        return str(gtype) if gtype else None
+
     async def get_ticket_posts(
         self, ticket_id: str, limit: int = 20, page: int | None = None
     ) -> list[HDEPost]:

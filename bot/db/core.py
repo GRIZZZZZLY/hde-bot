@@ -571,6 +571,7 @@ async def init_db() -> None:
                 source_message_id         TEXT,
                 context_until_message_id  TEXT,
                 operator_message_id       TEXT,
+                operator_user_id          TEXT,
                 context                   TEXT NOT NULL,
                 operator_answer           TEXT NOT NULL,
                 issue_type                TEXT,
@@ -589,6 +590,14 @@ async def init_db() -> None:
             )
             """
         )
+        # Migration: operator_user_id added after the table shipped (staff team ~10 people,
+        # нужно отличать авторов ответов для персонального few-shot)
+        try:
+            await db.execute(
+                "ALTER TABLE dialogue_pairs ADD COLUMN operator_user_id TEXT"
+            )
+        except Exception:
+            pass  # column already exists
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_dialogue_pairs_quality "
             "ON dialogue_pairs(quality_status)"
