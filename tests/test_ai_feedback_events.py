@@ -1,8 +1,8 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import bot.db as db_module
-from bot.db.suggestion_store import get_suggestion, record_suggestion
-from bot.handlers.ai_feedback import _record_event, cb_send_to_hde
+from bot.db.suggestion_store import get_open_suggestion_by_topic, get_suggestion, record_suggestion
+from bot.handlers.ai_feedback import _record_event, cb_send_to_hde, register_feedback_pending
 
 
 async def test_record_event_maps_topic_to_latest_suggestion():
@@ -50,3 +50,19 @@ async def test_send_to_hde_stale_pending_records_no_send_requested():
     # Default delivery_status ("not_sent") must be untouched — no "requested"
     # event was recorded, since the pending-lookup guard short-circuited first.
     assert row["delivery_status"] == "not_sent"
+
+
+async def test_register_feedback_pending_records_suggestion():
+    await db_module.init_db()
+    await register_feedback_pending(
+        topic_id=77, ticket_id="T77", history="диалог клиента",
+        title="Не печатает чек", answer_text="Клиенту: проверьте бумагу",
+        ai_full_text="Суть: ...\nКлиенту: проверьте бумагу",
+        context_until_post_id="123",
+    )
+    row = await get_open_suggestion_by_topic(77)
+    assert row is not None
+    assert row["ticket_id"] == "T77"
+    assert row["trigger_source"] == "first"
+    assert row["context_until_post_id"] == "123"
+    assert row["ai_full_text"].endswith("проверьте бумагу")

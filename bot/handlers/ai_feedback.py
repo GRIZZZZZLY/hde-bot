@@ -12,6 +12,7 @@ from ..db import (
     delete_ai_feedback_pending,
     get_ai_feedback_pending,
     get_open_suggestion_by_topic,
+    record_suggestion,
     record_suggestion_event,
     save_ai_feedback_pending,
 )
@@ -75,14 +76,36 @@ async def register_feedback_pending(
     title: str,
     answer_text: str = "",
     ai_full_text: str = "",
+    *,
+    trigger_source: str = "first",
+    context_until_post_id: str | None = None,
+    client_id: str | None = None,
 ) -> None:
-    """Store pending feedback state so correction handler can pick it up."""
+    """Store pending feedback state so correction handler can pick it up, and
+    (non-fatally) record the suggestion row for tracing."""
     expires_at = (
         datetime.now(timezone.utc) + timedelta(hours=_TTL_HOURS)
     ).isoformat()
     await save_ai_feedback_pending(
         topic_id, ticket_id, history, title, expires_at, answer_text, ai_full_text
     )
+    try:
+        from ..config import config
+        await record_suggestion(
+            ticket_id=ticket_id,
+            topic_id=topic_id,
+            trigger_source=trigger_source,
+            context_until_post_id=context_until_post_id,
+            pipeline_version=config.agent_pipeline_version,
+            prompt_version="legacy",  # Phase 0 still uses _FORMAT_INSTRUCTIONS
+            title=title,
+            history=history,
+            ai_answer=answer_text,
+            ai_full_text=ai_full_text,
+            client_id=client_id,
+        )
+    except Exception as exc:
+        logger.warning("ai_feedback: suggestion record failed: %s", exc)
 
 
 async def _record_event(
