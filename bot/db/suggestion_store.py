@@ -109,3 +109,65 @@ async def get_open_suggestion_by_topic(topic_id: int) -> dict | None:
         ) as cur:
             row = await cur.fetchone()
     return dict(row) if row else None
+
+
+_REVIEW_BY_EVENT = {"approved": "approved", "rejected": "rejected", "edited": "edited"}
+_DELIVERY_BY_EVENT = {"send_requested": "requested", "sent": "sent", "send_failed": "failed"}
+
+
+async def record_suggestion_event(
+    suggestion_id: int,
+    event_type: str,
+    *,
+    payload: str | None = None,
+    hde_post_id: str | None = None,
+) -> int:
+    """Append an operator-action event and update denormalized status + labels."""
+    async with connect() as db:
+        cursor = await db.execute(
+            "INSERT INTO ai_suggestion_events "
+            "(suggestion_id, event_type, payload, hde_post_id) VALUES (?,?,?,?)",
+            (suggestion_id, event_type, payload, hde_post_id),
+        )
+        if event_type in _REVIEW_BY_EVENT:
+            await db.execute(
+                "UPDATE ai_suggestions SET review_status=?, reviewed_at=datetime('now') WHERE id=?",
+                (_REVIEW_BY_EVENT[event_type], suggestion_id),
+            )
+        if event_type in _DELIVERY_BY_EVENT:
+            await db.execute(
+                "UPDATE ai_suggestions SET delivery_status=? WHERE id=?",
+                (_DELIVERY_BY_EVENT[event_type], suggestion_id),
+            )
+        if event_type == "sent":
+            await db.execute(
+                "UPDATE ai_suggestions "
+                "SET final_sent_text=?, final_sent_post_id=?, sent_at=datetime('now') WHERE id=?",
+                (payload or "", hde_post_id, suggestion_id),
+            )
+        await db.commit()
+        event_id = int(cursor.lastrowid)
+    await _recompute_labels(suggestion_id)
+    return event_id
+
+
+async def _recompute_labels(suggestion_id: int) -> None:
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT event_type FROM ai_suggestion_events WHERE suggestion_id=? ORDER BY id",
+            (suggestion_id,),
+        ) as cur:
+            events = [r["event_type"] for r in await cur.fetchall()]
+        async with db.execute(
+            "SELECT judge_label FROM ai_suggestions WHERE id=?", (suggestion_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        judge_label = row["judge_label"] if row else None
+        human = derive_human_label(events)
+        effective = human if human is not None else judge_label
+        await db.execute(
+            "UPDATE ai_suggestions SET human_label=?, effective_label=? WHERE id=?",
+            (human, effective, suggestion_id),
+        )
+        await db.commit()

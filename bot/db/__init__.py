@@ -136,4 +136,5 @@ from .suggestion_store import (
     get_open_suggestion_by_topic,
     get_suggestion,
     record_suggestion,
+    record_suggestion_event,
 )

@@ -104,3 +104,48 @@ async def test_get_open_suggestion_returns_latest():
     )
     row = await get_open_suggestion_by_topic(7)
     assert row["id"] == second
+
+
+from bot.db.suggestion_store import record_suggestion_event
+
+
+async def _new_suggestion(topic_id=1, ctx="1") -> int:
+    return await record_suggestion(
+        ticket_id="T", topic_id=topic_id, trigger_source="first",
+        context_until_post_id=ctx, pipeline_version="v0", prompt_version="legacy",
+    )
+
+
+async def test_event_approved_sets_review_and_label():
+    await db_module.init_db()
+    sid = await _new_suggestion()
+    await record_suggestion_event(sid, "approved")
+    row = await get_suggestion(sid)
+    assert row["review_status"] == "approved"
+    assert row["human_label"] == "accepted"
+    assert row["effective_label"] == "accepted"
+
+
+async def test_event_edited_then_sent_is_corrected():
+    await db_module.init_db()
+    sid = await _new_suggestion()
+    await record_suggestion_event(sid, "edit_started")
+    await record_suggestion_event(sid, "edited", payload="исправленный текст")
+    await record_suggestion_event(sid, "send_requested")
+    await record_suggestion_event(sid, "sent", payload="исправленный текст", hde_post_id="4321")
+    row = await get_suggestion(sid)
+    assert row["review_status"] == "edited"
+    assert row["delivery_status"] == "sent"
+    assert row["final_sent_text"] == "исправленный текст"
+    assert row["final_sent_post_id"] == "4321"
+    assert row["human_label"] == "corrected"
+
+
+async def test_event_send_failed_leaves_label_none():
+    await db_module.init_db()
+    sid = await _new_suggestion()
+    await record_suggestion_event(sid, "send_requested")
+    await record_suggestion_event(sid, "send_failed", payload="HDE 500")
+    row = await get_suggestion(sid)
+    assert row["delivery_status"] == "failed"
+    assert row["human_label"] is None
