@@ -112,3 +112,95 @@ def test_content_hash_changes_with_edited_answer():
     h1 = split_ticket_into_pairs("T1", base, staff)[0]["content_hash"]
     h2 = split_ticket_into_pairs("T1", edited, staff)[0]["content_hash"]
     assert h1 != h2                                     # правка ответа → новый хэш
+
+
+import numpy as np
+
+from bot.agent.dialogue_mining import build_embedding_text, mine_ticket_pairs, reembed_pending
+
+
+class _FakeHDE:
+    def __init__(self, posts, client_id="client"):
+        self._posts = posts
+        self._client_id = client_id
+
+    async def get_all_ticket_posts(self, ticket_id, *, page_size=20, max_pages=25):
+        return self._posts
+
+    async def get_ticket_info(self, ticket_id):
+        return SimpleNamespace(client_id=self._client_id)
+
+
+def test_build_embedding_text_is_problem_side():
+    pair = {"context": "Клиент: касса не печатает\nОператор: проверьте бумагу",
+            "operator_answer": "перезагрузите"}
+    text = build_embedding_text(pair)
+    assert "касса не печатает" in text                 # клиентская сторона
+    assert "перезагрузите" not in text                 # НЕ ответ оператора
+
+
+async def test_mine_ticket_pairs_embeds_problem_side_and_counts_created():
+    posts = [_post(1, "client", "вопрос один"), _post(2, "op", "ответ один")]
+    saved = {}
+    embedded_texts = []
+
+    async def fake_embed(text, task_type="passage"):
+        embedded_texts.append(text)
+        return np.ones(4, dtype=np.float32)
+
+    async def fake_save(**kw):
+        first = kw["content_hash"] not in saved
+        saved[kw["content_hash"]] = kw
+        return (len(saved), first)
+
+    n = await mine_ticket_pairs(
+        _FakeHDE(posts), {"id": "T1", "type_id": "5"}, {"op"},
+        _embed_fn=fake_embed, _save_fn=fake_save,
+    )
+    assert n == 1
+    (pair,) = saved.values()
+    assert pair["issue_type"] == "5" and pair["client_id"] == "client"
+    assert pair["embedding_status"] == "ready"
+    assert pair["embedding_model"] == "intfloat/multilingual-e5-large"
+    assert "вопрос один" in embedded_texts[0]          # problem-side embedded
+    assert "ответ один" not in embedded_texts[0]
+
+
+async def test_mine_saves_pending_when_embed_fails():
+    posts = [_post(1, "client", "вопрос"), _post(2, "op", "ответ")]
+    saved = {}
+
+    async def fail_embed(text, task_type="passage"):
+        return None
+
+    async def fake_save(**kw):
+        first = kw["content_hash"] not in saved
+        saved[kw["content_hash"]] = kw
+        return (1, first)
+
+    n = await mine_ticket_pairs(
+        _FakeHDE(posts), {"id": "T1"}, {"op"},
+        _embed_fn=fail_embed, _save_fn=fake_save,
+    )
+    assert n == 1
+    (pair,) = saved.values()
+    assert pair["embedding"] is None
+    assert pair["embedding_status"] == "pending"       # не потеряна — повторим позже
+
+
+async def test_reembed_pending_fills_missing():
+    async def fake_list(limit=200):
+        return [{"pair_id": 7, "context": "Клиент: q", "operator_answer": "a",
+                 "embedding_text_hash": None}]
+
+    updates = []
+
+    async def fake_embed(text, task_type="passage"):
+        return np.ones(4, dtype=np.float32)
+
+    async def fake_set(pair_id, embedding, model, status):
+        updates.append((pair_id, status))
+
+    n = await reembed_pending(_embed_fn=fake_embed, _list_fn=fake_list, _set_fn=fake_set)
+    assert n == 1
+    assert updates == [(7, "ready")]

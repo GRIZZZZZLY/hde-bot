@@ -101,3 +101,92 @@ def split_ticket_into_pairs(ticket_id: str, posts: list, staff: set[str]) -> lis
             "content_hash": content_hash,
         })
     return pairs
+
+
+def build_embedding_text(pair: dict) -> str:
+    """Problem-side текст для эмбеддинга: последний вопрос клиента + контекст."""
+    client_lines = [
+        ln for ln in pair["context"].splitlines() if ln.startswith("Клиент:")
+    ]
+    last_client = client_lines[-1][len("Клиент:"):].strip() if client_lines else ""
+    return f"Вопрос клиента: {last_client}\nКонтекст: {pair['context'][-800:]}"
+
+
+def _embedding_text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+async def mine_ticket_pairs(
+    client, ticket: dict, staff: set[str], *,
+    known_hashes: set[str] | None = None, _embed_fn=None, _save_fn=None,
+) -> int:
+    if _embed_fn is None:
+        from ..knowledge.indexer import embed_text as _embed_fn
+    if _save_fn is None:
+        from ..db import save_dialogue_pair as _save_fn
+    known = known_hashes if known_hashes is not None else set()
+
+    ticket_id = str(ticket.get("id") or ticket.get("ticket_id") or "")
+    if not ticket_id:
+        return 0
+    posts = await client.get_all_ticket_posts(ticket_id)
+    pairs = split_ticket_into_pairs(ticket_id, posts, staff)
+    if not pairs:
+        return 0
+    issue_type = str(ticket.get("type_id") or "") or None
+    try:
+        info = await client.get_ticket_info(ticket_id)
+        client_id = str(getattr(info, "client_id", "") or "") or None
+    except Exception:
+        client_id = None
+
+    created_count = 0
+    for pair in pairs:
+        if pair["content_hash"] in known:
+            continue
+        emb_text = build_embedding_text(pair)
+        embedding = await _embed_fn(emb_text, task_type="passage")
+        emb_bytes = embedding.tobytes() if embedding is not None else None
+        status = "ready" if emb_bytes is not None else "pending"
+        _, created = await _save_fn(
+            ticket_id=ticket_id,
+            context=pair["context"],
+            operator_answer=pair["operator_answer"],
+            content_hash=pair["content_hash"],
+            source_message_id=pair["source_message_id"],
+            context_until_message_id=pair["context_until_message_id"],
+            operator_message_id=pair["operator_message_id"],
+            operator_answer_at=pair.get("operator_answer_at"),
+            issue_type=issue_type,
+            client_id=client_id,
+            resolution_status="closed",
+            embedding=emb_bytes,
+            embedding_model=_EMBED_MODEL if emb_bytes is not None else None,
+            embedding_status=status,
+            embedding_text_hash=_embedding_text_hash(emb_text),
+        )
+        known.add(pair["content_hash"])
+        if created:
+            created_count += 1
+    return created_count
+
+
+async def reembed_pending(*, _embed_fn=None, _list_fn=None, _set_fn=None, limit=200) -> int:
+    """Добирает эмбеддинги для pending/failed пар. Возвращает число ставших ready."""
+    if _embed_fn is None:
+        from ..knowledge.indexer import embed_text as _embed_fn
+    if _list_fn is None:
+        from ..db import list_pending_embeddings as _list_fn
+    if _set_fn is None:
+        from ..db import set_pair_embedding as _set_fn
+    rows = await _list_fn(limit)
+    fixed = 0
+    for row in rows:
+        pair = {"context": row["context"], "operator_answer": row["operator_answer"]}
+        embedding = await _embed_fn(build_embedding_text(pair), task_type="passage")
+        if embedding is None:
+            await _set_fn(row["pair_id"], None, None, "failed")
+            continue
+        await _set_fn(row["pair_id"], embedding.tobytes(), _EMBED_MODEL, "ready")
+        fixed += 1
+    return fixed
