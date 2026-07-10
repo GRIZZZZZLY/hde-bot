@@ -22,6 +22,7 @@ async def save_dialogue_pair(
     source_message_id: str | None = None,
     context_until_message_id: str | None = None,
     operator_message_id: str | None = None,
+    operator_user_id: str | None = None,
     issue_type: str | None = None,
     client_id: str | None = None,
     operator_answer_at: str | None = None,
@@ -37,13 +38,15 @@ async def save_dialogue_pair(
         cursor = await db.execute(
             "INSERT OR IGNORE INTO dialogue_pairs "
             "(ticket_id, source_message_id, context_until_message_id, "
-            " operator_message_id, context, operator_answer, issue_type, client_id, "
+            " operator_message_id, operator_user_id, context, operator_answer, "
+            " issue_type, client_id, "
             " operator_answer_at, resolved_at, resolution_status, embedding, "
             " embedding_model, embedding_status, embedding_text_hash, content_hash) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 ticket_id, source_message_id, context_until_message_id,
-                operator_message_id, context, operator_answer, issue_type, client_id,
+                operator_message_id, operator_user_id, context, operator_answer,
+                issue_type, client_id,
                 operator_answer_at, resolved_at, resolution_status, embedding,
                 embedding_model, embedding_status, embedding_text_hash, content_hash,
             ),
