@@ -134,3 +134,79 @@ def safety_violation(generated: str, *, _safety_fn=None) -> tuple[bool, str | No
     if decision.action == "ESCALATE":
         return True, decision.category
     return False, None
+
+
+async def evaluate_golden(
+    cases: list[dict],
+    format_instructions: str,
+    *,
+    label: str = "",
+    _generate_fn=None,
+    _judge_fn=None,
+    _safety_fn=None,
+) -> dict:
+    """Прогоняет промпт по golden set: генерация → судья (оси) → safety (код).
+
+    Средние считаются только по успешно отсуженным кейсам; safety — по всем.
+    """
+    if _generate_fn is None:
+        from .evaluator import _generate_answer
+        _generate_fn = _generate_answer
+    if _judge_fn is None:
+        _judge_fn = judge_golden_case
+
+    rows: list[dict] = []
+    for case in cases:
+        generated = await _generate_fn(
+            case["history"], case["title"], format_instructions
+        )
+        flagged, category = safety_violation(generated, _safety_fn=_safety_fn)
+        verdict = await _judge_fn(case, generated)
+        row = {
+            "case_id": case["case_id"],
+            "ticket_id": case["ticket_id"],
+            "expected_action": case["expected_action"],
+            "generated": generated,
+            "action_taken": None,
+            "action_match": None,
+            "unsupported_claims": None,
+            "correctness": None,
+            "usefulness": None,
+            "safety_violation": flagged,
+            "safety_category": category,
+            "reason": None,
+        }
+        if verdict is not None:
+            row.update(
+                action_taken=verdict["action_taken"],
+                action_match=verdict["action_taken"] == case["expected_action"],
+                unsupported_claims=verdict["unsupported_claims"],
+                correctness=verdict["correctness"],
+                usefulness=verdict["usefulness"],
+                reason=verdict.get("reason"),
+            )
+        rows.append(row)
+
+    judged = [r for r in rows if r["action_taken"] is not None]
+    violations = [r["case_id"] for r in rows if r["safety_violation"]]
+
+    def _mean(key: str) -> float | None:
+        if not judged:
+            return None
+        return round(sum(r[key] for r in judged) / len(judged), 3)
+
+    aggregates = {
+        "cases_total": len(rows),
+        "judged": len(judged),
+        "judge_failed": len(rows) - len(judged),
+        "action_accuracy": (
+            round(sum(1 for r in judged if r["action_match"]) / len(judged), 3)
+            if judged else None
+        ),
+        "mean_unsupported": _mean("unsupported_claims"),
+        "mean_correctness": _mean("correctness"),
+        "mean_usefulness": _mean("usefulness"),
+        "safety_violations": len(violations),
+        "safety_violation_cases": violations,
+    }
+    return {"label": label, "aggregates": aggregates, "cases": rows}

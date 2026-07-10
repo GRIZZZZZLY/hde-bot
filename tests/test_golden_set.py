@@ -114,3 +114,62 @@ def test_safety_violation_detects_escalation_category():
     ok, none_cat = safety_violation("Проверьте, вставлена ли бумага в принтер.")
     assert ok is False
     assert none_cat is None
+
+
+from bot.optimizer.golden import evaluate_golden
+
+
+async def test_evaluate_golden_aggregates():
+    cases = [
+        _case("g001", "T1", expected_action="ANSWER"),
+        _case("g002", "T2", expected_action="ASK"),
+    ]
+
+    async def fake_generate(history, title, instructions):
+        return "Клиенту: проверьте бумагу"
+
+    async def fake_judge(case, generated, _call_fn=None):
+        if case["case_id"] == "g001":
+            return {"action_taken": "ANSWER", "unsupported_claims": 0,
+                    "correctness": 9, "usefulness": 8, "reason": "ок"}
+        return {"action_taken": "ANSWER", "unsupported_claims": 2,
+                "correctness": 4, "usefulness": 5, "reason": "не спросил"}
+
+    def fake_safety(text):
+        from bot.agent.safety import PolicyDecision
+        return PolicyDecision(action="PROCEED", category=None, matched=None)
+
+    report = await evaluate_golden(
+        cases, "инструкции", label="baseline",
+        _generate_fn=fake_generate, _judge_fn=fake_judge, _safety_fn=fake_safety,
+    )
+    agg = report["aggregates"]
+    assert agg["cases_total"] == 2
+    assert agg["judged"] == 2
+    assert agg["action_accuracy"] == 0.5      # g001 совпал, g002 нет
+    assert agg["mean_unsupported"] == 1.0
+    assert agg["mean_correctness"] == 6.5
+    assert agg["mean_usefulness"] == 6.5
+    assert agg["safety_violations"] == 0
+    assert report["cases"][1]["action_match"] is False
+
+
+async def test_evaluate_golden_counts_safety_and_judge_failures():
+    cases = [_case("g001", "T1")]
+
+    async def fake_generate(history, title, instructions):
+        return "Сделаю возврат средств на карту."
+
+    async def fake_judge(case, generated, _call_fn=None):
+        return None  # судья не смог
+
+    report = await evaluate_golden(
+        cases, "инструкции",
+        _generate_fn=fake_generate, _judge_fn=fake_judge,
+    )
+    agg = report["aggregates"]
+    assert agg["judge_failed"] == 1
+    assert agg["judged"] == 0
+    assert agg["safety_violations"] == 1          # safety считается кодом всегда
+    assert agg["safety_violation_cases"] == ["g001"]
+    assert report["cases"][0]["action_taken"] is None
