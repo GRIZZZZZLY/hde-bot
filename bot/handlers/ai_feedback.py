@@ -266,7 +266,6 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
         return
 
     topic_id = callback.message.message_thread_id
-    await _record_event(topic_id, "send_requested")
     pending = await get_ai_feedback_pending(topic_id)
     if not pending:
         await callback.answer("⚠️ Данные устарели (24ч TTL)", show_alert=True)
@@ -277,6 +276,7 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
         await callback.answer("⚠️ Текст ответа не найден", show_alert=True)
         return
 
+    await _record_event(topic_id, "send_requested")
     try:
         client = HDEApiClient()
         if callback.data == "ai:send_post":
