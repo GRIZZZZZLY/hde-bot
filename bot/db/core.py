@@ -563,6 +563,44 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_ai_suggestion_events_sid "
             "ON ai_suggestion_events(suggestion_id)"
         )
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dialogue_pairs (
+                pair_id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticket_id                 TEXT NOT NULL,
+                source_message_id         TEXT,
+                context_until_message_id  TEXT,
+                operator_message_id       TEXT,
+                context                   TEXT NOT NULL,
+                operator_answer           TEXT NOT NULL,
+                issue_type                TEXT,
+                client_id                 TEXT,
+                operator_answer_at        TEXT,
+                resolved_at               TEXT,
+                inserted_at               TEXT NOT NULL DEFAULT (datetime('now')),
+                resolution_status         TEXT,
+                quality_status            TEXT NOT NULL DEFAULT 'unreviewed',
+                quality_reason            TEXT,
+                embedding                 BLOB,
+                embedding_model           TEXT,
+                embedding_status          TEXT NOT NULL DEFAULT 'pending',
+                embedding_text_hash       TEXT,
+                content_hash              TEXT UNIQUE
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dialogue_pairs_quality "
+            "ON dialogue_pairs(quality_status)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dialogue_pairs_embstatus "
+            "ON dialogue_pairs(embedding_status)"
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_dialogue_pairs_ticket "
+            "ON dialogue_pairs(ticket_id)"
+        )
         await db.commit()
 
 

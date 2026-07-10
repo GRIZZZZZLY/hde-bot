@@ -138,3 +138,13 @@ from .suggestion_store import (
     record_suggestion,
     record_suggestion_event,
 )
+from .dialogue_store import (
+    count_dialogue_pairs,
+    dialogue_pair_hashes,
+    list_pending_embeddings,
+    list_processed_ticket_ids,
+    log_ticket_error,
+    mark_ticket_processed,
+    save_dialogue_pair,
+    set_pair_embedding,
+)
