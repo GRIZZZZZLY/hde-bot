@@ -1,4 +1,13 @@
 import bot.config as config_module
+from types import SimpleNamespace
+
+from bot.agent.actions import (
+    AGENT_ACTIONS,
+    build_action_instruction,
+    compose_memo,
+    extract_client_text,
+    parse_agent_draft,
+)
 
 
 def test_agent_model_config_defaults():
@@ -25,3 +34,50 @@ def test_prompt_version_tag_legacy_by_default():
     assert ai.prompt_version_tag() == "db-active"
     ai._active_prompt_loaded = False
     ai._active_format_instructions = None
+
+
+def test_parse_agent_draft_ok_with_fences_and_reason():
+    raw = ('```json\n{"action":"ASK","suit":"с","client":"какая модель?",'
+           '"memo":"м","confidence":70,"confidence_reason":"нет модели кассы"}\n```')
+    d = parse_agent_draft(raw)
+    assert d["action"] == "ASK"
+    assert d["confidence"] == 70
+    assert d["confidence_reason"] == "нет модели кассы"
+
+
+def test_parse_agent_draft_rejects_bad():
+    assert parse_agent_draft('{"action":"MAYBE","suit":"s","client":"c","memo":"m"}') is None
+    assert parse_agent_draft("не json") is None
+    assert parse_agent_draft("") is None
+
+
+def test_parse_agent_draft_defaults():
+    d = parse_agent_draft('{"action":"ANSWER","suit":"s","client":"c","memo":"m"}')
+    assert d["confidence"] == 50
+    assert d["confidence_reason"] == ""
+
+
+def test_build_action_instruction_lists_actions():
+    instr = build_action_instruction()
+    for a in AGENT_ACTIONS:
+        assert a in instr
+
+
+def test_extract_client_text_by_client_id():
+    posts = [
+        SimpleNamespace(user_id=1, text="<p>первый</p>"),
+        SimpleNamespace(user_id=99, text="ответ оператора"),
+        SimpleNamespace(user_id=1, text="<b>второй</b>"),
+    ]
+    assert extract_client_text(posts, client_id=1) == "второй"
+    assert extract_client_text([], client_id=1) == ""
+
+
+def test_compose_memo_grounds_status_stale():
+    memo = compose_memo(
+        "перезагрузите кассу", grounds=["KB#12", "wiki:Чеки"], confidence=80,
+        missing="модель ОФД", self_check_status="supported", action="ANSWER",
+        stale_warning=True,
+    )
+    assert "KB#12" in memo and "модель ОФД" in memo and "ANSWER" in memo
+    assert "нов" in memo.lower()  # предупреждение о новом сообщении клиента
