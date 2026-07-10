@@ -23,6 +23,8 @@ from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile, InputMediaPhoto, InputMediaVideo
 
 from . import db
+from .agent.pipeline import run_agent
+from .ai_summary import generate_ticket_summary
 from .client_media import detect_telegram_media_kind, download_client_attachment
 from .config import config
 from .formatter import (
@@ -196,11 +198,21 @@ async def _generate_summary_with_retry(
     ticket_title: str = "",
     ticket_id: str = "",
     company_id: str = "",
+    topic_id: int | None = None,
     attempts: int = 3,
     pause: float = 30.0,
 ):
     """Call generate_ticket_summary up to *attempts* times with *pause* seconds between tries."""
-    from .ai_summary import generate_ticket_summary
+    if config.agent_enabled and config.agent_auto_first_suggestion_enabled:
+        try:
+            result = await run_agent(
+                posts, info, ticket_title=ticket_title, ticket_id=ticket_id,
+                topic_id=topic_id, company_id=company_id,
+            )
+            if result is not None:
+                return result
+        except Exception as exc:
+            logger.warning("run_agent failed, falling back to summary: %s", exc)
     for attempt in range(1, attempts + 1):
         result = await generate_ticket_summary(
             posts, info,

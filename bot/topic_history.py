@@ -58,11 +58,13 @@ async def retry_missing_ai_summaries(bot: Bot) -> int:
 
         from .ai_summary import _build_history_text
         all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+        anchor = str(max((p.post_id for p in all_posts), default="")) or None
         result = await _tm._generate_summary_with_retry(
             all_posts, info,
             ticket_title=record.ticket_name or "",
             ticket_id=ticket_id,
             company_id="",
+            topic_id=topic_id,
         )
         if result is None:
             continue
@@ -116,6 +118,7 @@ async def retry_missing_ai_summaries(bot: Bot) -> int:
                 title=record.ticket_name or "",
                 answer_text=client_line,
                 ai_full_text=ai_full_text,
+                context_until_post_id=anchor,
             )
             await _tm.db.update_topic(ticket_id, ai_summary_sent_at=to_storage(_tm.utcnow()))
             sent += 1
@@ -157,6 +160,7 @@ async def _post_ticket_history(
 
     # Merge posts and comments, sort by date_created ascending
     all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+    anchor = str(max((p.post_id for p in all_posts), default="")) or None
 
     await _tm._post_client_history(bot, topic_id, ticket_id, client=client, info=info)
 
@@ -173,6 +177,7 @@ async def _post_ticket_history(
             ticket_title=ticket_title,
             ticket_id=ticket_id,
             company_id=company_id,
+            topic_id=topic_id,
         )
     )
 
@@ -258,6 +263,7 @@ async def _post_ticket_history(
             title=ticket_title,
             answer_text=client_line,
             ai_full_text=ai_full_text,
+            context_until_post_id=anchor,
         )
         await _tm.db.update_topic(ticket_id, ai_summary_sent_at=to_storage(_tm.utcnow()))
     except TelegramAPIError as exc:
