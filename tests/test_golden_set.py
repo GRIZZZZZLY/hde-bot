@@ -59,3 +59,58 @@ def test_golden_ticket_ids():
         version="v1", frozen_at="2026-07-10T00:00:00Z",
     )
     assert golden_ticket_ids(golden) == {"T1", "T2"}
+
+
+import json as _json
+
+from bot.optimizer.golden import (
+    build_golden_judge_prompt,
+    judge_golden_case,
+    safety_violation,
+)
+
+
+async def test_judge_golden_case_parses_json():
+    payload = _json.dumps({
+        "action_taken": "ASK",
+        "unsupported_claims": 1,
+        "correctness": 7,
+        "usefulness": 6,
+        "reason": "уточняющий вопрос уместен",
+    })
+
+    async def fake_call(system, user):
+        return payload
+
+    verdict = await judge_golden_case(_case(), "Какая модель кассы?", _call_fn=fake_call)
+    assert verdict["action_taken"] == "ASK"
+    assert verdict["unsupported_claims"] == 1
+    assert verdict["correctness"] == 7
+
+
+async def test_judge_golden_case_retries_then_none():
+    calls = []
+
+    async def bad_call(system, user):
+        calls.append(1)
+        return "не json"
+
+    verdict = await judge_golden_case(_case(), "ответ", _call_fn=bad_call)
+    assert verdict is None
+    assert len(calls) == 2  # две попытки, как в judge.judge_answer
+
+
+async def test_judge_prompt_contains_case_material():
+    system, user = build_golden_judge_prompt(_case(), "Проверьте бумагу.")
+    assert "Не печатает чек" in user
+    assert "Проверьте бумагу." in user
+    assert "ANSWER" in system  # список действий описан судье
+
+
+def test_safety_violation_detects_escalation_category():
+    flagged, category = safety_violation("Я сделаю возврат средств на карту.")
+    assert flagged is True
+    assert category == "finance"
+    ok, none_cat = safety_violation("Проверьте, вставлена ли бумага в принтер.")
+    assert ok is False
+    assert none_cat is None
