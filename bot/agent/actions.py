@@ -1,0 +1,96 @@
+"""Чистые помощники агентного пайплайна: инструкция выбора действия,
+парсинг ответа модели, извлечение вопроса клиента, сборка Памятки."""
+from __future__ import annotations
+
+import html as _html
+import json
+import re as _re
+
+AGENT_ACTIONS = ("ANSWER", "ASK", "ESCALATE", "NO_ACTION")
+
+
+def build_action_instruction() -> str:
+    return (
+        "\n\nВыбери ОДНО действие:\n"
+        "- ANSWER — данных достаточно, дай готовое к отправке решение;\n"
+        "- ASK — данных не хватает, задай минимальный набор уточняющих вопросов "
+        "одним сообщением (не более 4; если вопросы зависят друг от друга — только первый);\n"
+        "- ESCALATE — вопрос нельзя решать без оператора (деньги, фискальные "
+        "параметры, необратимые действия, доступы);\n"
+        "- NO_ACTION — клиент не задал вопрос, ответ не требуется.\n"
+        "Верни СТРОГО JSON без пояснений:\n"
+        '{"action": "...", "suit": "краткая суть обращения", '
+        '"client": "текст для клиента (пусто для NO_ACTION/ESCALATE)", '
+        '"memo": "шпаргалка оператору", "confidence": 0-100, '
+        '"confidence_reason": "почему такая уверенность"}'
+    )
+
+
+def parse_agent_draft(raw: str) -> dict | None:
+    """Парсит JSON-ответ модели (терпим к ```json ограждениям)."""
+    if not raw:
+        return None
+    match = _re.search(r"\{.*\}", raw.strip(), _re.DOTALL)
+    if not match:
+        return None
+    try:
+        obj = json.loads(match.group(0))
+    except Exception:
+        return None
+    if not isinstance(obj, dict) or obj.get("action") not in AGENT_ACTIONS:
+        return None
+    for key in ("suit", "client", "memo"):
+        if not isinstance(obj.get(key, ""), str):
+            return None
+    try:
+        conf = int(obj.get("confidence", 50))
+    except (TypeError, ValueError):
+        conf = 50
+    return {
+        "action": obj["action"],
+        "suit": obj.get("suit", "").strip(),
+        "client": obj.get("client", "").strip(),
+        "memo": obj.get("memo", "").strip(),
+        "confidence": max(0, min(100, conf)),
+        "confidence_reason": str(obj.get("confidence_reason", "")).strip(),
+    }
+
+
+def _strip_html(text: str) -> str:
+    cleaned = _re.sub(r"<[^>]+>", " ", text or "")
+    cleaned = _html.unescape(cleaned)
+    return _re.sub(r"\s+", " ", cleaned).strip()
+
+
+def extract_client_text(posts, client_id) -> str:
+    """Текст последнего сообщения клиента (по client_id), без HTML."""
+    for post in reversed(list(posts)):
+        if str(getattr(post, "user_id", "")) == str(client_id):
+            text = _strip_html(getattr(post, "text", ""))
+            if text:
+                return text
+    return ""
+
+
+def compose_memo(
+    base_memo: str,
+    *,
+    grounds: list[str],
+    confidence: int,
+    missing: str,
+    self_check_status: str,
+    action: str,
+    stale_warning: bool = False,
+) -> str:
+    """Памятка оператору + основания: источники, уверенность, чего не хватает."""
+    lines = [base_memo.strip()] if base_memo.strip() else []
+    lines.append(
+        f"Действие: {action} · уверенность {confidence}% · self-check: {self_check_status}"
+    )
+    if grounds:
+        lines.append("Основания: " + "; ".join(grounds))
+    if missing:
+        lines.append("Не хватает: " + missing)
+    if stale_warning:
+        lines.append("⚠️ Пока готовился ответ, клиент прислал новое сообщение — проверь актуальность.")
+    return "\n".join(lines)

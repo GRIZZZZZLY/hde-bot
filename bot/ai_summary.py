@@ -122,6 +122,44 @@ async def call_groq_text(
         return None
 
 
+async def call_groq_json(
+    system: str,
+    user: str,
+    *,
+    model: str,
+    temperature: float = 0.0,
+    max_tokens: int = 600,
+) -> str | None:
+    """Публичный JSON-вызов Groq для runtime-агента (self-check и т.п.)."""
+    if not config.groq_api_key:
+        return None
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "response_format": {"type": "json_object"},
+    }
+    headers = {"Authorization": f"Bearer {config.groq_api_key}"}
+    try:
+        async with LLM_SEMAPHORE, shared_session() as session:
+            async with session.post(
+                _GROQ_URL, json=payload, headers=headers,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("call_groq_json: HTTP %s", resp.status)
+                    return None
+                data = await resp.json()
+        return data["choices"][0]["message"]["content"]
+    except Exception as exc:
+        logger.warning("call_groq_json failed: %s", exc)
+        return None
+
+
 async def _call_groq_for_summary(system_text: str, history: str, ticket_id: str) -> str | None:
     """Primary: text-only summary via Groq llama-3.3-70b."""
     if not config.groq_api_key:
@@ -347,6 +385,14 @@ async def get_active_format_instructions() -> str:
             _active_format_instructions = None
         _active_prompt_loaded = True
     return _active_format_instructions or _FORMAT_INSTRUCTIONS
+
+
+def prompt_version_tag() -> str:
+    """Метка версии промпта для трассировки ai_suggestions.
+    Согласована между run_agent и register_feedback_pending (общий idempotency_key)."""
+    if _active_prompt_loaded and _active_format_instructions is not None:
+        return "db-active"
+    return "legacy"
 
 
 def _build_system_prompt(

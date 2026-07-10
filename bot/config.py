@@ -65,6 +65,8 @@ class Config:
     agent_auto_first_suggestion_enabled: bool
     agent_dynamic_fewshot_enabled: bool
     agent_call_fixation_enabled: bool
+    agent_draft_model: str
+    agent_selfcheck_model: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -121,6 +123,12 @@ class Config:
             agent_call_fixation_enabled=_parse_bool(
                 os.getenv("AGENT_CALL_FIXATION_ENABLED"), default=False
             ),
+            agent_draft_model=os.getenv(
+                "AGENT_DRAFT_MODEL", "llama-3.3-70b-versatile"
+            ).strip() or "llama-3.3-70b-versatile",
+            agent_selfcheck_model=os.getenv(
+                "AGENT_SELFCHECK_MODEL", "openai/gpt-oss-120b"
+            ).strip() or "openai/gpt-oss-120b",
         )
 
     def matches_owner(self, owner_id: str, owner_name: str) -> bool:

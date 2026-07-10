@@ -62,6 +62,15 @@ async def record_suggestion(
     ai_full_text: str = "",
     client_id: str | None = None,
     model: str | None = None,
+    action_type: str | None = None,
+    self_check: str | None = None,
+    retrieved_refs: str | None = None,
+    confidence: int | None = None,
+    confidence_reason: str | None = None,
+    retrieval_query: str | None = None,
+    retrieval_config_version: str | None = None,
+    embedding_model: str | None = None,
+    generation_ms: int | None = None,
 ) -> int:
     """Insert a suggestion row (idempotent on idempotency_key). Returns its id."""
     key = compute_idempotency_key(
@@ -72,12 +81,16 @@ async def record_suggestion(
             "INSERT OR IGNORE INTO ai_suggestions "
             "(ticket_id, topic_id, trigger_source, context_until_post_id, client_id, "
             " idempotency_key, title, history, client_text, ai_answer, ai_full_text, "
-            " pipeline_version, prompt_version, model) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " pipeline_version, prompt_version, model, action_type, self_check, "
+            " retrieved_refs, confidence, confidence_reason, retrieval_query, "
+            " retrieval_config_version, embedding_model, generation_ms) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 ticket_id, topic_id, trigger_source, context_until_post_id, client_id,
                 key, title, history, client_text, ai_answer, ai_full_text,
-                pipeline_version, prompt_version, model,
+                pipeline_version, prompt_version, model, action_type, self_check,
+                retrieved_refs, confidence, confidence_reason, retrieval_query,
+                retrieval_config_version, embedding_model, generation_ms,
             ),
         )
         await db.commit()

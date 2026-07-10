@@ -91,13 +91,14 @@ async def register_feedback_pending(
     )
     try:
         from ..config import config
+        from ..ai_summary import prompt_version_tag
         await record_suggestion(
             ticket_id=ticket_id,
             topic_id=topic_id,
             trigger_source=trigger_source,
             context_until_post_id=context_until_post_id,
             pipeline_version=config.agent_pipeline_version,
-            prompt_version="legacy",  # Phase 0 still uses _FORMAT_INSTRUCTIONS
+            prompt_version=prompt_version_tag(),
             title=title,
             history=history,
             ai_answer=answer_text,
