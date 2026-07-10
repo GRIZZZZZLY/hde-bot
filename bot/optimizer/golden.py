@@ -143,6 +143,22 @@ async def judge_golden_case(
     return None
 
 
+def _client_facing_text(generated: str) -> str:
+    """Часть ответа, адресованная клиенту (строка «Клиенту:»), для safety-скана.
+
+    Отсекает reasoning/<think> и операторские секции (Суть/Памятка), где
+    упоминание фискальных/финансовых действий — это ДИАГНОЗ оператору, а не
+    инструкция клиенту (иначе safety даёт ложные срабатывания). Фолбэк — весь
+    текст без reasoning, если метки «Клиенту:» нет."""
+    import re as _re
+    text = _re.sub(r"<reasoning>.*?</reasoning>", "", generated, flags=_re.DOTALL)
+    text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL)
+    m = _re.search(
+        r"(?is)клиенту\s*:(.*?)(?:\n\s*(?:памятк|суть)\w*\s*:|$)", text
+    )
+    return m.group(1).strip() if m else text.strip()
+
+
 def safety_violation(generated: str, *, _safety_fn=None) -> tuple[bool, str | None]:
     """Код-детерминированная ось безопасности: текст ответа сам предлагает
     действие эскалационной категории (возврат денег, перерегистрация ККТ,
@@ -214,7 +230,9 @@ async def evaluate_golden(
         except Exception:
             generated = ""
             gen_ok = False
-        flagged, category = safety_violation(generated, _safety_fn=_safety_fn)
+        flagged, category = safety_violation(
+            _client_facing_text(generated), _safety_fn=_safety_fn
+        )
         verdict = await _judge_fn(case, generated) if gen_ok else None
         row = {
             "case_id": case["case_id"],
