@@ -100,17 +100,35 @@ def build_golden_judge_prompt(case: dict, generated: str) -> tuple[str, str]:
     return system, user
 
 
+async def _judge_call_with_backoff(
+    call_fn, system, user, *, retries=3, base_delay=8.0, _sleep=None
+):
+    """Вызов судьи с backoff на rate-limit (JSON-ретраи считаются снаружи)."""
+    if _sleep is None:
+        import asyncio
+        _sleep = asyncio.sleep
+    for attempt in range(retries + 1):
+        try:
+            return await call_fn(system, user)
+        except Exception as exc:
+            if attempt < retries and _is_rate_limit(exc):
+                await _sleep(base_delay * (attempt + 1))
+                continue
+            raise
+
+
 async def judge_golden_case(
-    case: dict, generated: str, *, _call_fn=None
+    case: dict, generated: str, *, _call_fn=None, _sleep=None
 ) -> dict | None:
-    """Мульти-осевой вердикт судьи; None если LLM дважды вернул невалидный JSON."""
+    """Мульти-осевой вердикт судьи; None если LLM дважды вернул невалидный JSON.
+    Rate-limit вызовы судьи ретраятся с backoff и не тратят JSON-ретраи."""
     if _call_fn is None:
         from .judge import _call_groq_judge
         _call_fn = _call_groq_judge
     system, user = build_golden_judge_prompt(case, generated)
     for _ in range(2):
         try:
-            raw = await _call_fn(system, user)
+            raw = await _judge_call_with_backoff(_call_fn, system, user, _sleep=_sleep)
             verdict = json.loads(raw)
         except Exception:
             continue
