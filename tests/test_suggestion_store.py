@@ -149,3 +149,24 @@ async def test_event_send_failed_leaves_label_none():
     row = await get_suggestion(sid)
     assert row["delivery_status"] == "failed"
     assert row["human_label"] is None
+
+
+async def test_record_suggestion_stores_full_trace():
+    await db_module.init_db()
+    sid = await record_suggestion(
+        ticket_id="TA", topic_id=9, trigger_source="first",
+        context_until_post_id="50", pipeline_version="v1", prompt_version="legacy",
+        model="llama-3.3-70b-versatile",
+        action_type="ASK", self_check='{"status":"unsupported"}',
+        retrieved_refs='[{"source_type":"knowledge_item","source_id":12,"score":0.9}]',
+        confidence=30, confidence_reason="fallback после self-check",
+        retrieval_query="Не печатает чек", retrieval_config_version="v1",
+        embedding_model="intfloat/multilingual-e5-large", generation_ms=4200,
+    )
+    row = await get_suggestion(sid)
+    assert row["action_type"] == "ASK"
+    assert row["retrieval_query"] == "Не печатает чек"
+    assert row["embedding_model"] == "intfloat/multilingual-e5-large"
+    assert row["generation_ms"] == 4200
+    assert row["model"] == "llama-3.3-70b-versatile"
+    assert row["confidence"] == 30
