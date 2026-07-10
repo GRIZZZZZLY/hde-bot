@@ -184,3 +184,37 @@ async def _recompute_labels(suggestion_id: int) -> None:
             (human, effective, suggestion_id),
         )
         await db.commit()
+
+
+async def collect_suggestion_daily_stats(hours: int = 24) -> dict:
+    """Счётчики действий оператора по подсказкам за последние N часов —
+    сырьё для ежедневного отчёта пользы (ревизия 3 roadmap)."""
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN delivery_status='sent' AND review_status!='edited'
+                  THEN 1 ELSE 0 END) AS sent_no_edit,
+              SUM(CASE WHEN delivery_status='sent' AND review_status='edited'
+                  THEN 1 ELSE 0 END) AS sent_edited,
+              SUM(CASE WHEN review_status='edited' THEN 1 ELSE 0 END) AS edited,
+              SUM(CASE WHEN review_status='rejected' THEN 1 ELSE 0 END) AS rejected,
+              SUM(CASE WHEN review_status='approved' THEN 1 ELSE 0 END) AS approved,
+              SUM(CASE WHEN review_status='pending' AND delivery_status='not_sent'
+                  THEN 1 ELSE 0 END) AS unused,
+              AVG(CASE WHEN sent_at IS NOT NULL
+                  THEN (julianday(sent_at) - julianday(created_at)) * 1440.0
+                  END) AS avg_minutes_to_send
+            FROM ai_suggestions
+            WHERE created_at >= datetime('now', ?)
+            """,
+            (f"-{int(hours)} hours",),
+        ) as cur:
+            row = await cur.fetchone()
+    stats = {k: row[k] for k in row.keys()} if row else {}
+    for key, value in list(stats.items()):
+        if value is None and key != "avg_minutes_to_send":
+            stats[key] = 0
+    return stats
