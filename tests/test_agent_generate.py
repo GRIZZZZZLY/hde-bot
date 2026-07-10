@@ -18,9 +18,11 @@ _CTX = {
 async def test_generate_agent_draft_passes_evidence_and_parses():
     seen = {}
 
-    async def fake_call(prompt, *, system=None, model=None, max_tokens=None, temperature=None):
+    async def fake_call(prompt, *, system=None, model=None, max_tokens=None,
+                        temperature=None, reasoning_effort=""):
         seen["system"] = system
         seen["model"] = model
+        seen["reasoning_effort"] = reasoning_effort
         return '{"action":"ANSWER","suit":"чек","client":"перезагрузите кассу","memo":"м","confidence":85}'
 
     def fake_prompt(title, rag_examples=None, wiki_context=None, *, equipment=None,
@@ -44,7 +46,8 @@ async def test_generate_agent_draft_passes_evidence_and_parses():
 
 @pytest.mark.asyncio
 async def test_generate_agent_draft_none_on_garbage():
-    async def bad_call(prompt, *, system=None, model=None, max_tokens=None, temperature=None):
+    async def bad_call(prompt, *, system=None, model=None, max_tokens=None,
+                       temperature=None, reasoning_effort=""):
         return "мусор"
 
     async def fake_format():

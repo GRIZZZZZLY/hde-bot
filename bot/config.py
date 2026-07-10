@@ -67,6 +67,8 @@ class Config:
     agent_call_fixation_enabled: bool
     agent_draft_model: str
     agent_selfcheck_model: str
+    groq_summary_model: str
+    groq_reasoning_effort: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -129,6 +131,10 @@ class Config:
             agent_selfcheck_model=os.getenv(
                 "AGENT_SELFCHECK_MODEL", "openai/gpt-oss-120b"
             ).strip() or "openai/gpt-oss-120b",
+            groq_summary_model=os.getenv(
+                "GROQ_SUMMARY_MODEL", "llama-3.3-70b-versatile"
+            ).strip() or "llama-3.3-70b-versatile",
+            groq_reasoning_effort=os.getenv("GROQ_REASONING_EFFORT", "").strip(),
         )
 
     def matches_owner(self, owner_id: str, owner_name: str) -> bool:

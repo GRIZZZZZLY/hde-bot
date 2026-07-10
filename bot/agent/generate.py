@@ -38,5 +38,6 @@ async def generate_agent_draft(
     raw = await _call_fn(
         context["history"], system=system, model=config.agent_draft_model,
         max_tokens=800, temperature=0.3,
+        reasoning_effort=config.groq_reasoning_effort,
     )
     return parse_agent_draft(raw or "")
