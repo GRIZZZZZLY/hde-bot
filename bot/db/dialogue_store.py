@@ -117,3 +117,53 @@ async def log_ticket_error(ticket_id: str, error: str) -> None:
     errors = json.loads(raw) if raw else {}
     errors[str(ticket_id)] = error[:300]
     await set_setting(_ERRORS_KEY, json.dumps(errors, ensure_ascii=False))
+
+
+async def list_pairs_for_gating(limit: int = 50, *, own_operator_id: str = "") -> list[dict]:
+    """Очередь LLM-фильтра качества: непроверенные пары (Phase 2B).
+    Ответы own_operator_id гейтятся первыми — самые ценные few-shot-примеры
+    (в датасете 25k+ пар, полный прогон дорог; свои важнее чужих)."""
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT pair_id, context, operator_answer, operator_answer_at "
+            "FROM dialogue_pairs WHERE quality_status='unreviewed' "
+            "ORDER BY (operator_user_id = ?) DESC, pair_id LIMIT ?",
+            (str(own_operator_id), limit),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def set_pair_quality(pair_id: int, status: str, reason: str | None) -> None:
+    async with connect() as db:
+        await db.execute(
+            "UPDATE dialogue_pairs SET quality_status=?, quality_reason=? "
+            "WHERE pair_id=?",
+            (status, reason, pair_id),
+        )
+        await db.commit()
+
+
+async def list_fewshot_candidates() -> list[dict]:
+    """Кандидаты dynamic few-shot: качество подтверждено, эмбеддинг готов."""
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT pair_id, ticket_id, operator_user_id, context, "
+            "operator_answer, embedding "
+            "FROM dialogue_pairs "
+            "WHERE quality_status IN ('auto_accepted','human_verified') "
+            "AND embedding_status='ready' AND embedding IS NOT NULL"
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def count_pairs_by_quality() -> dict:
+    async with connect() as db:
+        async with db.execute(
+            "SELECT quality_status, COUNT(*) FROM dialogue_pairs GROUP BY quality_status"
+        ) as cur:
+            rows = await cur.fetchall()
+    return {r[0]: int(r[1]) for r in rows}
