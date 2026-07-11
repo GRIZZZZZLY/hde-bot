@@ -113,24 +113,24 @@ async def build_agent_context(
                 exclude_ticket_ids={str(ticket_id)} if ticket_id else frozenset(),
                 own_operator_id=str(config.hde_owner_id),
             )
+            for hit in pair_hits:
+                client_lines = [
+                    ln for ln in hit["context"].splitlines() if ln.startswith("Клиент:")
+                ]
+                last_client = client_lines[-1][len("Клиент:"):].strip() if client_lines else ""
+                evidence.append({
+                    "source_type": "dialogue_pair",
+                    "source_id": hit["pair_id"],
+                    "rank": len(evidence) + 1,
+                    "score": hit["score"],
+                    "title": f"тикет {hit['ticket_id']}",
+                    "used_excerpt": (
+                        f"Вопрос: {last_client}\n"
+                        f"Ответ оператора: {hit['operator_answer'][:400]}"
+                    ),
+                })
         except Exception:
-            pair_hits = []  # few-shot не должен ронять генерацию
-        for hit in pair_hits:
-            client_lines = [
-                ln for ln in hit["context"].splitlines() if ln.startswith("Клиент:")
-            ]
-            last_client = client_lines[-1][len("Клиент:"):].strip() if client_lines else ""
-            evidence.append({
-                "source_type": "dialogue_pair",
-                "source_id": hit["pair_id"],
-                "rank": len(evidence) + 1,
-                "score": hit["score"],
-                "title": f"тикет {hit['ticket_id']}",
-                "used_excerpt": (
-                    f"Вопрос: {last_client}\n"
-                    f"Ответ оператора: {hit['operator_answer'][:400]}"
-                ),
-            })
+            pass  # few-shot не должен ронять генерацию
 
     grounds = []
     for e in evidence:

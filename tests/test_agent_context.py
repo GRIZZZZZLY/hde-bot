@@ -198,3 +198,47 @@ async def test_fewshot_skipped_when_flag_off(monkeypatch):
     )
     assert called["v"] is False                       # флаг off → ни вызова
     assert all(e["source_type"] != "dialogue_pair" for e in ctx["evidence"])
+
+
+async def test_fewshot_handles_malformed_hits(monkeypatch):
+    """Malformed hits (missing keys or None values) do not break generation."""
+    posts = _mk_posts()
+    info = SimpleNamespace(client_id=1)
+    monkeypatch.setattr(config_module.config, "agent_dynamic_fewshot_enabled", True)
+    monkeypatch.setattr(config_module.config, "hde_owner_id", "98")
+
+    async def fake_embed(text, task_type="query"):
+        import numpy as np
+        return np.ones(4, dtype=np.float32)
+
+    async def empty_similar(emb, *, limit=3, query_text="", company_id=""):
+        return []
+
+    async def none_wiki(title):
+        return None
+
+    async def none_pattern(equipment, keywords):
+        return None
+
+    # Return hits with missing "operator_answer" key and None value
+    async def malformed_pairs(emb, *, limit=3, exclude_ticket_ids=frozenset(),
+                              own_operator_id=""):
+        return [
+            {"pair_id": 5, "ticket_id": "T9", "context": "Клиент: вопрос"},
+            # missing "operator_answer" key
+            {"pair_id": 6, "ticket_id": "T10", "context": "Клиент: другой",
+             "operator_answer": None, "score": 0.8},
+            # None value for operator_answer
+        ]
+
+    ctx = await build_agent_context(
+        posts, info, "t", ticket_id="TCUR",
+        _history_fn=lambda p, i: "H", _embed_fn=fake_embed, _similar_fn=empty_similar,
+        _equipment_fn=lambda t, h: None, _wiki_fn=none_wiki, _pattern_fn=none_pattern,
+        _pairs_fn=malformed_pairs,
+    )
+    # Must not raise; dialogue_pair evidence should be empty (all hits skipped)
+    pair_ev = [e for e in ctx["evidence"] if e["source_type"] == "dialogue_pair"]
+    assert len(pair_ev) == 0, "Malformed hits should not produce dialogue_pair evidence"
+    # Other context keys intact
+    assert "history" in ctx and "evidence" in ctx and "grounds" in ctx
