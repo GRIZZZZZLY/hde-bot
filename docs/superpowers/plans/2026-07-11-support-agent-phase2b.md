@@ -50,7 +50,7 @@ Human-verify кнопка в сводке (optional по спеке — отло
 
 **Interfaces:**
 - Produces:
-  - `list_pairs_for_gating(limit: int = 50) -> list[dict]` — `unreviewed` rows: `pair_id, context, operator_answer, operator_answer_at`.
+  - `list_pairs_for_gating(limit: int = 50, *, own_operator_id: str = "") -> list[dict]` — `unreviewed` rows: `pair_id, context, operator_answer, operator_answer_at`. **Own-operator pairs first** (25k+ pairs mined; the operator's own answers are the highest-value few-shot candidates, so they get gated before others' — `ORDER BY (operator_user_id = own) DESC, pair_id`).
   - `set_pair_quality(pair_id: int, status: str, reason: str | None) -> None`.
   - `list_fewshot_candidates() -> list[dict]` — rows with `quality_status IN ('auto_accepted','human_verified') AND embedding_status='ready' AND embedding IS NOT NULL`: `pair_id, ticket_id, operator_user_id, context, operator_answer, embedding`.
   - `count_pairs_by_quality() -> dict[str, int]`.
@@ -79,6 +79,21 @@ async def test_gating_queue_and_quality_update():
     assert all(r["pair_id"] != pid for r in await list_pairs_for_gating())
     counts = await count_pairs_by_quality()
     assert counts.get("auto_accepted") == 1
+
+
+async def test_gating_queue_prioritizes_own_operator():
+    await db_module.init_db()
+    # чужой ответ вставлен раньше (меньший pair_id), свой — позже
+    other, _ = await save_dialogue_pair(
+        ticket_id="T1", context="Клиент: a", operator_answer="чужой",
+        content_hash="go1", operator_user_id="67",
+    )
+    own, _ = await save_dialogue_pair(
+        ticket_id="T2", context="Клиент: b", operator_answer="мой",
+        content_hash="go2", operator_user_id="98",
+    )
+    queue = await list_pairs_for_gating(own_operator_id="98")
+    assert queue[0]["pair_id"] == own          # свой первым, несмотря на pair_id
 
 
 async def test_fewshot_candidates_require_quality_and_embedding():
@@ -116,15 +131,17 @@ Expected: FAIL — imports missing.
 Append to `bot/db/dialogue_store.py`:
 
 ```python
-async def list_pairs_for_gating(limit: int = 50) -> list[dict]:
-    """Очередь LLM-фильтра качества: непроверенные пары (Phase 2B)."""
+async def list_pairs_for_gating(limit: int = 50, *, own_operator_id: str = "") -> list[dict]:
+    """Очередь LLM-фильтра качества: непроверенные пары (Phase 2B).
+    Ответы own_operator_id гейтятся первыми — самые ценные few-shot-примеры
+    (в датасете 25k+ пар, полный прогон дорог; свои важнее чужих)."""
     async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             "SELECT pair_id, context, operator_answer, operator_answer_at "
             "FROM dialogue_pairs WHERE quality_status='unreviewed' "
-            "ORDER BY pair_id LIMIT ?",
-            (limit,),
+            "ORDER BY (operator_user_id = ?) DESC, pair_id LIMIT ?",
+            (str(own_operator_id), limit),
         ) as cur:
             rows = await cur.fetchall()
     return [dict(r) for r in rows]
@@ -228,7 +245,7 @@ async def test_gate_pending_pairs_batch_counts_and_isolation():
     pairs = [dict(_PAIR, pair_id=i) for i in (1, 2, 3)]
     updates = []
 
-    async def fake_list(limit=50):
+    async def fake_list(limit=50, own_operator_id=""):
         return pairs
 
     async def fake_judge(pair, _call_fn=None):
@@ -319,9 +336,10 @@ async def gate_pending_pairs(
         from ..db import list_pairs_for_gating as _list_fn
     if _set_fn is None:
         from ..db import set_pair_quality as _set_fn
+    from ..config import config
 
     stats = {"gated": 0, "accepted": 0, "rejected": 0, "outdated": 0, "skipped": 0}
-    for pair in await _list_fn(limit):
+    for pair in await _list_fn(limit, own_operator_id=str(config.hde_owner_id)):
         verdict = await _judge_fn(pair)
         if verdict is None:
             stats["skipped"] += 1

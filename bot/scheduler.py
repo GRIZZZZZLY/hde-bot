@@ -339,6 +339,9 @@ async def _maybe_backfill_dialogue_pairs(bot) -> None:
             except Exception as exc:
                 await db.log_ticket_error(tid, str(exc))
         logger.info("Nightly dialogue backfill: +%d pairs", saved)
+        from .agent.pair_quality import gate_pending_pairs
+        gate_stats = await gate_pending_pairs(limit=50)
+        logger.info("Nightly pair gating: %s", gate_stats)
     except Exception as exc:
         logger.warning("Nightly dialogue backfill failed: %s", exc)
 

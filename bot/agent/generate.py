@@ -35,6 +35,15 @@ async def generate_agent_draft(
         format_instructions=format_instructions,
     )
     system = base_system + build_action_instruction()
+    pair_examples = [
+        e["used_excerpt"] for e in context.get("evidence", [])
+        if e.get("source_type") == "dialogue_pair"
+    ]
+    if pair_examples:
+        block = "\n\nПримеры, как оператор решал похожие обращения (следуй их стилю и конкретике):"
+        for i, ex in enumerate(pair_examples, 1):
+            block += f"\nПример {i}:\n{ex}"
+        system += block
     raw = await _call_fn(
         context["history"], system=system, model=config.agent_draft_model,
         max_tokens=800, temperature=0.3,

@@ -119,3 +119,126 @@ def test_history_budgeted_skip_count_with_operator_before_client():
     assert skip_count == 2, f"Expected 2 skipped, got {skip_count}. Result:\n{result}"
 
     assert "client1111" in result and "client2222" in result, "Head and tail should be present"
+
+
+import bot.config as config_module
+
+
+async def test_fewshot_evidence_added_when_flag_on(monkeypatch):
+    posts = _mk_posts()
+    info = SimpleNamespace(client_id=1)
+    monkeypatch.setattr(config_module.config, "agent_dynamic_fewshot_enabled", True)
+    monkeypatch.setattr(config_module.config, "hde_owner_id", "98")
+
+    async def fake_embed(text, task_type="query"):
+        import numpy as np
+        return np.ones(4, dtype=np.float32)
+
+    async def empty_similar(emb, *, limit=3, query_text="", company_id=""):
+        return []
+
+    async def none_wiki(title):
+        return None
+
+    async def none_pattern(equipment, keywords):
+        return None
+
+    captured = {}
+
+    async def fake_pairs(emb, *, limit=3, exclude_ticket_ids=frozenset(),
+                         own_operator_id=""):
+        captured["exclude"] = set(exclude_ticket_ids)
+        captured["own"] = own_operator_id
+        return [{"pair_id": 5, "ticket_id": "T9", "operator_user_id": "98",
+                 "context": "Клиент: похожий вопрос",
+                 "operator_answer": "мой прошлый ответ", "score": 0.9}]
+
+    ctx = await build_agent_context(
+        posts, info, "Не печатает чек", ticket_id="TCUR",
+        _history_fn=lambda p, i: "H", _embed_fn=fake_embed, _similar_fn=empty_similar,
+        _equipment_fn=lambda t, h: None, _wiki_fn=none_wiki, _pattern_fn=none_pattern,
+        _pairs_fn=fake_pairs,
+    )
+    pair_ev = [e for e in ctx["evidence"] if e["source_type"] == "dialogue_pair"]
+    assert len(pair_ev) == 1
+    assert "мой прошлый ответ" in pair_ev[0]["used_excerpt"]
+    assert captured["exclude"] == {"TCUR"}            # same-ticket исключён
+    assert captured["own"] == "98"
+    assert any(g == "пара#5" for g in ctx["grounds"])
+
+
+async def test_fewshot_skipped_when_flag_off(monkeypatch):
+    posts = _mk_posts()
+    info = SimpleNamespace(client_id=1)
+    monkeypatch.setattr(config_module.config, "agent_dynamic_fewshot_enabled", False)
+    called = {"v": False}
+
+    async def fake_embed(text, task_type="query"):
+        import numpy as np
+        return np.ones(4, dtype=np.float32)
+
+    async def empty_similar(emb, *, limit=3, query_text="", company_id=""):
+        return []
+
+    async def none_wiki(title):
+        return None
+
+    async def none_pattern(equipment, keywords):
+        return None
+
+    async def spy_pairs(*a, **k):
+        called["v"] = True
+        return []
+
+    ctx = await build_agent_context(
+        posts, info, "t", ticket_id="TCUR",
+        _history_fn=lambda p, i: "H", _embed_fn=fake_embed, _similar_fn=empty_similar,
+        _equipment_fn=lambda t, h: None, _wiki_fn=none_wiki, _pattern_fn=none_pattern,
+        _pairs_fn=spy_pairs,
+    )
+    assert called["v"] is False                       # флаг off → ни вызова
+    assert all(e["source_type"] != "dialogue_pair" for e in ctx["evidence"])
+
+
+async def test_fewshot_handles_malformed_hits(monkeypatch):
+    """Malformed hits (missing keys or None values) do not break generation."""
+    posts = _mk_posts()
+    info = SimpleNamespace(client_id=1)
+    monkeypatch.setattr(config_module.config, "agent_dynamic_fewshot_enabled", True)
+    monkeypatch.setattr(config_module.config, "hde_owner_id", "98")
+
+    async def fake_embed(text, task_type="query"):
+        import numpy as np
+        return np.ones(4, dtype=np.float32)
+
+    async def empty_similar(emb, *, limit=3, query_text="", company_id=""):
+        return []
+
+    async def none_wiki(title):
+        return None
+
+    async def none_pattern(equipment, keywords):
+        return None
+
+    # Return hits with missing "operator_answer" key and None value
+    async def malformed_pairs(emb, *, limit=3, exclude_ticket_ids=frozenset(),
+                              own_operator_id=""):
+        return [
+            {"pair_id": 5, "ticket_id": "T9", "context": "Клиент: вопрос"},
+            # missing "operator_answer" key
+            {"pair_id": 6, "ticket_id": "T10", "context": "Клиент: другой",
+             "operator_answer": None, "score": 0.8},
+            # None value for operator_answer
+        ]
+
+    ctx = await build_agent_context(
+        posts, info, "t", ticket_id="TCUR",
+        _history_fn=lambda p, i: "H", _embed_fn=fake_embed, _similar_fn=empty_similar,
+        _equipment_fn=lambda t, h: None, _wiki_fn=none_wiki, _pattern_fn=none_pattern,
+        _pairs_fn=malformed_pairs,
+    )
+    # Must not raise; dialogue_pair evidence should be empty (all hits skipped)
+    pair_ev = [e for e in ctx["evidence"] if e["source_type"] == "dialogue_pair"]
+    assert len(pair_ev) == 0, "Malformed hits should not produce dialogue_pair evidence"
+    # Other context keys intact
+    assert "history" in ctx and "evidence" in ctx and "grounds" in ctx

@@ -25,6 +25,16 @@ async def _status() -> None:
     pending = await db.list_pending_embeddings(limit=10_000)
     print(f"processed tickets={len(processed)}, pairs={await db.count_dialogue_pairs()}, "
           f"pending embeddings={len(pending)}")
+    print(f"quality: {await db.count_pairs_by_quality()}")
+
+
+async def _gate(limit: int) -> None:
+    import bot.db as db
+    from bot.agent.pair_quality import gate_pending_pairs
+    await db.init_db()
+    stats = await gate_pending_pairs(limit=limit)
+    print(f"gate: {stats}")
+    print(f"quality: {await db.count_pairs_by_quality()}")
 
 
 async def _reembed() -> None:
@@ -84,8 +94,11 @@ def main() -> None:
     parser.add_argument("--pages", type=int, default=20)
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--reembed", action="store_true")
+    parser.add_argument("--gate", type=int, default=None, help="только LLM-фильтр качества: разметить N пар")
     args = parser.parse_args()
-    if args.status:
+    if args.gate is not None:
+        asyncio.run(_gate(args.gate))
+    elif args.status:
         asyncio.run(_status())
     elif args.reembed:
         asyncio.run(_reembed())

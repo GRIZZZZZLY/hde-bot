@@ -141,11 +141,15 @@ from .suggestion_store import (
 )
 from .dialogue_store import (
     count_dialogue_pairs,
+    count_pairs_by_quality,
     dialogue_pair_hashes,
+    list_fewshot_candidates,
+    list_pairs_for_gating,
     list_pending_embeddings,
     list_processed_ticket_ids,
     log_ticket_error,
     mark_ticket_processed,
     save_dialogue_pair,
     set_pair_embedding,
+    set_pair_quality,
 )
