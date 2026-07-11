@@ -56,3 +56,50 @@ async def test_generate_agent_draft_none_on_garbage():
     assert await generate_agent_draft(
         _CTX, "t", _call_fn=bad_call, _prompt_fn=lambda *a, **k: "S", _format_fn=fake_format,
     ) is None
+
+
+_CTX_PAIRS = dict(_CTX)
+_CTX_PAIRS["evidence"] = _CTX["evidence"] + [
+    {"source_type": "dialogue_pair", "source_id": 5, "rank": 2, "score": 0.9,
+     "title": "тикет T9",
+     "used_excerpt": "Вопрос: похожий вопрос\nОтвет оператора: мой прошлый ответ"},
+]
+
+
+@pytest.mark.asyncio
+async def test_fewshot_block_appended_to_system():
+    seen = {}
+
+    async def fake_call(prompt, *, system=None, model=None, max_tokens=None,
+                        temperature=None, reasoning_effort=""):
+        seen["system"] = system
+        return '{"action":"ANSWER","suit":"с","client":"к","memo":"м","confidence":80}'
+
+    async def fake_format():
+        return "F"
+
+    await generate_agent_draft(
+        _CTX_PAIRS, "t",
+        _call_fn=fake_call, _prompt_fn=lambda *a, **k: "BASE", _format_fn=fake_format,
+    )
+    assert "похожие обращения" in seen["system"]
+    assert "мой прошлый ответ" in seen["system"]
+
+
+@pytest.mark.asyncio
+async def test_no_fewshot_block_without_pairs():
+    seen = {}
+
+    async def fake_call(prompt, *, system=None, model=None, max_tokens=None,
+                        temperature=None, reasoning_effort=""):
+        seen["system"] = system
+        return '{"action":"ANSWER","suit":"с","client":"к","memo":"м","confidence":80}'
+
+    async def fake_format():
+        return "F"
+
+    await generate_agent_draft(
+        _CTX, "t",
+        _call_fn=fake_call, _prompt_fn=lambda *a, **k: "BASE", _format_fn=fake_format,
+    )
+    assert "похожие обращения" not in seen["system"]
