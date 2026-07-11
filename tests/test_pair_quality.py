@@ -51,3 +51,34 @@ async def test_gate_pending_pairs_batch_counts_and_isolation():
     )
     assert stats == {"gated": 2, "accepted": 1, "rejected": 1, "outdated": 0, "skipped": 1}
     assert (3, "auto_accepted") not in updates       # skipped не записан
+
+
+import bot.scheduler as scheduler_module
+import bot.config as config_module
+import bot.db as db_module
+
+
+async def test_nightly_job_gates_after_mining(monkeypatch):
+    await db_module.init_db()  # dialogue_pairs table must exist before mining runs
+    cfg = config_module.config
+    monkeypatch.setattr(cfg, "agent_dialogue_mining_enabled", True)
+    gate_called = {"limit": None}
+
+    async def fake_gate(limit=50, **k):
+        gate_called["limit"] = limit
+        return {"gated": 0, "accepted": 0, "rejected": 0, "outdated": 0, "skipped": 0}
+
+    monkeypatch.setattr("bot.agent.pair_quality.gate_pending_pairs", fake_gate)
+
+    class _NoTickets:
+        async def get_closed_tickets_page(self, owner_id, page=1):
+            return ([], 1)
+
+    monkeypatch.setattr("bot.hde_api.HDEApiClient", lambda: _NoTickets())
+    scheduler_module._last_dialogue_backfill_date = None
+    # заставить временной гейт пройти: подменяем _now_msk на 01:00
+    import datetime as _dt
+    fake_now = _dt.datetime(2026, 7, 11, 1, 0, 0)
+    monkeypatch.setattr(scheduler_module, "_now_msk", lambda: fake_now)
+    await scheduler_module._maybe_backfill_dialogue_pairs(bot=None)
+    assert gate_called["limit"] == 50                 # гейт вызван после майнинга
