@@ -91,7 +91,7 @@ async def run_agent(
     confidence_reason = ""
     self_status = "n/a"
     for attempt in range(2):
-        context = await _context_fn(posts, info, ticket_title, company_id)
+        context = await _context_fn(posts, info, ticket_title, company_id, ticket_id=ticket_id)
         draft = await _draft_fn(context, ticket_title)
         if draft is None:
             return None  # драфт не удался → откат на legacy

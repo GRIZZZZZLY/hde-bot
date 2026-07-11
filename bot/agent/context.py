@@ -39,12 +39,14 @@ async def build_agent_context(
     ticket_title: str,
     company_id: str = "",
     *,
+    ticket_id: str = "",
     _history_fn=None,
     _embed_fn=None,
     _similar_fn=None,
     _equipment_fn=None,
     _wiki_fn=None,
     _pattern_fn=None,
+    _pairs_fn=None,
 ) -> dict:
     if _embed_fn is None:
         from ..knowledge.indexer import embed_text as _embed_fn
@@ -101,12 +103,43 @@ async def build_agent_context(
             "title": equipment or "", "used_excerpt": solution_steps[:_EXCERPT_LIMIT],
         })
 
+    from ..config import config
+    if config.agent_dynamic_fewshot_enabled and embedding is not None:
+        if _pairs_fn is None:
+            from .pair_retrieval import find_similar_pairs as _pairs_fn
+        try:
+            pair_hits = await _pairs_fn(
+                embedding, limit=3,
+                exclude_ticket_ids={str(ticket_id)} if ticket_id else frozenset(),
+                own_operator_id=str(config.hde_owner_id),
+            )
+        except Exception:
+            pair_hits = []  # few-shot не должен ронять генерацию
+        for hit in pair_hits:
+            client_lines = [
+                ln for ln in hit["context"].splitlines() if ln.startswith("Клиент:")
+            ]
+            last_client = client_lines[-1][len("Клиент:"):].strip() if client_lines else ""
+            evidence.append({
+                "source_type": "dialogue_pair",
+                "source_id": hit["pair_id"],
+                "rank": len(evidence) + 1,
+                "score": hit["score"],
+                "title": f"тикет {hit['ticket_id']}",
+                "used_excerpt": (
+                    f"Вопрос: {last_client}\n"
+                    f"Ответ оператора: {hit['operator_answer'][:400]}"
+                ),
+            })
+
     grounds = []
     for e in evidence:
         if e["source_type"] == "knowledge_item":
             grounds.append(f"KB#{e['source_id']}")
         elif e["source_type"] == "wiki":
             grounds.append(f"wiki:{(e['title'] or '')[:40]}")
+        elif e["source_type"] == "dialogue_pair":
+            grounds.append(f"пара#{e['source_id']}")
         else:
             grounds.append(f"pattern:{e['title'] or '?'}")
 
