@@ -133,13 +133,14 @@ def _now_storage() -> str:
     return to_storage(utcnow())
 
 
-async def _send_topic_message(bot: Bot, topic_id: int, text: str) -> None:
+async def _send_topic_message(bot: Bot, topic_id: int, text: str, reply_markup=None) -> None:
     await bot.send_message(
         chat_id=config.group_chat_id,
         message_thread_id=topic_id,
         text=text,
         parse_mode="HTML",
         disable_web_page_preview=True,
+        reply_markup=reply_markup,
     )
 
 
@@ -201,13 +202,18 @@ async def _generate_summary_with_retry(
     topic_id: int | None = None,
     attempts: int = 3,
     pause: float = 30.0,
+    trigger_source: str = "first",
 ):
     """Call generate_ticket_summary up to *attempts* times with *pause* seconds between tries."""
-    if config.agent_enabled and config.agent_auto_first_suggestion_enabled:
+    agent_allowed = config.agent_enabled and (
+        config.agent_auto_first_suggestion_enabled or trigger_source != "first"
+    )
+    if agent_allowed:
         try:
             result = await run_agent(
                 posts, info, ticket_title=ticket_title, ticket_id=ticket_id,
                 topic_id=topic_id, company_id=company_id,
+                trigger_source=trigger_source,
             )
             if result is not None:
                 return result
@@ -541,8 +547,9 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
         link=record.hde_link or _payload_value(payload, "link"),
         date_str=_payload_value(payload, "last_post_date"),
     )
+    from .handlers.ai_feedback import suggest_button_kb
     try:
-        await _send_topic_message(bot, record.topic_id, reply_text)
+        await _send_topic_message(bot, record.topic_id, reply_text, reply_markup=suggest_button_kb())
     except TelegramAPIError as exc:
         err_lower = str(exc).lower()
         if any(k in err_lower for k in ("thread not found", "topic_id_invalid", "topic_deleted", "not found")):
@@ -553,7 +560,7 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
             await db.mark_topic_deleted(ticket_id)
             record = await _ensure_active_topic(bot, payload, announce_assignment=True)
             try:
-                await _send_topic_message(bot, record.topic_id, reply_text)
+                await _send_topic_message(bot, record.topic_id, reply_text, reply_markup=suggest_button_kb())
             except TelegramAPIError as exc2:
                 logger.error("Failed to resend client reply to recreated topic %d: %s", record.topic_id, exc2)
         else:

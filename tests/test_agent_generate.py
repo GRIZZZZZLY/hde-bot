@@ -59,8 +59,9 @@ async def test_generate_agent_draft_none_on_garbage():
 
 
 _CTX_PAIRS = dict(_CTX)
-_CTX_PAIRS["evidence"] = _CTX["evidence"] + [
-    {"source_type": "dialogue_pair", "source_id": 5, "rank": 2, "score": 0.9,
+# few-shot приходит из demos, не из evidence (инвариант I3)
+_CTX_PAIRS["demos"] = [
+    {"source_type": "dialogue_pair", "source_id": 5, "rank": 1, "score": 0.9,
      "title": "тикет T9",
      "used_excerpt": "Вопрос: похожий вопрос\nОтвет оператора: мой прошлый ответ"},
 ]
@@ -103,3 +104,57 @@ async def test_no_fewshot_block_without_pairs():
         _call_fn=fake_call, _prompt_fn=lambda *a, **k: "BASE", _format_fn=fake_format,
     )
     assert "похожие обращения" not in seen["system"]
+
+
+@pytest.mark.asyncio
+async def test_json_override_is_last_instruction_after_pair_examples():
+    """Активный промпт из БД (v15) требует <reasoning> и текстовый формат —
+    финальный JSON-override обязан идти ПОСЛЕДНИМ, после few-shot блока,
+    иначе qwen отвечает текстом и драфт молча падает (прод-инцидент 2026-07-12)."""
+    seen = {}
+
+    async def fake_call(prompt, *, system=None, model=None, max_tokens=None,
+                        temperature=None, reasoning_effort=""):
+        seen["system"] = system
+        return '{"action":"ANSWER","suit":"с","client":"к","memo":"м","confidence":80}'
+
+    async def fake_format():
+        return "FORMAT с <reasoning> инструкцией"
+
+    ctx = dict(_CTX)
+    # few-shot приходит из demos (инвариант I3 split-а)
+    ctx["demos"] = [
+        {"source_type": "dialogue_pair", "source_id": 1, "rank": 1,
+         "score": 0.8, "title": None, "used_excerpt": "Клиент: х\nОператор: у"},
+    ]
+    await generate_agent_draft(
+        ctx, "t",
+        _call_fn=fake_call, _prompt_fn=lambda *a, **k: "BASE", _format_fn=fake_format,
+    )
+    system = seen["system"]
+    assert "ТОЛЬКО один JSON" in system
+    assert system.rindex("ТОЛЬКО один JSON") > system.rindex("похожие обращения")
+    assert "<reasoning>" in system.split("похожие обращения")[1]  # override после примеров
+
+
+@pytest.mark.asyncio
+async def test_parse_fail_logs_warning_with_raw_head(caplog):
+    """Молчаливый откат на legacy невидим в логах — провал парса драфта
+    обязан оставлять warning с началом сырого ответа модели."""
+    import logging
+
+    async def fake_call(prompt, *, system=None, model=None, max_tokens=None,
+                        temperature=None, reasoning_effort=""):
+        return "<reasoning>размышления</reasoning>\nСуть: текст без JSON"
+
+    async def fake_format():
+        return "F"
+
+    with caplog.at_level(logging.WARNING, logger="bot.agent.generate"):
+        draft = await generate_agent_draft(
+            _CTX, "t",
+            _call_fn=fake_call, _prompt_fn=lambda *a, **k: "BASE",
+            _format_fn=fake_format,
+        )
+    assert draft is None
+    assert any("draft parse failed" in r.message for r in caplog.records)

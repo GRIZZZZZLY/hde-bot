@@ -2,7 +2,11 @@
 выбора действия; модель — из config.agent_draft_model."""
 from __future__ import annotations
 
-from .actions import build_action_instruction, parse_agent_draft
+import logging
+
+from .actions import build_action_instruction, build_json_override, parse_agent_draft
+
+logger = logging.getLogger(__name__)
 
 
 async def generate_agent_draft(
@@ -36,17 +40,22 @@ async def generate_agent_draft(
     )
     system = base_system + build_action_instruction()
     pair_examples = [
-        e["used_excerpt"] for e in context.get("evidence", [])
-        if e.get("source_type") == "dialogue_pair"
+        d["used_excerpt"] for d in context.get("demos", [])
+        if d.get("source_type") == "dialogue_pair"
     ]
     if pair_examples:
         block = "\n\nПримеры, как оператор решал похожие обращения (следуй их стилю и конкретике):"
         for i, ex in enumerate(pair_examples, 1):
             block += f"\nПример {i}:\n{ex}"
         system += block
+    # JSON-override ПОСЛЕДНИМ — после few-shot (прод-инцидент 2026-07-12)
+    system += build_json_override()
     raw = await _call_fn(
         context["history"], system=system, model=config.agent_draft_model,
         max_tokens=800, temperature=0.3,
         reasoning_effort=config.groq_reasoning_effort,
     )
-    return parse_agent_draft(raw or "")
+    draft = parse_agent_draft(raw or "")
+    if draft is None:
+        logger.warning("draft parse failed; raw head: %s", (raw or "")[:200])
+    return draft

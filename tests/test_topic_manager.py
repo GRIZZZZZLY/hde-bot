@@ -48,6 +48,7 @@ def make_bot():
     bot.close_forum_topic = AsyncMock()
     bot.delete_forum_topic = AsyncMock()
     bot.send_message = AsyncMock()
+    bot.send_message.return_value.message_id = 1001
     bot.send_photo = AsyncMock()
     bot.send_video = AsyncMock()
     bot.send_voice = AsyncMock()
@@ -182,6 +183,33 @@ async def test_client_reply_creates_topic_and_schedules_pre_sla(initialized_db, 
     assert record.pre_sla_notify_at is not None
     notify_at = parse_datetime(record.pre_sla_notify_at)
     assert notify_at is not None
+
+
+@pytest.mark.asyncio
+async def test_client_reply_message_has_suggest_button(initialized_db, monkeypatch):
+    """Phase 3: под сообщением клиента — кнопка «💡 Предложить ответ»."""
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    await db_module.upsert_topic(
+        "TKT-1",
+        999,
+        unique_id="ABC-123",
+        company_name="ACME",
+        ticket_name="Broken printer",
+        priority="high",
+        status="open",
+        owner_id="me",
+        owner_name="Me",
+        hde_link="https://hde.example.com/tickets/1",
+    )
+    await db_module.update_topic("TKT-1", topic_state="active")
+    bot = make_bot()
+
+    await handle_client_reply(bot, make_payload())
+
+    kb = bot.send_message.call_args.kwargs.get("reply_markup")
+    assert kb is not None
+    buttons = [b for row in kb.inline_keyboard for b in row]
+    assert any(b.callback_data == "ai:suggest" for b in buttons)
 
 
 @pytest.mark.asyncio

@@ -65,7 +65,8 @@ async def build_agent_context(
     equipment = _equipment_fn(ticket_title, history)
     retrieval_query = f"{ticket_title}\n{client_text}"[:600]
 
-    evidence: list[dict] = []
+    evidence: list[dict] = []   # grounding-eligible: history + knowledge sources
+    demos: list[dict] = []      # few-shot примеры (dialogue_pair): стиль, НЕ grounding
     confidence = 0
     embedding = await _embed_fn(retrieval_query, task_type="query")
     if embedding is not None:
@@ -118,10 +119,11 @@ async def build_agent_context(
                     ln for ln in hit["context"].splitlines() if ln.startswith("Клиент:")
                 ]
                 last_client = client_lines[-1][len("Клиент:"):].strip() if client_lines else ""
-                evidence.append({
+                # I3: пары идут в demos (few-shot), не в evidence (grounding)
+                demos.append({
                     "source_type": "dialogue_pair",
                     "source_id": hit["pair_id"],
-                    "rank": len(evidence) + 1,
+                    "rank": len(demos) + 1,
                     "score": hit["score"],
                     "title": f"тикет {hit['ticket_id']}",
                     "used_excerpt": (
@@ -138,16 +140,17 @@ async def build_agent_context(
             grounds.append(f"KB#{e['source_id']}")
         elif e["source_type"] == "wiki":
             grounds.append(f"wiki:{(e['title'] or '')[:40]}")
-        elif e["source_type"] == "dialogue_pair":
-            grounds.append(f"пара#{e['source_id']}")
         else:
             grounds.append(f"pattern:{e['title'] or '?'}")
+    for d in demos:
+        grounds.append(f"пара#{d['source_id']}")
 
     return {
         "history": history,
         "client_text": client_text,
         "equipment": equipment,
         "evidence": evidence,
+        "demos": demos,
         "retrieval_query": retrieval_query,
         "wiki": wiki,
         "solution_steps": solution_steps,

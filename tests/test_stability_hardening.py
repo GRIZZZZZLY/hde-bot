@@ -1,5 +1,7 @@
-"""Tests for stability hardening: WAL mode, busy_timeout, claim-first webhook dedup, fail-closed secret."""
+"""Tests for stability hardening: WAL mode, busy_timeout, durable-inbox webhook dedup, fail-closed secret."""
 import asyncio
+import datetime as _dt
+import json
 
 import aiosqlite
 import pytest
@@ -82,7 +84,10 @@ async def test_duplicate_event_during_processing_is_skipped():
 
 
 @pytest.mark.asyncio
-async def test_claim_released_when_handler_fails():
+async def test_failed_handler_retried_by_worker_not_hde_redelivery():
+    """Durable-inbox контракт: провал хендлера НЕ теряет событие — оно остаётся
+    pending с backoff и повторяется воркером. Повторная доставка HDE того же
+    события дедупится (без двойной обработки); ретрай приходит от воркера."""
     await db_module.init_db()
     calls = 0
 
@@ -101,12 +106,28 @@ async def test_claim_released_when_handler_fails():
     with patch.dict("bot.hde_webhook.HANDLERS", {"client_reply": failing_then_ok}):
         first = await hde_webhook_handler(make_request(dict(CLIENT_REPLY_PAYLOAD)))
         await drain()
+        assert calls == 1                                      # первая попытка упала
+        # событие не потеряно — pending, готово к ретраю
+        assert (await db_module.count_inbox_by_status()).get("pending") == 1
+
+        # повторная доставка HDE того же события → дедуп, без второй обработки
         retry = await hde_webhook_handler(make_request(dict(CLIENT_REPLY_PAYLOAD)))
         await drain()
+        assert retry.text == "Duplicate OK"
+        assert calls == 1
+
+        # воркер ретраит после backoff (эмулируем истёкший backoff через now)
+        future = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(seconds=120)
+        row = await db_module.claim_next_event(now=future)
+        assert row is not None
+        payload = json.loads(row["payload"])
+        await hde_webhook_module.dispatch_event(AsyncMock(), payload)
+        await db_module.mark_completed(row["event_id"])
 
     assert first.status == 200
     assert retry.status == 200
-    assert calls == 2
+    assert calls == 2                                          # ретрай воркера прошёл
+    assert (await db_module.get_inbox_event(row["event_id"]))["status"] == "completed"
 
 
 @pytest.mark.asyncio

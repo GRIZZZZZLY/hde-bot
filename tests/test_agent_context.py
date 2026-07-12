@@ -124,7 +124,8 @@ def test_history_budgeted_skip_count_with_operator_before_client():
 import bot.config as config_module
 
 
-async def test_fewshot_evidence_added_when_flag_on(monkeypatch):
+async def test_fewshot_goes_to_demos_not_evidence(monkeypatch):
+    """Инвариант I3: few-shot пары идут в ctx['demos'], НИКОГДА в ctx['evidence']."""
     posts = _mk_posts()
     info = SimpleNamespace(client_id=1)
     monkeypatch.setattr(config_module.config, "agent_dynamic_fewshot_enabled", True)
@@ -159,9 +160,12 @@ async def test_fewshot_evidence_added_when_flag_on(monkeypatch):
         _equipment_fn=lambda t, h: None, _wiki_fn=none_wiki, _pattern_fn=none_pattern,
         _pairs_fn=fake_pairs,
     )
-    pair_ev = [e for e in ctx["evidence"] if e["source_type"] == "dialogue_pair"]
-    assert len(pair_ev) == 1
-    assert "мой прошлый ответ" in pair_ev[0]["used_excerpt"]
+    assert "demos" in ctx
+    # пары НЕ должны просачиваться в grounding-источники
+    assert all(e["source_type"] != "dialogue_pair" for e in ctx["evidence"])
+    demos = [d for d in ctx["demos"] if d["source_type"] == "dialogue_pair"]
+    assert len(demos) == 1
+    assert "мой прошлый ответ" in demos[0]["used_excerpt"]
     assert captured["exclude"] == {"TCUR"}            # same-ticket исключён
     assert captured["own"] == "98"
     assert any(g == "пара#5" for g in ctx["grounds"])
@@ -198,6 +202,7 @@ async def test_fewshot_skipped_when_flag_off(monkeypatch):
     )
     assert called["v"] is False                       # флаг off → ни вызова
     assert all(e["source_type"] != "dialogue_pair" for e in ctx["evidence"])
+    assert ctx["demos"] == []                          # флаг off → пустой demos
 
 
 async def test_fewshot_handles_malformed_hits(monkeypatch):
@@ -237,8 +242,9 @@ async def test_fewshot_handles_malformed_hits(monkeypatch):
         _equipment_fn=lambda t, h: None, _wiki_fn=none_wiki, _pattern_fn=none_pattern,
         _pairs_fn=malformed_pairs,
     )
-    # Must not raise; dialogue_pair evidence should be empty (all hits skipped)
-    pair_ev = [e for e in ctx["evidence"] if e["source_type"] == "dialogue_pair"]
-    assert len(pair_ev) == 0, "Malformed hits should not produce dialogue_pair evidence"
+    # Must not raise; no dialogue_pair should leak into evidence or demos
+    assert all(e["source_type"] != "dialogue_pair" for e in ctx["evidence"])
+    demos = [d for d in ctx.get("demos", []) if d.get("source_type") == "dialogue_pair"]
+    assert len(demos) == 0, "Malformed hits should not produce dialogue_pair demos"
     # Other context keys intact
-    assert "history" in ctx and "evidence" in ctx and "grounds" in ctx
+    assert "history" in ctx and "evidence" in ctx and "demos" in ctx and "grounds" in ctx

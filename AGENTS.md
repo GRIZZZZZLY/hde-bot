@@ -68,76 +68,75 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 <claude-mem-context>
 # Memory Context
 
-# [HDE_bot] recent context, 2026-06-11 8:37pm GMT+3
+# [HDE_bot] recent context, 2026-06-12 12:55pm GMT+3
 
 Legend: 🎯session 🔴bugfix 🟣feature 🔄refactor ✅change 🔵discovery ⚖️decision 🚨security_alert 🔐security_note
 Format: ID TIME TYPE TITLE
 Fetch details: get_observations([IDs]) | Search: mem-search skill
 
-Stats: 50 obs (20 550t read) | 313 092t work | 93% savings
+Stats: 50 obs (17 254t read) | 185 987t work | 91% savings
 
-### Jun 3, 2026
-3671 10:18a 🔵 Database schema mismatch; pre-SLA notifications stopped May 19; zero sends since then
-3672 10:19a 🔵 Domain rocket1208.com is not in DNS (NXDOMAIN); HDE webhooks cannot resolve bot endpoint
-3673 " 🔵 Bot configured for hde-bot.duckdns.org webhook, not rocket1208.com; user worked on wrong domain
-3674 10:20a 🔵 Webhook infrastructure is working; hde-bot.duckdns.org resolves correctly and is reachable; HDE event configuration is missing
-3675 10:24a 🔵 Pre-SLA notifications scheduled but never sent for ticket 171623
-3676 10:27a 🔵 VPS missing automated DuckDNS IP update mechanism
-3677 " 🔵 Confirmed: No DuckDNS IP updater cron job despite sudo access
-3678 10:28a 🔵 DuckDNS integrated with ACME/Let's Encrypt but missing IP update daemon
-3679 10:29a 🔵 DuckDNS token configured only for Let's Encrypt renewals, not IP updates
-3680 10:30a 🔵 Let's Encrypt uses HTTP-01 (webroot), not DuckDNS DNS validation
-3681 10:31a ✅ Documented correct DNS procedure: update DuckDNS on VPS IP change, not rocket1208.com
-3682 10:37a 🟣 Implemented automated DuckDNS IP updater with systemd timer
-3683 " 🔵 Pre-SLA timer cleared when staff reply is newer than last client reply
-3684 10:38a 🔵 Pre-SLA verification checks if operator actually posted in HDE after client reply
-3685 11:11a ⚖️ Approve Approach B: verify operator identity in staff_reply webhook to preserve pre-SLA timer
-3686 11:20a 🔵 Regression tests for HDE bot pre-SLA timing and concurrent operation bugs
-3687 11:22a ✅ Implementation plan created for pre-SLA autoreply gate fix
-3688 11:24a 🔵 Pre-SLA timer clearance logic found in topic_manager.py _handle_staff_reply_locked
-3689 11:26a ✅ Three regression test cases added to test_topic_manager.py for operator verification gate
-3690 " 🔵 TDD Step 2 complete: three new tests fail as expected before implementation
-3691 " ✅ TDD Step 3 complete: operator verification gate implemented in topic_manager.py
-3692 " 🔵 TDD Step 5: Full test suite shows existing test regressions with new operator verification gate
-3693 11:27a ✅ TDD Step 5 fixed: test_staff_reply_clears_pre_sla updated for backward compatibility with operator verification gate
-3694 " 🔵 TDD implementation complete: 18 tests passing, operator verification gate fully implemented and tested
-3695 " ✅ Pre-SLA operator verification gate implementation committed to fix/presla-ignore-autoreply branch
-3710 11:45a 🔵 HDE Bot Complexity Analysis: 6 Priority Optimization Targets Identified
-3751 12:26p 🔵 Mapped HDEApiClient instantiation patterns across codebase
-3752 12:29p 🔵 Identified duplicated client usage patterns in topic_manager.py
-3753 " 🔵 operator_replies.py uses single-call client pattern across four handlers
-S735 Implement connection pooling optimization for HDE API client to reduce TCP+TLS handshake overhead in bulk operations (Priority 4 from complexity analysis) (Jun 3, 12:29 PM)
-3760 12:33p 🔵 Performance bottlenecks identified in HDE Telegram bot complexity analysis
-3761 12:34p 🔵 Test suite baseline: 4 failures identified in 221-test suite
-3762 12:35p 🟣 Implement shared aiohttp connection pool for HDE API client
-3763 12:37p 🔄 Wire shared connector pool to all HDE API ClientSession instances
-3764 " 🔵 Connector pool wiring verified: all ClientSession calls updated
-3765 " ✅ Add test fixture to reset HDE connector pool between tests
-3766 " ✅ Integrate connector pool shutdown into bot lifecycle
-3767 " ✅ Reorder connector pool shutdown in main.py lifecycle
-3768 12:38p 🟣 Add test coverage for shared connector pool behavior
-S737 Deploy TCP connection pool optimization (perf: share a TCP connection pool across requests) to production (Jun 3, 12:38 PM)
-3803 1:02p 🔄 TCP connection pool sharing for HDEApiClient
-3804 1:03p ✅ TCP connection pool optimization deployed to origin/main
-3805 " 🔵 SSH access to production host confirmed
-3807 " 🔵 HDE Bot service found running on production host
-3808 " 🔵 HDE Bot service deployment path and configuration
-3809 " ✅ TCP connection pool optimization deployed to production
-3811 " ✅ HDE Bot service restarted with new TCP connection pooling code
-S808 Detailed explanation of planned optimizations for bot commands and what improvements they will deliver (Jun 3, 1:03 PM)
-### Jun 11, 2026
-S809 Implement and complete optimization Point #1 for /aiimport command (batch dedup checking + deferred wiki building phase) (Jun 11, 6:25 PM)
-S810 Complete Point #2 optimization for `/aianalyze` command: implement in-memory pattern deduplication to eliminate O(n²) database query behavior (Jun 11, 6:30 PM)
-S811 Deploy Point #2 optimization (`/aianalyze` in-memory pattern caching) to production and assess remaining optimization opportunities from the complexity report (Jun 11, 6:37 PM)
-S812 Evaluate remaining two optimization opportunities (#3 RAG search via heapq.nlargest, #6 parallel file downloads) and present tradeoffs to determine implementation priority (Jun 11, 6:41 PM)
-S813 Performance optimizations for vector similarity search and concurrent attachment downloads in HDE bot; user completed two commits and awaiting deploy confirmation (Jun 11, 6:44 PM)
-S814 Deploy and verify performance optimizations across HDE bot's AI processing pipeline (Jun 11, 7:03 PM)
-4295 7:37p ✅ Deployed changes to main branch
-4296 7:38p 🟣 Performance optimization deployed: concurrent ticket attachment downloads
-S815 Measure real effect of shared HDE API connection pool; find bulk scenarios; compare connection creation overhead; add diagnostic tests; eliminate unnecessary client creation without changing behavior; deliver Russian-language report with concrete metrics and risks. (Jun 11, 8:25 PM)
-4311 8:33p 🔵 HDE_bot complexity hotspots scanned and ranked
-4312 8:34p 🔵 Manual inspection of HDE_bot complexity hotspots confirms context-dependent patterns
-4313 " 🔵 HDE_bot test suite has 231 tests covering all major components
+### Jun 12, 2026
+S867 Architectural audit of HDE_bot Telegram support bot: evaluate RAG implementation correctness, assess LLM integrations (Gemini/Groq/OpenRouter), determine if free LLM API consolidation to Groq + backup is feasible, research best practices for 2025-2026 (Jun 12, 1:27 AM)
+S868 Prioritized action plan for HDE_bot improvements: explained 4 recommendations (confidence thresholding in RAG, provider inversion, reranking, refactoring) with effort estimates, risk assessment, and expected impact for user selection and implementation (Jun 12, 1:33 AM)
+S869 Implement recommendation #1 (confidence threshold in RAG retrieval) from architectural audit; completed empirical analysis, implemented filtering, tested, and deployed to production VPS (Jun 12, 1:39 AM)
+S870 Architectural review and migration: replace Gemini with Groq as primary LLM provider across all subsystems; verify RAG implementation and identify best practices to apply (Jun 12, 1:47 AM)
+4590 8:59a ✅ Finalized Gemini Removal with Provider-Agnostic Documentation and Full Test Verification
+4591 9:00a 🔵 Remaining Gemini References Found in Test Files
+4592 " 🔵 Identified Gemini References in Test Suite Context
+4593 " 🔵 Groq Scout Vision API Call Failed Due to Malformed Authorization Header
+4594 9:01a 🔵 Groq Scout Model Vision Request Rejected with 403 Forbidden
+4595 " 🔵 Groq Scout Vision API Supports Images but Requires Minimum Dimensions
+4597 9:02a ✅ Gemini-to-Groq Migration Changes Staged for Commit
+4599 9:03a 🔵 Gemini Migration Diff Summary: 20 Files with Primarily Provider-Related Changes
+4600 " 🟣 Gemini Removal and Groq Consolidation Committed to Main Branch
+4602 9:04a ✅ Updated Prompt Optimization Memory Documentation for Groq Migration
+S871 How is Deepgram audio call transcription currently implemented in the project, and how can it be used for RAG to improve prompt quality and responses for clients? (Jun 12, 9:05 AM)
+4603 9:09a 🔵 Deepgram audio transcription integration in ai_summary.py
+4604 9:10a 🔵 Deepgram audio transcripts injected into RAG context for Groq Scout fallback
+4605 " 🔵 Vision photo descriptions integrated into RAG embeddings as Priority 2 context
+4606 " 🔵 RAG design spec documents Deepgram call transcription architecture and wiki integration
+4607 9:11a 🔵 Deepgram workflow spec details operator call recording ingestion with wiki builder integration
+4608 " 🔵 Audio media handling infrastructure exists; full transcription → wiki workflow not yet implemented
+S872 Implement call recording transcription pipeline: audio file upload in ticket topics → Deepgram transcription → Groq summarization → knowledge base indexing as source='transcription' (Jun 12, 9:11 AM)
+4609 9:28a 🟣 Retrieval evaluation utility for offline relevance judging
+4610 9:29a 🔵 Retrieval dump executed on VPS with 30 optimization samples
+4611 9:34a 🔵 find_similar() returns duplicate content, wasting top-k slots
+4612 " 🔴 Implement content deduplication in find_similar() RAG search
+4613 " 🔵 Test suite passes with deduplication fix integrated
+4614 9:35a ✅ RAG deduplication fix deployed to production
+4615 " 🔵 RAG scoring threshold calibrated on 30 tickets, achieves 0.88–0.96 for relevant results
+4616 " 🔵 Data cleaning pipeline removes boilerplate before embedding to focus on problem semantics
+4617 " 🟣 Vision-RAG augments knowledge items with photo descriptions before indexing
+4618 9:36a 🔵 Automatic media attachment caching on all topic messages via universal message handler
+4619 " 🔵 OperatorTopicContext and PreparedOutboundMessage encapsulate operator reply routing and authorization
+4620 " 🔵 Multi-model LLM routing with Groq primary and OpenRouter fallback via Protocol pattern
+4621 " 🔵 LLM concurrency controlled by shared asyncio.Semaphore across Groq and Deepgram calls
+4622 " 🔵 Supported audio file types for speech-to-text processing
+4623 9:37a 🔵 Groq summary API calls configured with low temperature (0.3) and 3000 token limit
+4624 " 🔵 Image and audio attachment processing with fault isolation and strict size limits
+4625 " 🔵 TicketTopic tracks SLA notifications, reassurance messages, and reply lifecycle
+4626 " 🔵 Groq summary model is llama-3.3-70b-versatile (not base llama-3.3-70b)
+4627 9:38a 🔵 Call recording pipeline: Deepgram transcription → Groq summary → knowledge indexing
+4628 " 🔵 Extract_audio_meta distinguishes audio documents by filename extension when MIME type is generic
+4629 9:39a 🟣 Transcription module implemented: Deepgram (nova-2) + Groq summarization pipeline
+4630 " 🔵 Groq summarization uses 0.2 temperature (very low variance) vs. 0.3 for general summaries
+4631 " 🟣 Transcription module tests pass: 15 test cases covering Deepgram and Groq integration
+4632 " 🔵 Topic handler for call recordings enforces operator authorization and ticket linkage validation
+4633 9:40a 🔵 Test suite expects handle_topic_call_recording handler in bot.handlers.commands (RED: 4 tests failing)
+4634 " 🟣 Topic call recording handler implemented in bot.handlers.commands
+S873 Deploy call recording transcription pipeline to production bot (Jun 12, 9:40 AM)
+4636 9:47a 🟣 Call recording transcription pipeline implemented
+4637 " 🟣 Call recording transcription pipeline with RAG integration
+4639 " ✅ Call recording transcription feature pushed to production
+4640 " ✅ Call recording transcription feature deployed to production VPS
+4641 9:48a 🔵 Production bot started cleanly after transcription feature deployment
+S874 Architectural study of HDE_bot project: evaluate RAG implementation, assess AI/LLM integrations, identify best practices, and plan LLM model replacement strategy (remove Gemini, optimize Groq, evaluate freellmapi) (Jun 12, 9:48 AM)
+S875 User asked for a simple explanation of what changed and improved in the support bot system (Jun 12, 9:59 AM)
+4669 12:09p 🔵 Environment field autofill uses LLM classification on ticket history
+4670 " 🔵 Environment autofill only uses text conversation history, ignores available data sources
+S877 Investigate how environment field autofill works in HDE ticket support bot, determine what data sources it uses, and propose improvement options (Jun 12, 12:10 PM)
+4671 12:47p 🔵 Complexity Hotspots Identified in HDE Telegram Bot
 
-Access 313k tokens of past work via get_observations([IDs]) or mem-search skill.
+Access 186k tokens of past work via get_observations([IDs]) or mem-search skill.
 </claude-mem-context>

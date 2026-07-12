@@ -247,6 +247,27 @@ async def init_db() -> None:
             )
             """
         )
+        # Durable webhook inbox (ADR 2026-07-12): единственная система дедупа
+        # приёма; 200 OK = событие сохранено (pending), обработано — только 'completed'.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS webhook_inbox (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id        TEXT UNIQUE NOT NULL,
+                payload         TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                attempts        INTEGER NOT NULL DEFAULT 0,
+                lease_until     TEXT,
+                next_attempt_at TEXT,
+                last_error      TEXT,
+                created_at      TEXT DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_webhook_inbox_status "
+            "ON webhook_inbox(status)"
+        )
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS reply_drafts (

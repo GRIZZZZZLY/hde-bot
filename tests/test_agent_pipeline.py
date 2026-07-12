@@ -22,6 +22,14 @@ async def _ctx(*a, **k):
     return _ctx_dict()
 
 
+async def _ctx_with_demos(*a, **k):
+    d = _ctx_dict()
+    d["demos"] = [{"source_type": "dialogue_pair", "source_id": 5, "rank": 1,
+                   "score": 0.9, "title": "тикет T9",
+                   "used_excerpt": "Вопрос: q\nОтвет оператора: прошлый ответ"}]
+    return d
+
+
 async def _fresh_posts_same(ticket_id):
     return _POSTS
 
@@ -54,6 +62,35 @@ async def test_answer_path_records_full_trace():
     assert '"source_id": 12' in recorded["retrieved_refs"]
     assert recorded["retrieval_query"] == "q"
     assert recorded["generation_ms"] is not None
+
+
+async def test_selfcheck_never_receives_dialogue_pair_and_trace_keeps_demos():
+    """Инвариант I1/I2/I3: few-shot пары не идут в self-check как grounding,
+    но их провенанс сохраняется в retrieved_refs."""
+    seen = {}
+
+    async def draft(ctx, title, **k):
+        return {"action": "ANSWER", "suit": "s", "client": "ответ", "memo": "m",
+                "confidence": 80, "confidence_reason": ""}
+
+    async def sc(ct, gen, evidence, hist, **k):
+        seen["types"] = [e["source_type"] for e in evidence]
+        return {"status": "supported", "fallback_action": "ASK", "fallback_client_text": ""}
+
+    recorded = {}
+
+    async def rec(**kw):
+        recorded.update(kw)
+        return 1
+
+    await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T12",
+        _context_fn=_ctx_with_demos, _draft_fn=draft, _selfcheck_fn=sc,
+        _safety_pre=_PROCEED, _safety_post=_PROCEED,
+        _record_fn=rec, _posts_fn=_fresh_posts_same,
+    )
+    assert "dialogue_pair" not in seen["types"]           # self-check без пар
+    assert '"source_type": "dialogue_pair"' in recorded["retrieved_refs"]  # провенанс сохранён
 
 
 async def test_pre_policy_escalates_before_retrieval():
@@ -170,6 +207,54 @@ async def test_superseded_records_original_anchor_not_fresh_anchor():
     )
     assert calls["draft"] == 2                           # still regenerates once
     assert recorded["context_until_post_id"] == "5"       # original anchor, not 999
+
+
+async def test_trigger_source_button_threaded_to_record():
+    """Phase 3: run_agent(trigger_source='button') должен записать его в trace."""
+    recorded = {}
+
+    async def draft(ctx, title, **k):
+        return {"action": "ANSWER", "suit": "s", "client": "ок", "memo": "m",
+                "confidence": 70, "confidence_reason": ""}
+
+    async def sc(ct, gen, evidence, hist, **k):
+        return {"status": "supported", "fallback_action": "ASK", "fallback_client_text": ""}
+
+    async def rec(**kw):
+        recorded.update(kw)
+        return 1
+
+    await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T10",
+        trigger_source="button",
+        _context_fn=_ctx, _draft_fn=draft, _selfcheck_fn=sc,
+        _safety_pre=_PROCEED, _safety_post=_PROCEED,
+        _record_fn=rec, _posts_fn=_fresh_posts_same,
+    )
+    assert recorded["trigger_source"] == "button"
+
+
+async def test_trigger_source_defaults_to_first():
+    recorded = {}
+
+    async def draft(ctx, title, **k):
+        return {"action": "ANSWER", "suit": "s", "client": "ок", "memo": "m",
+                "confidence": 70, "confidence_reason": ""}
+
+    async def sc(ct, gen, evidence, hist, **k):
+        return {"status": "supported", "fallback_action": "ASK", "fallback_client_text": ""}
+
+    async def rec(**kw):
+        recorded.update(kw)
+        return 1
+
+    await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T11",
+        _context_fn=_ctx, _draft_fn=draft, _selfcheck_fn=sc,
+        _safety_pre=_PROCEED, _safety_post=_PROCEED,
+        _record_fn=rec, _posts_fn=_fresh_posts_same,
+    )
+    assert recorded["trigger_source"] == "first"
 
 
 async def test_post_safety_escalates_generated_answer():

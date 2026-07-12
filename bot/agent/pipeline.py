@@ -34,6 +34,7 @@ async def run_agent(
     ticket_id: str,
     topic_id: int | None = None,
     company_id: str = "",
+    trigger_source: str = "first",
     _context_fn=None,
     _draft_fn=None,
     _selfcheck_fn=None,
@@ -74,7 +75,8 @@ async def run_agent(
         )
         await _record_nonfatal(
             _record_fn, anchor=original_anchor, info=info, ticket_id=ticket_id,
-            topic_id=topic_id, ticket_title=ticket_title, history="",
+            topic_id=topic_id, trigger_source=trigger_source,
+            ticket_title=ticket_title, history="",
             client_text=client_text_quick, client="", suit="", memo=memo,
             action="ESCALATE", self_status="n/a", evidence=[],
             retrieval_query=None, confidence=0,
@@ -135,11 +137,14 @@ async def run_agent(
         missing=missing, self_check_status=self_status, action=action,
         stale_warning=stale_warning,
     )
+    # трассировка сохраняет провенанс обоих контейнеров; self-check видел только evidence
+    trace_refs = context["evidence"] + context.get("demos", [])
     await _record_nonfatal(
         _record_fn, anchor=original_anchor, info=info, ticket_id=ticket_id, topic_id=topic_id,
+        trigger_source=trigger_source,
         ticket_title=ticket_title, history=context["history"],
         client_text=context["client_text"], client=client, suit=suit, memo=memo,
-        action=action, self_status=self_status, evidence=context["evidence"],
+        action=action, self_status=self_status, evidence=trace_refs,
         retrieval_query=context["retrieval_query"], confidence=confidence,
         confidence_reason=confidence_reason, started=started,
     )
@@ -147,8 +152,8 @@ async def run_agent(
 
 
 async def _record_nonfatal(
-    record_fn, *, anchor, info, ticket_id, topic_id, ticket_title, history,
-    client_text, client, suit, memo, action, self_status, evidence,
+    record_fn, *, anchor, info, ticket_id, topic_id, trigger_source, ticket_title,
+    history, client_text, client, suit, memo, action, self_status, evidence,
     retrieval_query, confidence, confidence_reason, started,
 ) -> None:
     try:
@@ -157,7 +162,7 @@ async def _record_nonfatal(
         await record_fn(
             ticket_id=ticket_id,
             topic_id=topic_id,
-            trigger_source="first",
+            trigger_source=trigger_source,
             context_until_post_id=anchor,
             client_id=str(getattr(info, "client_id", "") or "") or None,
             pipeline_version=config.agent_pipeline_version,

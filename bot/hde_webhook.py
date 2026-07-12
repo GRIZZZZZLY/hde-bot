@@ -34,14 +34,6 @@ HANDLERS: dict[str, Callable[[Bot, dict], object]] = {
     "ticket_closed": handle_ticket_closed,
 }
 
-DEDUPED_EVENT_TYPES = {
-    "assigned_on_create",
-    "client_reply",
-    "staff_reply",
-    "ticket_closed",
-    "ticket_updated",
-}
-
 REQUIRED_FIELDS = {
     "assigned_on_create": ["ticket_id"],
     "owner_changed": ["ticket_id"],
@@ -128,54 +120,41 @@ async def hde_webhook_handler(request: web.Request) -> web.Response:
             logger.warning("Missing required field '%s' for event '%s'", field, event_type)
             return web.Response(status=400, text=f"Missing field: {field}")
 
-    should_dedupe = event_type in DEDUPED_EVENT_TYPES
     event_key = payload["event_key"] or _build_event_key(payload)
-    if should_dedupe:
-        # Claim before doing work: an HDE retry arriving while the first
-        # delivery is still processing must not run the handler twice.
-        claimed = await db.save_processed_event(event_key, event_type, payload["ticket_id"])
-        if not claimed:
-            logger.info(
-                "Skipping duplicate event %s for ticket %s", event_type, payload["ticket_id"]
-            )
-            metrics.inc("webhook_duplicate")
-            return web.Response(status=200, text="Duplicate OK")
+    # Durable enqueue ДО ACK (ADR I4/I5): 200 OK = событие надёжно сохранено
+    # (pending), а не «обработано». Единственная система дедупа приёма (I7):
+    # дубль доставки (тот же event_id) → 200 без повторной работы.
+    is_new = await db.enqueue_event(event_key, json.dumps(payload, ensure_ascii=False))
+    if not is_new:
+        logger.info("Duplicate event %s for ticket %s", event_type, payload["ticket_id"])
+        metrics.inc("webhook_duplicate")
+        return web.Response(status=200, text="Duplicate OK")
 
+    # Kick немедленной обработки. Durability гарантирует: если задача умрёт
+    # (краш процесса), событие подхватит периодический воркер (bot.main).
     bot: Bot = request.app["bot"]
-    handler = HANDLERS[event_type]
-
-    # ACK immediately: HDE holds the HTTP connection open otherwise, and slow
-    # processing triggers delivery retries. The claim above already dedupes.
-    task = asyncio.create_task(
-        _process_event(bot, handler, event_type, payload, event_key, should_dedupe)
-    )
+    task = asyncio.create_task(drain_inbox(bot))
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
     return web.Response(status=200, text="OK")
 
 
-# Strong refs so background tasks aren't garbage-collected mid-run.
+# Strong refs so kick tasks aren't garbage-collected mid-run.
 _background_tasks: set[asyncio.Task] = set()
 
+# Один дрен за раз: SQLite — один писатель, на процесс один воркер. Сериализует
+# kick из вебхука и периодический воркер, чтобы не диспатчить событие дважды.
+_drain_lock = asyncio.Lock()
 
-async def _process_event(
-    bot: Bot,
-    handler: Callable[[Bot, dict], object],
-    event_type: str,
-    payload: dict,
-    event_key: str,
-    should_dedupe: bool,
-) -> None:
-    try:
-        await handler(bot, payload)
-    except Exception as exc:
-        logger.exception("Error handling event '%s': %s", event_type, exc)
-        metrics.inc("webhook_failed")
-        if should_dedupe:
-            await db.delete_processed_event(event_key)
-        return
 
-    # General channel hooks — run after main handler, failures are non-fatal
+async def dispatch_event(bot: Bot, payload: dict) -> None:
+    """Обработать одно событие: основной хендлер (fatal → исключение, воркер
+    пометит failed и запланирует ретрай) + general-channel хуки (не-fatal)."""
+    event_type = payload["event_type"]
+    handler = HANDLERS[event_type]
+    await handler(bot, payload)
+
+    # General channel hooks — after the main handler, failures are non-fatal
     try:
         if event_type == "assigned_on_create":
             await general_channel.on_assigned_on_create(bot, payload)
@@ -188,5 +167,30 @@ async def _process_event(
     except Exception as exc:
         logger.exception("General channel hook failed for event '%s': %s", event_type, exc)
 
-    metrics.inc("webhook_processed")
-    logger.info("Processed %s for ticket %s", event_type, payload["ticket_id"])
+
+async def drain_inbox(bot: Bot, *, max_events: int = 100, _dispatch_fn=None) -> dict:
+    """Дренит durable inbox: claim → dispatch → completed/failed. Событие
+    считается обработанным ТОЛЬКО после 'completed' (ADR I4). Исключение хендлера
+    → mark_failed (ретрай с backoff, после лимита — dead)."""
+    dispatch = _dispatch_fn or dispatch_event
+    stats = {"processed": 0, "failed": 0}
+    async with _drain_lock:
+        for _ in range(max_events):
+            row = await db.claim_next_event()
+            if row is None:
+                break
+            try:
+                payload = json.loads(row["payload"])
+                await dispatch(bot, payload)
+            except Exception as exc:
+                logger.exception("Inbox dispatch failed for %s: %s", row["event_id"], exc)
+                metrics.inc("webhook_failed")
+                await db.mark_failed(row["event_id"], str(exc))
+                stats["failed"] += 1
+                continue
+            await db.mark_completed(row["event_id"])
+            metrics.inc("webhook_processed")
+            stats["processed"] += 1
+            logger.info("Processed %s for ticket %s",
+                        payload.get("event_type"), payload.get("ticket_id"))
+    return stats

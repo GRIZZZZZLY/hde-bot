@@ -32,6 +32,9 @@ class DummyBot:
     async def send_message(self, chat_id, text, **kwargs):
         self.sent_messages.append((chat_id, text, kwargs))
 
+    async def edit_forum_topic(self, chat_id, message_thread_id, **kwargs):
+        return None
+
     async def delete_forum_topic(self, chat_id, message_thread_id, **kwargs):
         self.closed_topics.append(message_thread_id)
 

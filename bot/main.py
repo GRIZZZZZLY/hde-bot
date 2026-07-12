@@ -15,7 +15,7 @@ from .db import init_db, migrate_feedback_samples
 from .handlers.commands import router as commands_router
 from .handlers.ai_feedback import router as ai_feedback_router
 from .hde_api import close_shared_connector
-from .hde_webhook import hde_webhook_handler
+from .hde_webhook import drain_inbox, hde_webhook_handler
 from .scheduler import run_scheduler, _ALLOWED_UPDATES
 from .tg_session import RetrySession
 
@@ -99,6 +99,22 @@ async def _watchdog_loop(stop_event: asyncio.Event, interval: float = _WATCHDOG_
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
 
 
+_INBOX_WORKER_INTERVAL_SECONDS = 2  # низкая латентность + подхват после краша/ретраи
+
+
+async def _run_inbox_worker(bot: Bot, stop_event: asyncio.Event,
+                            interval: float = _INBOX_WORKER_INTERVAL_SECONDS) -> None:
+    """Периодический дрен durable inbox: гарантия обработки, если kick из вебхука
+    умер (краш процесса), плюс ретраи с backoff. Ошибки не валят цикл."""
+    while not stop_event.is_set():
+        try:
+            await drain_inbox(bot)
+        except Exception as exc:
+            logger.exception("inbox worker drain failed: %s", exc)
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+
+
 def _ensure_webhook_secret() -> None:
     """Fail closed: refuse to start with an unauthenticated webhook endpoint."""
     if not config.hde_webhook_secret:
@@ -131,13 +147,14 @@ async def _main_async() -> None:
     scheduler_task = asyncio.create_task(run_scheduler(bot, stop_event))
     hde_task = asyncio.create_task(_run_hde_server(bot, stop_event))
     watchdog_task = asyncio.create_task(_watchdog_loop(stop_event))
+    inbox_task = asyncio.create_task(_run_inbox_worker(bot, stop_event))
     _sd_notify("READY=1")
 
     try:
         await dp.start_polling(bot, allowed_updates=_ALLOWED_UPDATES, handle_signals=True)
     finally:
         stop_event.set()
-        for task in (scheduler_task, hde_task, watchdog_task):
+        for task in (scheduler_task, hde_task, watchdog_task, inbox_task):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task

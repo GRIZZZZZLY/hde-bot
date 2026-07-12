@@ -38,6 +38,13 @@ def make_ai_feedback_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
+def suggest_button_kb() -> InlineKeyboardMarkup:
+    """Keyboard attached to client-reply messages in the topic (Phase 3)."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="💡 Предложить ответ", callback_data="ai:suggest"),
+    ]])
+
+
 def suit_feedback_kb() -> InlineKeyboardMarkup:
     """Keyboard for the Суть message."""
     return InlineKeyboardMarkup(inline_keyboard=[[
@@ -129,6 +136,101 @@ async def _record_event(
 
 
 # ── Callbacks ────────────────────────────────────────────────────────────────
+
+# Топики, в которых прямо сейчас идёт генерация по кнопке — защита от двойного
+# клика (идемпотентность в БД спасает от дублей записи, но не от двойной
+# генерации и двойного поста).
+_suggest_in_flight: set[int] = set()
+
+
+@router.callback_query(F.data == "ai:suggest")
+async def cb_ai_suggest(callback: CallbackQuery) -> None:
+    """Phase 3: кнопка «💡 Предложить ответ» — свежая история из HDE →
+    пайплайн фазы 1 → новая тройка Суть/Ответ/Памятка в топик."""
+    from .. import db as _db_module
+
+    if not callback.message or not hasattr(callback.message, "message_thread_id"):
+        await callback.answer()
+        return
+    topic_id = callback.message.message_thread_id
+    if topic_id in _suggest_in_flight:
+        await callback.answer("⏳ Уже генерирую подсказку", show_alert=False)
+        return
+    record = await _db_module.get_topic_by_topic_id(topic_id)
+    if record is None:
+        await callback.answer("⚠️ Тикет для этого топика не найден", show_alert=True)
+        return
+    _suggest_in_flight.add(topic_id)
+    await callback.answer("💡 Генерирую подсказку…", show_alert=False)
+    try:
+        await _generate_and_post_suggestion(callback.bot, record)
+    finally:
+        _suggest_in_flight.discard(topic_id)
+
+
+async def _generate_and_post_suggestion(bot, record) -> None:
+    from .. import topic_manager as _tm
+    from ..hde_api import HDEApiClient, HDEApiError
+    from ..topic_history import post_suggestion_messages
+
+    ticket_id = record.ticket_id
+    topic_id = record.topic_id
+
+    async def _notify_failure() -> None:
+        try:
+            await bot.send_message(
+                chat_id=_tm.config.group_chat_id,
+                message_thread_id=topic_id,
+                text="⚠️ Не удалось сгенерировать подсказку — попробуй ещё раз.",
+                disable_notification=True,
+            )
+        except Exception as exc:
+            logger.warning("ai:suggest: failure notice failed for topic %d: %s", topic_id, exc)
+
+    try:
+        client = HDEApiClient()
+        info = await client.get_ticket_info(ticket_id)
+        posts = await client.get_ticket_posts(ticket_id)
+        try:
+            comments = await client.get_ticket_comments(ticket_id)
+        except HDEApiError:
+            comments = []
+    except Exception as exc:
+        logger.warning("ai:suggest: HDE fetch failed for ticket %s: %s", ticket_id, exc)
+        await _notify_failure()
+        return
+
+    all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+    anchor = str(max((p.post_id for p in all_posts), default="")) or None
+
+    result = await _tm._generate_summary_with_retry(
+        all_posts, info,
+        ticket_title=record.ticket_name or "",
+        ticket_id=ticket_id,
+        company_id="",
+        topic_id=topic_id,
+        trigger_source="button",
+    )
+    if result is None:
+        await _notify_failure()
+        return
+
+    suit_line, client_line, memo_line, confidence_pct = result
+    await post_suggestion_messages(
+        bot,
+        topic_id=topic_id,
+        ticket_id=ticket_id,
+        suit_line=suit_line,
+        client_line=client_line,
+        memo_line=memo_line,
+        confidence_pct=confidence_pct,
+        all_posts=all_posts,
+        info=info,
+        ticket_title=record.ticket_name or "",
+        anchor=anchor,
+        trigger_source="button",
+    )
+
 
 @router.callback_query(F.data == "ai:good")
 async def cb_ai_good(callback: CallbackQuery) -> None:

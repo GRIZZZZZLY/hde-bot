@@ -356,27 +356,8 @@ async def _count_topics(where_clause: str) -> int:
     return row[0] if row else 0
 
 
-async def save_processed_event(event_key: str, event_type: str, ticket_id: str) -> bool:
-    async with connect() as db:
-        cursor = await db.execute(
-            """
-            INSERT OR IGNORE INTO processed_events (event_key, event_type, ticket_id)
-            VALUES (?, ?, ?)
-            """,
-            (event_key, event_type, ticket_id),
-        )
-        await db.commit()
-    return cursor.rowcount > 0
-
-
-async def delete_processed_event(event_key: str) -> None:
-    """Release a dedup claim so a retried delivery can be processed again."""
-    async with connect() as db:
-        await db.execute(
-            "DELETE FROM processed_events WHERE event_key = ?",
-            (event_key,),
-        )
-        await db.commit()
+# save_processed_event / delete_processed_event удалены: приём вебхуков дедупится
+# durable inbox (webhook_inbox), см. ADR 2026-07-12 (инвариант I7 — один дедуп).
 
 
 async def was_processed(event_key: str) -> bool:
