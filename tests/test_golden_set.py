@@ -363,6 +363,28 @@ async def test_evaluate_golden_non_rate_limit_error_isolated_not_retried():
     assert report["aggregates"]["generation_failed"] == 1
 
 
+async def test_evaluate_golden_paces_between_cases():
+    async def gen(history, title, instructions):
+        return "Клиенту: ок"
+
+    async def ok_judge(case, generated, _call_fn=None):
+        return {"action_taken": "ANSWER", "unsupported_claims": 0,
+                "correctness": 8, "usefulness": 8, "reason": "ок"}
+
+    slept = []
+
+    async def rec_sleep(seconds):
+        slept.append(seconds)
+
+    report = await evaluate_golden(
+        [_case("g001", "T1"), _case("g002", "T2"), _case("g003", "T3")],
+        "инструкции",
+        _generate_fn=gen, _judge_fn=ok_judge, _sleep=rec_sleep, pace_s=45,
+    )
+    assert slept == [45, 45]                      # 3 кейса → 2 паузы, перед первым нет
+    assert report["aggregates"]["judged"] == 3
+
+
 async def test_judge_golden_case_backs_off_on_rate_limit_then_succeeds():
     import json as _j
     calls = {"n": 0}

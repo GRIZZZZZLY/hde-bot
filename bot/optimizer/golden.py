@@ -206,21 +206,30 @@ async def evaluate_golden(
     _judge_fn=None,
     _safety_fn=None,
     _sleep=None,
+    pace_s: float = 0.0,
 ) -> dict:
     """Прогоняет промпт по golden set: генерация → судья (оси) → safety (код).
 
     Средние считаются только по успешно отсуженным кейсам; safety — по всем.
     Сбой генерации (в т.ч. rate-limit после retries) изолируется по кейсу —
     он помечается generation_failed, судья пропускается, прогон не падает.
+    pace_s — фиксированная пауза между кейсами (троттлинг под TPM free-tier);
+    перед первым кейсом не спит.
     """
     if _generate_fn is None:
         from .evaluator import _generate_answer
         _generate_fn = _generate_answer
     if _judge_fn is None:
         _judge_fn = judge_golden_case
+    pace_sleep = _sleep
+    if pace_sleep is None:
+        import asyncio
+        pace_sleep = asyncio.sleep
 
     rows: list[dict] = []
-    for case in cases:
+    for idx, case in enumerate(cases):
+        if pace_s and idx:
+            await pace_sleep(pace_s)
         try:
             generated = await _generate_with_retry(
                 _generate_fn, case["history"], case["title"], format_instructions,

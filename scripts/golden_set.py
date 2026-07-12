@@ -81,7 +81,8 @@ async def cmd_eval(args: argparse.Namespace) -> None:
                 model=args.model, reasoning_effort=args.reasoning_effort,
             )
     report = await evaluate_golden(
-        golden["cases"], prompt, label=args.label, _generate_fn=gen_fn
+        golden["cases"], prompt, label=args.label, _generate_fn=gen_fn,
+        pace_s=args.pace,
     )
     out = GOLDEN_DIR / f"report_{args.label}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -131,6 +132,8 @@ def main() -> None:
     p_eval.add_argument("--reasoning-effort", dest="reasoning_effort", default=None,
                         help="none — отключить <think> для reasoning-моделей; "
                              "'' — не передавать (для llama)")
+    p_eval.add_argument("--pace", type=float, default=0.0,
+                        help="пауза сек между кейсами (троттлинг под free-tier TPM)")
 
     args = parser.parse_args()
     if args.command == "mine":
