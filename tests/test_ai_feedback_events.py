@@ -66,3 +66,33 @@ async def test_register_feedback_pending_records_suggestion():
     assert row["trigger_source"] == "first"
     assert row["context_until_post_id"] == "123"
     assert row["ai_full_text"].endswith("проверьте бумагу")
+
+
+# --- Суть/Памятка фидбэк пишет события (Phase C fix 2026-07-13) ---
+from bot.handlers.ai_feedback import cb_suit_good, cb_memo_bad
+from bot.db.core import connect as _connect
+
+
+async def _event_types_for(suggestion_id: int) -> list[str]:
+    async with _connect() as db:
+        cur = await db.execute(
+            "SELECT event_type FROM ai_suggestion_events WHERE suggestion_id=? ORDER BY id",
+            (suggestion_id,),
+        )
+        return [r[0] for r in await cur.fetchall()]
+
+
+async def test_suit_and_memo_feedback_record_events_without_corrupting_answer_status():
+    await db_module.init_db()
+    sid = await record_suggestion(
+        ticket_id="TS", topic_id=55, trigger_source="first",
+        context_until_post_id="1", pipeline_version="v0", prompt_version="legacy",
+    )
+    await cb_suit_good(_fake_callback(55, "suit:good"))
+    await cb_memo_bad(_fake_callback(55, "memo:bad"))
+
+    events = await _event_types_for(sid)
+    assert "suit_good" in events and "memo_bad" in events   # фидбэк теперь пишется
+    row = await get_suggestion(sid)
+    assert row["review_status"] == "pending"   # Суть/Памятка не трогают статус ответа
+    assert row["human_label"] is None

@@ -33,13 +33,20 @@ def main() -> int:
     rows = [
         r[0]
         for r in conn.execute(
-            # Только 'corrected': этот текст оператор набирал сам.
-            # 'sent' может быть ИИ-ответом, отправленным как есть, — в эталон
-            # голоса его брать нельзя.
-            "SELECT op_answer FROM optimization_samples "
-            "WHERE op_answer IS NOT NULL AND op_answer != '' "
-            "AND outcome = 'corrected' "
-            "ORDER BY created_at DESC"
+            # Только 'corrected': текст, который оператор набрал сам ('accepted'/
+            # 'sent' может быть ИИ-ответом как есть — в эталон голоса нельзя).
+            # Два источника: старый optimization_samples (ретайрнут ~2026-06-21,
+            # исторические corrected валидны) + новый ai_suggestions (агентный
+            # пайплайн с 2026-07-12; corrected = human_label='corrected',
+            # операторский текст в final_sent_text).
+            "SELECT txt FROM ("
+            "  SELECT op_answer AS txt, created_at FROM optimization_samples"
+            "    WHERE op_answer IS NOT NULL AND op_answer != '' AND outcome = 'corrected'"
+            "  UNION ALL"
+            "  SELECT final_sent_text AS txt, created_at FROM ai_suggestions"
+            "    WHERE final_sent_text IS NOT NULL AND final_sent_text != ''"
+            "      AND human_label = 'corrected'"
+            ") ORDER BY created_at DESC"
         )
     ]
     examples = extract_voice_examples(rows, max_examples=args.max)

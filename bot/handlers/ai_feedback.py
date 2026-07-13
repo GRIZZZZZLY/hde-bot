@@ -135,6 +135,13 @@ async def _record_event(
         logger.warning("ai_feedback: event record failed (%s): %s", event_type, exc)
 
 
+async def _record_event_from_callback(callback: CallbackQuery, event_type: str) -> None:
+    """Достаёт topic_id из карточки и пишет событие (non-fatal)."""
+    msg = callback.message
+    if msg is not None and getattr(msg, "message_thread_id", None) is not None:
+        await _record_event(msg.message_thread_id, event_type)
+
+
 # ── Callbacks ────────────────────────────────────────────────────────────────
 
 # Топики, в которых прямо сейчас идёт генерация по кнопке — защита от двойного
@@ -349,6 +356,7 @@ class _HasPendingCorrection(BaseFilter):
 
 @router.callback_query(F.data == "suit:good")
 async def cb_suit_good(callback: CallbackQuery) -> None:
+    await _record_event_from_callback(callback, "suit_good")
     await callback.answer("👍 Диагноз отмечен верным", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
@@ -358,6 +366,7 @@ async def cb_suit_good(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "suit:bad")
 async def cb_suit_bad(callback: CallbackQuery) -> None:
+    await _record_event_from_callback(callback, "suit_bad")
     await callback.answer("👎 Отмечено", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
@@ -367,6 +376,7 @@ async def cb_suit_bad(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "memo:good")
 async def cb_memo_good(callback: CallbackQuery) -> None:
+    await _record_event_from_callback(callback, "memo_good")
     await callback.answer("👍 Отмечено", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
@@ -376,6 +386,7 @@ async def cb_memo_good(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "memo:bad")
 async def cb_memo_bad(callback: CallbackQuery) -> None:
+    await _record_event_from_callback(callback, "memo_bad")
     await callback.answer("👎 Отмечено", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
