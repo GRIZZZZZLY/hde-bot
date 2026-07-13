@@ -3,6 +3,7 @@ import contextlib
 import logging
 import os
 import socket
+import sys
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher
@@ -19,9 +20,14 @@ from .hde_webhook import drain_inbox, hde_webhook_handler
 from .scheduler import run_scheduler, _ALLOWED_UPDATES
 from .tg_session import RetrySession
 
+# force=True: снять любой root-handler, повешенный импортами до этой точки (иначе
+# basicConfig — no-op и логи уходят «в никуда», не долетая до journald). stdout
+# гарантированно принимается journald (проверено systemd-cat на config1).
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+    force=True,
 )
 logger = logging.getLogger(__name__)
 
