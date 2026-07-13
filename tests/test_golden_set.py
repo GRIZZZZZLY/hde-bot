@@ -257,7 +257,7 @@ class _FakeHDE:
     async def get_closed_tickets_page(self, owner_id, page=1):
         return (self._tickets, 1) if page == 1 else ([], 1)
 
-    async def get_ticket_posts(self, ticket_id, limit=20):
+    async def get_all_ticket_posts(self, ticket_id):
         return self._posts.get(str(ticket_id), [])
 
 
@@ -297,7 +297,10 @@ async def test_mine_candidates_builds_cases():
 async def test_mine_candidates_respects_target():
     tickets = [{"id": f"T{i}", "name": f"t{i}", "type_id": "1"} for i in range(5)]
     posts = {
-        f"T{i}": [_post(1, "c", f"вопрос {i}"), _post(2, "me", f"ответ {i}")]
+        f"T{i}": [
+            _post(1, "c", f"не работает касса номер {i}"),
+            _post(2, "me", f"Перезагрузите кассу и повторите операцию, тикет {i}"),
+        ]
         for i in range(5)
     }
     cases = await mine_candidates(_FakeHDE(tickets, posts), "me", target=3)
@@ -457,3 +460,65 @@ async def test_evaluate_golden_safety_flags_client_facing_refund():
         _generate_fn=fake_generate, _judge_fn=fake_judge,
     )
     assert report["aggregates"]["safety_violations"] == 1      # реальная угроза ловится
+
+
+# --- _ticket_to_case: чистое извлечение (client вопрос -> operator решение) ---
+from types import SimpleNamespace
+
+from bot.optimizer.golden import _ticket_to_case
+
+
+def _tpost(pid, uid, text, dc="00:00:00 01.01.2024"):
+    return SimpleNamespace(post_id=pid, user_id=uid, text=text,
+                           is_comment=False, date_created=dc)
+
+
+class _FakeClient:
+    def __init__(self, posts):
+        self._posts = posts
+
+    async def get_all_ticket_posts(self, ticket_id):
+        return self._posts
+
+
+async def test_ticket_to_case_excludes_bot_boilerplate():
+    # Болванка бота (не-staff аккаунт) НЕ должна стать client_text; роли по staff-set.
+    posts = [
+        _tpost(1, "client", "Атол не печатает чеки после обновления прошивки"),
+        _tpost(2, "bot", "Благодарим за информацию, обращение принято в работу "
+                         "и передано профильному специалисту."),
+        _tpost(3, "op", "Переустановите драйвер Атол с сайта и перезагрузите кассу."),
+    ]
+    case = await _ticket_to_case(
+        _FakeClient(posts), {"id": "T1", "type_id": "5"}, "op", staff={"op"}
+    )
+    assert case is not None
+    assert case["client_text"] == "Атол не печатает чеки после обновления прошивки"
+    assert "драйвер" in case["reference_answer"]
+    assert "профильному" not in case["reference_answer"]  # болванка отфильтрована
+
+
+async def test_ticket_to_case_skips_ack_picks_substantive():
+    posts = [
+        _tpost(1, "client", "Терминал Сбера не проводит оплату, касса зависает"),
+        _tpost(2, "op", "Спасибо, увидел"),                      # ack — не reference
+        _tpost(3, "client", "что делать дальше подскажите пожалуйста"),
+        _tpost(4, "op", "Перезагрузите роутер и терминал, затем повторите оплату."),
+    ]
+    case = await _ticket_to_case(
+        _FakeClient(posts), {"id": "T2", "type_id": "5"}, "op", staff={"op"}
+    )
+    assert case is not None
+    assert "Перезагрузите" in case["reference_answer"]
+    assert case["reference_answer"] != "Спасибо, увидел"
+
+
+async def test_ticket_to_case_none_when_no_substantive_answer():
+    posts = [
+        _tpost(1, "client", "Спасибо"),
+        _tpost(2, "op", "Всегда рады помочь"),
+    ]
+    case = await _ticket_to_case(
+        _FakeClient(posts), {"id": "T3", "type_id": "5"}, "op", staff={"op"}
+    )
+    assert case is None

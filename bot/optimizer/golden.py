@@ -360,34 +360,100 @@ def _guess_expected_action(client_text: str, reference_answer: str) -> str:
     return "ANSWER"
 
 
-async def _ticket_to_case(client, ticket: dict, owner_id: str) -> dict | None:
+# Штампы бота/канцелярит первой линии — не проблема клиента и не решение оператора.
+_BOILERPLATE_RE = _re.compile(
+    r"принят[оа] в работу|передан[оа].*специалист|свяжется с вами|"
+    r"специалист свяжется|ожидайте.*(ответ|чат)|благодарим за (информаци|ожидани|предостав)",
+    _re.I,
+)
+# Короткие подтверждения — не самостоятельный вопрос и не решение.
+_ACK_RE = _re.compile(
+    r"^\W*(спасибо|благодар|да[,\s]+спасибо|увидел|хорошо|понятн|принят|"
+    r"ок\b|ok\b|/start|всегда рады|договорил)",
+    _re.I,
+)
+
+
+def _clean_operator_answer(text: str) -> str:
+    """Убирает строки-штампы бота из ответа оператора (посты склеены в turn)."""
+    kept = [
+        ln.strip()
+        for ln in (text or "").splitlines()
+        if ln.strip() and not _BOILERPLATE_RE.search(ln)
+    ]
+    return " ".join(kept).strip()
+
+
+def _is_substantive(text: str) -> bool:
+    t = (text or "").strip()
+    if len(t) < 20:
+        return False
+    if _ACK_RE.match(t) and len(t) < 40:
+        return False
+    return True
+
+
+def _last_client_question(context: str) -> str:
+    """Последняя реальная реплика клиента: не штамп бота, не короткий ack."""
+    clients = [
+        ln[len("Клиент:"):].strip()
+        for ln in context.splitlines()
+        if ln.startswith("Клиент:")
+    ]
+    for t in reversed(clients):
+        if not t or _BOILERPLATE_RE.search(t):
+            continue
+        if _ACK_RE.match(t) and len(t) < 40:
+            continue
+        return t
+    return ""
+
+
+async def _ticket_to_case(
+    client, ticket: dict, owner_id: str, *, staff=None, staff_cache=None
+) -> dict | None:
+    """Кейс = (реальный вопрос клиента → содержательное решение оператора).
+
+    Роли раскидываются через staff-set (dialogue_mining), а не по «первому посту
+    owner»: иначе реплики первой линии и штампы бота, идущие ДО owner, ошибочно
+    попадают в клиента (баг golden_v1). Штампы/ack отфильтровываются с обеих сторон.
+    """
+    from ..agent.dialogue_mining import resolve_staff_ids, split_ticket_into_pairs
+
     ticket_id = str(ticket.get("id") or ticket.get("ticket_id") or "")
     if not ticket_id:
         return None
-    posts = await client.get_ticket_posts(ticket_id)
+    posts = await client.get_all_ticket_posts(ticket_id)
     posts = [p for p in posts if not getattr(p, "is_comment", False)]
-    staff_idx = next(
-        (i for i, p in enumerate(posts) if str(p.user_id) == str(owner_id)), None
-    )
-    if staff_idx is None or staff_idx == 0:
-        return None  # нет ответа оператора или нет клиентских сообщений до него
-    client_posts = [_strip_html(p.text) for p in posts[:staff_idx]]
-    client_posts = [t for t in client_posts if t]
-    if not client_posts:
+    if not posts:
         return None
-    reference = _strip_html(posts[staff_idx].text)
-    if not reference:
+    staff_set = {str(s) for s in staff} if staff else {str(owner_id)}
+    if staff_cache is not None:
+        authors = {str(getattr(p, "user_id", "")) for p in posts}
+        staff_set = await resolve_staff_ids(
+            client, authors, base=staff_set, cache=staff_cache
+        )
+
+    best = None  # берём последнюю содержательную пару (финальное решение)
+    for pair in split_ticket_into_pairs(ticket_id, posts, staff_set):
+        answer = _clean_operator_answer(pair["operator_answer"])
+        if not _is_substantive(answer):
+            continue
+        client_q = _last_client_question(pair["context"])
+        if not client_q:
+            continue
+        best = (pair, answer, client_q)
+    if best is None:
         return None
-    history = "\n".join(f"Клиент: {t}" for t in client_posts)
-    client_text = client_posts[-1]
+    pair, answer, client_q = best
     return {
         "case_id": "",  # проставляется после round-robin отбора
         "ticket_id": ticket_id,
         "title": _strip_html(str(ticket.get("name") or ticket.get("title") or "")),
-        "history": history,
-        "client_text": client_text,
-        "expected_action": _guess_expected_action(client_text, reference),
-        "reference_answer": reference,
+        "history": pair["context"],
+        "client_text": client_q,
+        "expected_action": _guess_expected_action(client_q, answer),
+        "reference_answer": answer,
         "rubric": "",
         "type_id": str(ticket.get("type_id") or ""),
     }
@@ -400,12 +466,21 @@ async def mine_candidates(
 
     Разнообразие — round-robin по type_id-бакетам. expected_action — эвристика,
     оператор правит вручную перед freeze."""
+    # Статический staff-set из конфига (команда ~10). Динамический resolve_staff_ids
+    # НЕ используется в майнинге: он пробивает get_user_group_type на каждого нового
+    # автора, включая всех клиентов → сотни запросов → бан HDE API (300 req/min).
+    # На проде задать AGENT_STAFF_USER_IDS; штампы бота отсекает регексп независимо.
+    from ..config import config
+    staff_base = {str(owner_id), *config.agent_staff_user_ids}
+
     buckets: dict[str, list[dict]] = {}
     page = 1
     while page <= max_pages:
         tickets, total_pages = await client.get_closed_tickets_page(owner_id, page)
         for ticket in tickets:
-            case = await _ticket_to_case(client, ticket, owner_id)
+            case = await _ticket_to_case(
+                client, ticket, owner_id, staff=staff_base
+            )
             if case is not None:
                 buckets.setdefault(case["type_id"], []).append(case)
         if page >= total_pages or sum(len(b) for b in buckets.values()) >= target * 2:
