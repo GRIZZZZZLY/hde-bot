@@ -73,11 +73,13 @@ def test_extract_client_text_by_client_id():
     assert extract_client_text([], client_id=1) == ""
 
 
-def test_compose_memo_grounds_status_stale():
-    memo = compose_memo(
-        "перезагрузите кассу", grounds=["KB#12", "wiki:Чеки"], confidence=80,
-        missing="модель ОФД", self_check_status="supported", action="ANSWER",
-        stale_warning=True,
-    )
-    assert "KB#12" in memo and "модель ОФД" in memo and "ANSWER" in memo
+def test_compose_memo_body_and_stale():
+    memo = compose_memo("перезагрузите кассу", stale_warning=True)
+    assert memo.startswith("перезагрузите кассу")
     assert "нов" in memo.lower()  # предупреждение о новом сообщении клиента
+    # служебные строки убраны — памятка не шумит
+    assert "KB#" not in memo and "Действие:" not in memo and "Не хватает:" not in memo
+
+
+def test_compose_memo_body_only():
+    assert compose_memo("Атол 30Ф • драйверы clck.ru/x") == "Атол 30Ф • драйверы clck.ru/x"

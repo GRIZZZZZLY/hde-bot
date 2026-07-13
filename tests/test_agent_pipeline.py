@@ -110,7 +110,7 @@ async def test_pre_policy_escalates_before_retrieval():
         _safety_post=_PROCEED, _record_fn=rec, _posts_fn=_fresh_posts_same,
     )
     assert ctx_called["v"] is False                    # retrieval не запускался
-    assert client == "" and "ESCALATE" in memo
+    assert client == "" and "Эскалация" in memo
 
 
 async def test_partially_supported_also_falls_back_with_conf_30():
@@ -290,7 +290,7 @@ async def test_no_action_and_ask_paths():
         _safety_pre=_PROCEED, _safety_post=_PROCEED,
         _record_fn=rec, _posts_fn=_fresh_posts_same,
     )
-    assert client == "" and "NO_ACTION" in memo
+    assert client == "" and memo == "ответ не нужен"  # памятка = тело от модели
 
 
 async def test_returns_none_on_draft_failure_and_record_failure_nonfatal():

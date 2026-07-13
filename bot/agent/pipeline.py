@@ -69,9 +69,7 @@ async def run_agent(
     pre = _safety_pre(f"{ticket_title}\n{client_text_quick}")
     if pre.action == "ESCALATE":
         memo = compose_memo(
-            f"⚠️ Эскалация ({pre.category}): вопрос требует оператора.",
-            grounds=[], confidence=0, missing="решение оператора",
-            self_check_status="n/a", action="ESCALATE",
+            f"⚠️ Эскалация ({pre.category}): вопрос требует оператора."
         )
         await _record_nonfatal(
             _record_fn, anchor=original_anchor, info=info, ticket_id=ticket_id,
@@ -131,12 +129,7 @@ async def run_agent(
             break
         posts = fresh_posts  # superseded → одна перегенерация на свежих постах
 
-    missing = "" if action == "ANSWER" else "нужны уточнения/оператор"
-    memo = compose_memo(
-        base_memo, grounds=context["grounds"], confidence=confidence,
-        missing=missing, self_check_status=self_status, action=action,
-        stale_warning=stale_warning,
-    )
+    memo = compose_memo(base_memo, stale_warning=stale_warning)
     # трассировка сохраняет провенанс обоих контейнеров; self-check видел только evidence
     trace_refs = context["evidence"] + context.get("demos", [])
     await _record_nonfatal(
