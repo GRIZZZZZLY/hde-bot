@@ -47,6 +47,8 @@ _weekly_summary_done: Optional[str] = None  # "YYYY-MM-DD" MSK date — Sunday s
 _last_knowledge_expiry_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when weekly expiry runs
 _last_media_gc_hour: Optional[str] = None  # "YYYY-MM-DD HH" — set when hourly media GC runs
 _last_dialogue_backfill_date: Optional[str] = None  # "YYYY-MM-DD" MSK — nightly dialogue mining flag
+_last_reconcile_date: Optional[str] = None  # "YYYY-MM-DD" MSK — nightly answer reconciliation flag
+_last_reconcile_digest_date: Optional[str] = None  # "YYYY-MM-DD" UTC — reconciliation digest flag
 _ALLOWED_UPDATES = ["message", "callback_query"]
 
 
@@ -346,6 +348,40 @@ async def _maybe_backfill_dialogue_pairs(bot) -> None:
         logger.warning("Nightly dialogue backfill failed: %s", exc)
 
 
+async def _maybe_send_reconciliation_digest(bot: Bot) -> None:
+    """Утренняя сводка ночной сверки в личный чат (раз в сутки, в час дайджеста)."""
+    global _last_reconcile_digest_date
+    if not config.agent_dialogue_mining_enabled:
+        return
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    if now.hour != config.digest_send_hour_utc or _last_reconcile_digest_date == today:
+        return
+    _last_reconcile_digest_date = today
+    from .digest import send_reconciliation_digest
+    await send_reconciliation_digest(bot)
+
+
+async def _maybe_reconcile_answers(bot) -> None:
+    """Ночная сверка (02:00 MSK) предложений бота с фактическими ответами
+    операторов. Раз в сутки; вердикты ложатся в judge-поля ai_suggestions,
+    утренняя сводка их показывает. Свой флаг — agent_dialogue_mining_enabled."""
+    global _last_reconcile_date
+    if not config.agent_dialogue_mining_enabled:
+        return
+    now = _now_msk()
+    today = now.strftime("%Y-%m-%d")
+    if _last_reconcile_date == today or now.hour != 2:
+        return
+    _last_reconcile_date = today
+    try:
+        from .agent.reconcile import reconcile_recent
+        stats = await reconcile_recent(hours=24)
+        logger.info("Nightly answer reconciliation: %s", stats)
+    except Exception as exc:
+        logger.warning("Nightly answer reconciliation failed: %s", exc)
+
+
 async def process_scheduled_actions(bot: Bot) -> None:
     from .work_schedule import is_work_day, is_work_time, last_work_day, was_yesterday_work_day
 
@@ -356,6 +392,7 @@ async def process_scheduled_actions(bot: Bot) -> None:
         await _maybe_flush_general(bot)
         await _maybe_send_digest(bot)
         await _maybe_send_daily_value_report(bot)
+        await _maybe_send_reconciliation_digest(bot)
 
     # Periodic HDE↔General reconciliation during work hours: catches direct-HDE
     # assignments when HDE doesn't fire a usable webhook (or sends one with
@@ -393,6 +430,10 @@ async def process_scheduled_actions(bot: Bot) -> None:
 
     # Nightly dialogue_pairs increment (Phase 2A) — own flag, 7-day cutoff.
     await _maybe_backfill_dialogue_pairs(bot)
+
+    # Nightly answer reconciliation: сверка предложений бота с фактическими
+    # ответами операторов (learning без кнопок). Результат — в judge-поля.
+    await _maybe_reconcile_answers(bot)
 
     # Weekly knowledge expiry (Sunday 00:xx UTC)
     global _last_knowledge_expiry_date

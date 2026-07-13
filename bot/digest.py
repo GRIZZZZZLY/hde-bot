@@ -30,3 +30,26 @@ async def send_morning_digest(bot: Bot) -> None:
         logger.info("Morning digest sent: %d unassigned equipment", unassigned_equipment_count)
     except TelegramAPIError as exc:
         logger.error("Failed to send morning digest: %s", exc)
+
+
+async def send_reconciliation_digest(bot: Bot) -> None:
+    """Утренняя сводка ночной сверки «бот ↔ оператор» — в ЛИЧНЫЙ чат админа.
+    Если сверять было нечего — молчит."""
+    from .formatter import format_reconciliation_digest
+    data = await db.get_reconciliation_digest(hours=24)
+    text = format_reconciliation_digest(data)
+    if text is None:
+        return
+    try:
+        await bot.send_message(
+            chat_id=config.personal_chat_id,
+            text=text,
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
+        logger.info(
+            "Reconciliation digest sent: matched=%s diverged=%s",
+            data.get("matched"), data.get("diverged"),
+        )
+    except TelegramAPIError as exc:
+        logger.error("Failed to send reconciliation digest: %s", exc)

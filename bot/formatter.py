@@ -223,6 +223,29 @@ def format_morning_digest(unassigned_equipment_count: int = 0) -> str:
     ])
 
 
+def format_reconciliation_digest(data: dict) -> Optional[str]:
+    """Утренняя сводка ночной сверки «бот ↔ оператор». None, если сверять было нечего."""
+    matched = int(data.get("matched", 0) or 0)
+    diverged = int(data.get("diverged", 0) or 0)
+    total = matched + diverged
+    if total == 0:
+        return None
+    lines = [
+        "🧭 <b>Сверка ответов за сутки</b>",
+        f"Совпало с оператором: <b>{matched}</b> из {total}",
+        f"Разошлось: <b>{diverged}</b>",
+    ]
+    top = data.get("top_diverged") or []
+    if top:
+        lines += ["", "<b>Топ расхождений</b> (бот → оператор):"]
+        for i, d in enumerate(top, 1):
+            tid = escape(str(d.get("ticket_id", "")))
+            bot_a = escape((d.get("ai_answer") or "").strip())[:200]
+            op_a = escape((d.get("judge_reference_answer") or "").strip())[:200]
+            lines += [f"{i}. #{tid}", f"   бот: {bot_a}", f"   опер: {op_a}"]
+    return "\n".join(lines)
+
+
 def _strip_html(text: str) -> str:
     """Remove HTML tags and unescape entities."""
     text = re.sub(r"<[^>]+>", "", text)

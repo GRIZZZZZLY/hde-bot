@@ -111,6 +111,38 @@ async def get_suggestion(suggestion_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+async def get_unjudged_suggestions(hours: int = 24, limit: int = 200) -> list[dict]:
+    """Свежие предложения без вердикта — кандидаты на ночную сверку с фактическим
+    ответом оператора. Только с непустым ai_answer и известным якорем."""
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM ai_suggestions "
+            "WHERE judged_at IS NULL AND ai_answer IS NOT NULL AND ai_answer != '' "
+            "AND context_until_post_id IS NOT NULL "
+            "AND created_at >= datetime('now', ?) "
+            "ORDER BY id DESC LIMIT ?",
+            (f"-{int(hours)} hours", int(limit)),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def set_judge_result(
+    suggestion_id: int, *, reference_answer: str, label: str, detail: str = ""
+) -> None:
+    """Вердикт сверки: эталон = фактический ответ оператора; label канонический
+    (accepted/corrected). Пересчитывает effective_label."""
+    async with connect() as db:
+        await db.execute(
+            "UPDATE ai_suggestions SET judge_reference_answer=?, judge_label=?, "
+            "judge_detail=?, judged_at=datetime('now') WHERE id=?",
+            (reference_answer, label, detail, suggestion_id),
+        )
+        await db.commit()
+    await _recompute_labels(suggestion_id)
+
+
 async def get_open_suggestion_by_topic(topic_id: int) -> dict | None:
     """Most recent suggestion for a topic — the one the feedback buttons act on
     (ai_feedback_pending is single-per-topic, so latest == the pending one)."""
@@ -218,3 +250,29 @@ async def collect_suggestion_daily_stats(hours: int = 24) -> dict:
         if value is None and key != "avg_minutes_to_send":
             stats[key] = 0
     return stats
+
+
+async def get_reconciliation_digest(hours: int = 24, top: int = 5) -> dict:
+    """Сводка ночной сверки за N часов: сколько предложений совпало с оператором
+    (accepted) и разошлось (corrected) + топ расхождений (бот ↔ оператор) для ревью."""
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT judge_label, COUNT(*) AS n FROM ai_suggestions "
+            "WHERE judged_at >= datetime('now', ?) AND judge_label IS NOT NULL "
+            "GROUP BY judge_label",
+            (f"-{int(hours)} hours",),
+        ) as cur:
+            counts = {r["judge_label"]: r["n"] for r in await cur.fetchall()}
+        async with db.execute(
+            "SELECT ticket_id, ai_answer, judge_reference_answer FROM ai_suggestions "
+            "WHERE judged_at >= datetime('now', ?) AND judge_label='corrected' "
+            "ORDER BY id DESC LIMIT ?",
+            (f"-{int(hours)} hours", int(top)),
+        ) as cur:
+            diverged = [dict(r) for r in await cur.fetchall()]
+    return {
+        "matched": counts.get("accepted", 0),
+        "diverged": counts.get("corrected", 0),
+        "top_diverged": diverged,
+    }
