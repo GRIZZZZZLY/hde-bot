@@ -128,6 +128,43 @@ async def test_generation_failure_posts_error_notice():
     assert 558 not in _suggest_in_flight
 
 
+async def test_button_stays_only_under_latest_client_reply(monkeypatch):
+    """Второй ответ клиента снимает 💡 с предыдущего сообщения и вешает на новое."""
+    import bot.topic_manager as tm
+
+    await db_module.init_db()
+    await db_module.upsert_topic("TKT-B", 777, ticket_name="Касса", company_name="ACME")
+    monkeypatch.setattr(tm, "_is_work_time", lambda: True)
+
+    bot = AsyncMock()
+    bot.send_message = AsyncMock(side_effect=[
+        SimpleNamespace(message_id=101),
+        SimpleNamespace(message_id=202),
+    ])
+
+    payload = {
+        "ticket_id": "TKT-B", "unique_id": "B-1", "ticket_name": "Касса",
+        "company_name": "ACME", "priority": "high", "status": "open",
+        "owner_id": "me", "owner_name": "Me", "user_name": "Alice",
+        "message": "раз", "last_post_date": "2026-07-01 10:00:00",
+        "link": "https://hde.example.com/tickets/1",
+    }
+
+    await tm._handle_client_reply_locked(bot, payload, "TKT-B")
+    rec = await db_module.get_topic("TKT-B")
+    assert rec.suggest_button_msg_id == 101
+    bot.edit_message_reply_markup.assert_not_awaited()  # первого сообщения ещё не было
+
+    payload = {**payload, "message": "два", "last_post_date": "2026-07-01 11:00:00"}
+    await tm._handle_client_reply_locked(bot, payload, "TKT-B")
+    # кнопка снята со 101, новый msg_id = 202
+    bot.edit_message_reply_markup.assert_awaited_once()
+    assert bot.edit_message_reply_markup.await_args.kwargs["message_id"] == 101
+    assert bot.edit_message_reply_markup.await_args.kwargs["reply_markup"] is None
+    rec = await db_module.get_topic("TKT-B")
+    assert rec.suggest_button_msg_id == 202
+
+
 async def test_generate_with_retry_threads_trigger_source(monkeypatch):
     import bot.topic_manager as tm
     monkeypatch.setattr(config_module.config, "agent_enabled", True)

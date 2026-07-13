@@ -1,5 +1,7 @@
 """Tests for Окружение autofill improvements: env_option_id storage,
 company prior, keyword pre-pass, enriched classification context."""
+from types import SimpleNamespace
+
 import pytest
 
 from bot import db as _db
@@ -304,6 +306,7 @@ async def test_client_reply_schedules_env_retry_when_undetermined(monkeypatch):
     monkeypatch.setattr(tf, "retry_env_classification", retry)
 
     bot = AsyncMock()
+    bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=123))
     await tm.handle_client_reply(bot, _tm_payload())
     for _ in range(5):
         await asyncio.sleep(0)
@@ -326,6 +329,7 @@ async def test_client_reply_no_retry_when_env_already_set(monkeypatch):
     monkeypatch.setattr(tf, "retry_env_classification", retry)
 
     bot = AsyncMock()
+    bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=123))
     await tm.handle_client_reply(bot, _tm_payload())
     for _ in range(5):
         await asyncio.sleep(0)

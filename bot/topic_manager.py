@@ -133,8 +133,8 @@ def _now_storage() -> str:
     return to_storage(utcnow())
 
 
-async def _send_topic_message(bot: Bot, topic_id: int, text: str, reply_markup=None) -> None:
-    await bot.send_message(
+async def _send_topic_message(bot: Bot, topic_id: int, text: str, reply_markup=None):
+    return await bot.send_message(
         chat_id=config.group_chat_id,
         message_thread_id=topic_id,
         text=text,
@@ -142,6 +142,21 @@ async def _send_topic_message(bot: Bot, topic_id: int, text: str, reply_markup=N
         disable_web_page_preview=True,
         reply_markup=reply_markup,
     )
+
+
+async def _strip_prev_suggest_button(bot: Bot, msg_id: int | None) -> None:
+    """Remove the 💡 button from the previously-tagged message so it stays only
+    under the latest client reply. No-op if there's nothing to strip / it's gone."""
+    if not msg_id:
+        return
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=config.group_chat_id,
+            message_id=msg_id,
+            reply_markup=None,
+        )
+    except TelegramAPIError:
+        pass
 
 
 async def _create_topic(bot: Bot, payload: dict) -> int:
@@ -548,8 +563,12 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
         date_str=_payload_value(payload, "last_post_date"),
     )
     from .handlers.ai_feedback import suggest_button_kb
+    # Keep the 💡 button only under the latest client reply: strip it off the
+    # previous one before posting the new message.
+    await _strip_prev_suggest_button(bot, record.suggest_button_msg_id)
     try:
-        await _send_topic_message(bot, record.topic_id, reply_text, reply_markup=suggest_button_kb())
+        sent = await _send_topic_message(bot, record.topic_id, reply_text, reply_markup=suggest_button_kb())
+        await db.update_topic(ticket_id, suggest_button_msg_id=sent.message_id)
     except TelegramAPIError as exc:
         err_lower = str(exc).lower()
         if any(k in err_lower for k in ("thread not found", "topic_id_invalid", "topic_deleted", "not found")):
@@ -560,7 +579,8 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
             await db.mark_topic_deleted(ticket_id)
             record = await _ensure_active_topic(bot, payload, announce_assignment=True)
             try:
-                await _send_topic_message(bot, record.topic_id, reply_text, reply_markup=suggest_button_kb())
+                sent = await _send_topic_message(bot, record.topic_id, reply_text, reply_markup=suggest_button_kb())
+                await db.update_topic(ticket_id, suggest_button_msg_id=sent.message_id)
             except TelegramAPIError as exc2:
                 logger.error("Failed to resend client reply to recreated topic %d: %s", record.topic_id, exc2)
         else:

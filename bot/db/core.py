@@ -89,6 +89,7 @@ TICKET_TOPIC_COLUMNS = {
     "pre_sla_sent_at": "TEXT",
     "pre_sla_message_id": "INTEGER",
     "reassurance_sent_at": "TEXT",
+    "suggest_button_msg_id": "INTEGER",
     "hde_link": "TEXT DEFAULT ''",
     "updated_at": "TEXT",
     "deleted_at": "TEXT",
@@ -117,6 +118,7 @@ UPDATABLE_FIELDS = {
     "pre_sla_sent_at",
     "pre_sla_message_id",
     "reassurance_sent_at",
+    "suggest_button_msg_id",
     "hde_link",
     "deleted_at",
     "last_assigned_at",
@@ -160,6 +162,8 @@ class TicketTopic:
     # цифры = выставленный id (priority_id/type_id — top-level поля HDE)
     priority_option_id: Optional[str] = None
     type_option_id: Optional[str] = None
+    # Telegram message_id последнего сообщения с кнопкой «💡 Предложить ответ»
+    suggest_button_msg_id: Optional[int] = None
 
     @property
     def is_active(self) -> bool:
@@ -756,6 +760,7 @@ def _row_to_topic(row: aiosqlite.Row) -> TicketTopic:
         pre_sla_sent_at=row["pre_sla_sent_at"],
         pre_sla_message_id=row["pre_sla_message_id"],
         reassurance_sent_at=row["reassurance_sent_at"] if "reassurance_sent_at" in row.keys() else None,
+        suggest_button_msg_id=row["suggest_button_msg_id"] if "suggest_button_msg_id" in row.keys() else None,
         hde_link=row["hde_link"] or "",
         created_at=row["created_at"],
         updated_at=row["updated_at"],
