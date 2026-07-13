@@ -2,6 +2,9 @@ aiogram>=3.10,<4.0
 aiohttp>=3.9
 aiosqlite>=0.19
 python-dotenv>=1.0
+# Нативное логирование в journald (StandardOutput=journal-стрим на config1 сломан).
+# Только Linux; требует libsystemd-dev+pkg-config при сборке. Код с fallback на stdout.
+systemd-python>=234; sys_platform == "linux"
 
 # Reporting: HDE → Google Sheets
 playwright>=1.40

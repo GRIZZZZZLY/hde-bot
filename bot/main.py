@@ -20,15 +20,39 @@ from .hde_webhook import drain_inbox, hde_webhook_handler
 from .scheduler import run_scheduler, _ALLOWED_UPDATES
 from .tg_session import RetrySession
 
-# force=True: снять любой root-handler, повешенный импортами до этой точки (иначе
-# basicConfig — no-op и логи уходят «в никуда», не долетая до journald). stdout
-# гарантированно принимается journald (проверено systemd-cat на config1).
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-    force=True,
-)
+def _setup_logging() -> None:
+    """Логирование бота.
+
+    На config1 systemd-стрим StandardOutput=journal для этого юнита сломан (вывод
+    молча теряется, хотя journald жив). Поэтому пишем в journald НАПРЯМУЮ через
+    JournalHandler (тот же путь, что рабочий systemd-cat; journald тегирует записи
+    по cgroup → видны в `journalctl -u hde-bot`). Плюс файл-подстраховка с ротацией.
+    Если systemd-python нет (локальная разработка) — fallback на stdout.
+    force=True снимает любой root-handler, повешенный импортами.
+    """
+    handlers: list[logging.Handler] = []
+    try:
+        from systemd.journal import JournalHandler  # noqa: PLC0415
+        handlers.append(JournalHandler(SYSLOG_IDENTIFIER="hde-bot"))
+    except Exception:
+        handlers.append(logging.StreamHandler(sys.stdout))
+    try:
+        from logging.handlers import RotatingFileHandler  # noqa: PLC0415
+        os.makedirs("logs", exist_ok=True)
+        handlers.append(RotatingFileHandler(
+            "logs/bot.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8",
+        ))
+    except OSError:
+        pass
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=handlers,
+        force=True,
+    )
+
+
+_setup_logging()
 logger = logging.getLogger(__name__)
 
 
