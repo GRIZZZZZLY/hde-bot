@@ -42,21 +42,24 @@ async def post_suggestion_messages(
     from .handlers.ai_feedback import suit_feedback_kb, answer_feedback_kb, memo_feedback_kb, register_feedback_pending
     from html import escape as _html_escape
 
+    # Кнопка «💡 Предложить ответ» отдаёт только ответ клиенту — без Сути и Памятки.
+    answer_only = trigger_source == "button"
     try:
-        suit_label = (
-            f"🧠 <b>Суть ({confidence_pct}%):</b>"
-            if confidence_pct >= 40
-            else "🧠 <b>Суть:</b>"
-        )
-        await bot.send_message(
-            chat_id=_tm.config.group_chat_id,
-            message_thread_id=topic_id,
-            text=f"{suit_label} {_html_escape(suit_line)}",
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-            disable_notification=True,
-            reply_markup=suit_feedback_kb(),
-        )
+        if not answer_only:
+            suit_label = (
+                f"🧠 <b>Суть ({confidence_pct}%):</b>"
+                if confidence_pct >= 40
+                else "🧠 <b>Суть:</b>"
+            )
+            await bot.send_message(
+                chat_id=_tm.config.group_chat_id,
+                message_thread_id=topic_id,
+                text=f"{suit_label} {_html_escape(suit_line)}",
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                disable_notification=True,
+                reply_markup=suit_feedback_kb(),
+            )
         if client_line:
             await bot.send_message(
                 chat_id=_tm.config.group_chat_id,
@@ -70,7 +73,7 @@ async def post_suggestion_messages(
                 disable_notification=True,
                 reply_markup=answer_feedback_kb(),
             )
-        if memo_line:
+        if memo_line and not answer_only:
             await bot.send_message(
                 chat_id=_tm.config.group_chat_id,
                 message_thread_id=topic_id,
