@@ -84,6 +84,7 @@ async def test_get_closed_tickets_pagination():
         mock_cfg.hde_api_email = "test@test.com"
         mock_cfg.hde_api_key = "key"
         mock_cfg.hde_owner_id = "42"
+        mock_cfg.hde_api_max_rpm = 0  # throttle off: MagicMock иначе ломает сравнение
 
         mock_resp = AsyncMock()
         mock_resp.status = 200

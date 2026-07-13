@@ -27,9 +27,13 @@ def reset_hde_connector():
     one test's event loop never leaks into the next."""
     hde_api_module._shared_connector = None
     hde_api_module._connector_loop = None
+    hde_api_module._rate_limiter = None
+    hde_api_module._rate_limiter_loop = None
     yield
     hde_api_module._shared_connector = None
     hde_api_module._connector_loop = None
+    hde_api_module._rate_limiter = None
+    hde_api_module._rate_limiter_loop = None
 
 
 @pytest.fixture(autouse=True)
@@ -70,6 +74,7 @@ def configure_test_settings(monkeypatch):
     monkeypatch.setattr(cfg, "hde_api_base_url", "https://hde.example.com/api/v2")
     monkeypatch.setattr(cfg, "hde_api_email", "bot@example.com")
     monkeypatch.setattr(cfg, "hde_api_key", "secret_key")
+    monkeypatch.setattr(cfg, "hde_api_max_rpm", 0)  # throttle off in tests: no real sleeps
     monkeypatch.setattr(cfg, "operator_telegram_user_ids", (123456789,))
     monkeypatch.setattr(cfg, "public_reply_enabled", True)
     monkeypatch.setattr(cfg, "public_reply_ticket_allowlist", ())

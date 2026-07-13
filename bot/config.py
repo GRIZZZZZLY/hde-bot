@@ -44,6 +44,7 @@ class Config:
     hde_api_base_url: str
     hde_api_email: str
     hde_api_key: str
+    hde_api_max_rpm: int
     operator_telegram_user_ids: tuple[int, ...]
     public_reply_enabled: bool
     public_reply_ticket_allowlist: tuple[str, ...]
@@ -95,6 +96,9 @@ class Config:
             hde_api_base_url=os.getenv("HDE_API_BASE_URL", "").rstrip("/"),
             hde_api_email=os.getenv("HDE_API_EMAIL", "").strip(),
             hde_api_key=os.getenv("HDE_API_KEY", "").strip(),
+            # Клиентский троттл: держим НИЖЕ жёсткого лимита HDE (300/min) с запасом
+            # под сторонние сервисы на том же аккаунте (иначе общий бан на 20 мин).
+            hde_api_max_rpm=int(os.getenv("HDE_API_MAX_RPM", "120") or 120),
             operator_telegram_user_ids=operator_ids,
             public_reply_enabled=_parse_bool(os.getenv("HDE_PUBLIC_REPLY_ENABLED"), default=False),
             public_reply_ticket_allowlist=_parse_csv(os.getenv("HDE_PUBLIC_REPLY_TICKET_ALLOWLIST")),

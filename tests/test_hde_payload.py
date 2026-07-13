@@ -578,3 +578,38 @@ def test_format_refresh_result_deleted_no_link():
     )
     assert "Тикет без ссылки" in text
     assert "Открыть в HDE" not in text
+
+
+# --- клиентский rate-limiter (инцидент бана HDE 2026-07-13) ---
+from bot.hde_api import _RateLimiter
+
+
+async def test_rate_limiter_spaces_requests():
+    clock = [0.0]
+    slept = []
+
+    def _now():
+        return clock[0]
+
+    async def _sleep(d):
+        slept.append(d)
+        clock[0] += d
+
+    rl = _RateLimiter(120, _time_fn=_now, _sleep_fn=_sleep)  # 0.5s между запросами
+    await rl.acquire()   # первый — без ожидания
+    await rl.acquire()   # ждёт 0.5
+    await rl.acquire()   # ждёт 0.5
+    assert slept == [0.5, 0.5]
+
+
+async def test_rate_limiter_disabled_when_zero():
+    slept = []
+
+    async def _sleep(d):
+        slept.append(d)
+
+    rl = _RateLimiter(0, _time_fn=lambda: 0.0, _sleep_fn=_sleep)
+    await rl.acquire()
+    await rl.acquire()
+    assert slept == []            # rpm<=0 → троттл выключен, без задержек
+    assert rl.min_interval == 0.0

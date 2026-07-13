@@ -55,6 +55,54 @@ async def close_shared_connector() -> None:
 _REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
 
 
+class _RateLimiter:
+    """Process-wide client-side throttle for HDE API calls.
+
+    HDE bans the SHARED account for 20 min on >300 req/min, taking down other
+    services on the same account (incident 2026-07-13). We space our own
+    requests to config.hde_api_max_rpm — kept well below 300 to leave headroom
+    for those other services. Strict min-interval spacing (no bursts): a single
+    lock serialises acquirers so N concurrent callers still can't burst.
+    """
+
+    def __init__(self, max_per_min: int, *, _time_fn=None, _sleep_fn=None) -> None:
+        self.min_interval = 60.0 / max_per_min if max_per_min and max_per_min > 0 else 0.0
+        self._time_fn = _time_fn
+        self._sleep_fn = _sleep_fn
+        self._lock: asyncio.Lock | None = None
+        self._next_allowed = 0.0
+
+    async def acquire(self) -> None:
+        if self.min_interval <= 0:
+            return
+        time_fn = self._time_fn or asyncio.get_running_loop().time
+        sleep_fn = self._sleep_fn or asyncio.sleep
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        async with self._lock:
+            now = time_fn()
+            wait = self._next_allowed - now
+            if wait > 0:
+                await sleep_fn(wait)
+                now = time_fn()
+            self._next_allowed = max(now, self._next_allowed) + self.min_interval
+
+
+# Keyed by running loop (tests use a fresh loop each); prod loop is stable so a
+# single limiter lives for the process and all HDEApiClient instances share it.
+_rate_limiter: _RateLimiter | None = None
+_rate_limiter_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_rate_limiter() -> _RateLimiter:
+    global _rate_limiter, _rate_limiter_loop
+    loop = asyncio.get_running_loop()
+    if _rate_limiter is None or _rate_limiter_loop is not loop:
+        _rate_limiter = _RateLimiter(config.hde_api_max_rpm)
+        _rate_limiter_loop = loop
+    return _rate_limiter
+
+
 class HDEApiError(RuntimeError):
     pass
 
@@ -138,6 +186,7 @@ class HDEApiClient:
         """
         for attempt in range(1, self._GET_ATTEMPTS + 1):
             try:
+                await _get_rate_limiter().acquire()
                 async with self._make_session() as session:
                     async with session.get(url, params=params) as response:
                         if (
@@ -620,6 +669,7 @@ class HDEApiClient:
     async def assign_ticket(self, ticket_id: str, owner_id: str) -> HDEApiResult:
         """Assign ticket to the given HDE user id."""
         url = f"{self.base_url}/tickets/{ticket_id}/"
+        await _get_rate_limiter().acquire()
         async with self._make_session() as session:
             async with session.put(url, json={"owner_id": int(owner_id)}) as response:
                 data = await self._read_response(response)
@@ -653,6 +703,7 @@ class HDEApiClient:
         the standard priority_id/type_id of a ticket — one PUT for everything."""
         url = f"{self.base_url}/tickets/{ticket_id}/"
         body = self._ticket_update_body(custom_fields, priority_id, type_id)
+        await _get_rate_limiter().acquire()
         async with self._make_session() as session:
             async with session.put(url, json=body) as response:
                 data = await self._read_response(response)
@@ -670,6 +721,7 @@ class HDEApiClient:
     ) -> HDEApiResult:
         url = f"{self.base_url}{path}"
         payload = self._build_payload(text=text, attachments=attachments)
+        await _get_rate_limiter().acquire()
         async with self._make_session() as session:
             async with session.post(url, data=payload) as response:
                 data = await self._read_response(response)
@@ -681,6 +733,7 @@ class HDEApiClient:
     async def _put(self, path: str, *, text: str = "") -> HDEApiResult:
         url = f"{self.base_url}{path}"
         payload = {"text": text.strip()}
+        await _get_rate_limiter().acquire()
         async with self._make_session() as session:
             async with session.put(url, data=payload) as response:
                 data = await self._read_response(response)
@@ -691,6 +744,7 @@ class HDEApiClient:
 
     async def _delete(self, path: str) -> HDEApiResult:
         url = f"{self.base_url}{path}"
+        await _get_rate_limiter().acquire()
         async with self._make_session() as session:
             async with session.delete(url) as response:
                 data = await self._read_response(response)
