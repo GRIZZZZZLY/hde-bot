@@ -12,17 +12,15 @@ def use_tmp_db(tmp_path, monkeypatch):
 
 # --- combo table & parser ---
 
-def test_pt_combos_cover_six_rules():
+def test_pt_combos_cover_four_rules():
     from bot.ticket_fields import _PT_COMBOS
-    assert set(_PT_COMBOS) == {"1", "2", "3", "4", "5", "6"}
-    # ускоренный+ошибка, стандарт+ошибка, ускоренный+задача,
-    # стандарт+задача, низкий+вопрос, низкий+задача
+    assert set(_PT_COMBOS) == {"1", "2", "3", "4"}
+    # ускоренный+ошибка, стандарт+ошибка, ускоренный+задача, стандарт+задача.
+    # «Низкий» бот не ставит — только отдел оборудования вручную.
     assert _PT_COMBOS["1"] == ("1", "3")
     assert _PT_COMBOS["2"] == ("10", "3")
     assert _PT_COMBOS["3"] == ("1", "2")
     assert _PT_COMBOS["4"] == ("10", "2")
-    assert _PT_COMBOS["5"] == ("3", "0")
-    assert _PT_COMBOS["6"] == ("3", "2")
 
 
 def test_parse_pt_combo_plain_number():
@@ -42,7 +40,9 @@ def test_parse_pt_combo_undetermined():
 
 def test_parse_pt_combo_out_of_range_rejected():
     from bot.ticket_fields import _parse_pt_combo
-    # 7 и 10 — не номера комбинаций; "10" не должен распадаться на "1"
+    # 5-7 и 10 — не номера комбинаций; "10" не должен распадаться на "1"
+    assert _parse_pt_combo("5") is None
+    assert _parse_pt_combo("6") is None
     assert _parse_pt_combo("7") is None
     assert _parse_pt_combo("10") is None
 
@@ -55,8 +55,9 @@ def test_parse_pt_combo_empty():
 def test_pt_prompt_contains_all_combos_and_undetermined():
     from bot.ticket_fields import _build_pt_prompt
     p = _build_pt_prompt()
-    for num in ("1 =", "2 =", "3 =", "4 =", "5 =", "6 ="):
+    for num in ("1 =", "2 =", "3 =", "4 ="):
         assert num in p
+    assert "5 =" not in p and "6 =" not in p
     assert "НЕ ОПРЕДЕЛЕНО" in p
     assert "инженера банка" in p.lower() or "инженер банка" in p.lower()
 
