@@ -17,6 +17,18 @@ logger = logging.getLogger(__name__)
 _URL_RE = re.compile(r"https?://[^\s<>\"'\)\]]+")
 _TRAILING_PUNCT = ".,;:!?»«\"'"
 
+# Мессенджер-ссылки — контакты, не статьи; шортенеры на них режутся по
+# финальному хосту после редиректов в fetch_article.
+_SKIP_DOMAINS = {
+    "wa.me", "t.me", "chat.whatsapp.com", "api.whatsapp.com",
+    "web.whatsapp.com",
+}
+
+
+def _domain(url: str) -> str:
+    m = re.match(r"https?://([^/]+)", url)
+    return m.group(1).lower() if m else ""
+
 # Страница короче — скорее всего заглушка/редирект/ошибка, в базу не годится.
 _MIN_TEXT_CHARS = 200
 
@@ -30,7 +42,9 @@ def extract_urls(text: str) -> list[str]:
 def rank_urls(answers: list[str], top_n: int = 30) -> list[tuple[str, int]]:
     counter: Counter[str] = Counter()
     for answer in answers:
-        counter.update(extract_urls(answer))
+        counter.update(
+            u for u in extract_urls(answer) if _domain(u) not in _SKIP_DOMAINS
+        )
     return counter.most_common(top_n)
 
 
@@ -59,6 +73,8 @@ async def fetch_article(url: str) -> tuple[str, str] | None:
             async with session.get(url, allow_redirects=True) as resp:
                 if resp.status != 200:
                     return None
+                if (resp.url.host or "").lower() in _SKIP_DOMAINS:
+                    return None  # шортенер привёл в мессенджер
                 ctype = resp.headers.get("Content-Type", "")
                 if "html" not in ctype and "text" not in ctype:
                     return None

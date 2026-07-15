@@ -73,3 +73,12 @@ async def test_mine_operator_urls_ranks_dedupes_and_indexes():
     assert stats["indexed"] == 2
     assert stats["known"] == 1
     assert stats["failed"] == 1
+
+
+def test_rank_urls_skips_messenger_domains():
+    answers = [
+        "Напишите нам https://wa.me/message/XXX и https://t.me/posiflora_II",
+        "Статья https://support.evotor.ru/article/1",
+    ]
+    ranked = rank_urls(answers, top_n=10)
+    assert ranked == [("https://support.evotor.ru/article/1", 1)]
