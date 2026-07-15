@@ -219,6 +219,7 @@ class KnowledgeItem:
     title: Optional[str]
     content: str
     quality: str
+    url: Optional[str] = None
 
 
 async def init_db() -> None:

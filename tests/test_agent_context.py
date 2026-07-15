@@ -248,3 +248,33 @@ async def test_fewshot_handles_malformed_hits(monkeypatch):
     assert len(demos) == 0, "Malformed hits should not produce dialogue_pair demos"
     # Other context keys intact
     assert "history" in ctx and "evidence" in ctx and "demos" in ctx and "grounds" in ctx
+
+
+async def test_build_agent_context_includes_article_url(monkeypatch):
+    from types import SimpleNamespace
+    from bot.agent.context import build_agent_context
+    posts = _mk_posts()
+    info = SimpleNamespace(client_id=1)
+
+    async def fake_embed(text, task_type="query"):
+        import numpy as np
+        return np.ones(4, dtype=np.float32)
+
+    async def fake_similar(emb, *, limit=3, query_text="", company_id=""):
+        item = SimpleNamespace(
+            id=7, content="Инструкция по шаблону чека", quality="good",
+            url="https://support.evotor.ru/article/1", title="Шаблон чека",
+        )
+        return [(item, 0.9)]
+
+    async def none_fn(*a, **k):
+        return None
+
+    ctx = await build_agent_context(
+        posts, info, "Шаблон чека", company_id="c1",
+        _history_fn=lambda p, i: "H", _embed_fn=fake_embed,
+        _similar_fn=fake_similar, _equipment_fn=lambda t, h: "",
+        _wiki_fn=none_fn, _pattern_fn=none_fn,
+    )
+    kb = [e for e in ctx["evidence"] if e["source_type"] == "knowledge_item"][0]
+    assert "https://support.evotor.ru/article/1" in kb["used_excerpt"]

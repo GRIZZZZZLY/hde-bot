@@ -523,3 +523,27 @@ async def test_find_similar_skips_duplicate_content():
     assert len(contents) == 2
     assert len(set(contents)) == 2, "дубликат должен быть пропущен"
     assert any("Эвотор" in c for c in contents)
+
+
+@pytest.mark.asyncio
+async def test_find_similar_returns_url_and_title():
+    """URL статьи должен доезжать до промпта — иначе бот не может ответить ссылкой."""
+    from bot.knowledge.store import invalidate_embeddings_cache
+    await _db.init_db()
+    emb = np.ones(4, dtype=np.float32)
+    await _db.save_knowledge_item(
+        source="operator_url", content="Настройка чека на Эвотор",
+        ticket_id="URL_T1", title="Шаблон чека",
+        url="https://support.evotor.ru/article/1",
+    )
+    async with aiosqlite.connect(_db.DB_PATH) as db:
+        await db.execute(
+            "UPDATE knowledge_items SET embedding=? WHERE ticket_id='URL_T1'",
+            (emb.tobytes(),),
+        )
+        await db.commit()
+    invalidate_embeddings_cache()
+    results = await find_similar(emb, limit=1, query_text="")
+    item, _ = results[0]
+    assert item.url == "https://support.evotor.ru/article/1"
+    assert item.title == "Шаблон чека"

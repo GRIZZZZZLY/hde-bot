@@ -186,6 +186,25 @@ async def find_similar(
             score,
         ))
 
+    # title/url одним запросом: ссылка на статью должна доехать до промпта,
+    # чтобы бот мог ответить ею клиенту (как это делают операторы).
+    if result:
+        ids = [item.id for item, _ in result]
+        try:
+            from .. import db as _db
+            async with _db.connect() as conn:
+                placeholders = ",".join("?" * len(ids))
+                async with conn.execute(
+                    f"SELECT id, title, url FROM knowledge_items "
+                    f"WHERE id IN ({placeholders})", ids,
+                ) as cur:
+                    meta = {r[0]: (r[1], r[2]) for r in await cur.fetchall()}
+            for item, _ in result:
+                title, url = meta.get(item.id, (None, None))
+                item.title, item.url = title, url
+        except Exception as exc:
+            logger.warning("knowledge meta fetch failed: %s", exc)
+
     # Update last_used_at for returned items (throttled 24h, non-fatal)
     if result:
         returned_ids = [item.id for item, _ in result if item.id is not None]

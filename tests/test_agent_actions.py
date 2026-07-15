@@ -83,3 +83,10 @@ def test_compose_memo_body_and_stale():
 
 def test_compose_memo_body_only():
     assert compose_memo("Атол 30Ф • драйверы clck.ru/x") == "Атол 30Ф • драйверы clck.ru/x"
+
+
+def test_action_instruction_forbids_remote_access_first():
+    from bot.agent.actions import build_action_instruction
+    text = build_action_instruction().lower()
+    assert "удалённый доступ" in text or "удаленный доступ" in text
+    assert "перв" in text                        # «не первым шагом»

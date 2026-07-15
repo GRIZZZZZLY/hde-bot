@@ -7,6 +7,14 @@ from .actions import extract_client_text
 _EXCERPT_LIMIT = 600
 
 
+def _excerpt_with_url(item) -> str:
+    """Фрагмент знания для промпта; URL статьи первым — модель может отдать
+    его клиенту (операторы часто решают тикет именно ссылкой)."""
+    excerpt = (item.content or "")[:_EXCERPT_LIMIT]
+    url = getattr(item, "url", None)
+    return f"Статья: {url}\n{excerpt}" if url else excerpt
+
+
 def build_history_budgeted(posts, info, *, budget: int = 3000, _history_fn=None) -> str:
     if _history_fn is None:
         from ..ai_summary import _build_history_text as _history_fn
@@ -84,7 +92,7 @@ async def build_agent_context(
                 "rank": rank,
                 "score": round(float(score), 4),
                 "title": getattr(item, "title", None),
-                "used_excerpt": (item.content or "")[:_EXCERPT_LIMIT],
+                "used_excerpt": _excerpt_with_url(item),
             })
             confidence = max(confidence, int(round(float(score) * 100)))
 
