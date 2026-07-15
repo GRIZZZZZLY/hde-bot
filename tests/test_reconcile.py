@@ -52,6 +52,33 @@ def test_none_when_only_boilerplate():
     assert find_operator_reply_after(posts, 1, _STAFF) is None
 
 
+def test_none_when_only_closer():
+    posts = [
+        _post(1, "cl", "вопрос"),                            # anchor
+        _post(2, "op", "Всегда рады помочь! Будут ещё вопросы — обращайтесь."),
+    ]
+    assert find_operator_reply_after(posts, 1, _STAFF) is None
+
+
+def test_closer_stripped_from_real_answer():
+    posts = [
+        _post(1, "cl", "подключите кассу"),                  # anchor
+        _post(2, "op", "Готово, касса подключена. Всегда рады помочь! "
+                       "Будут ещё вопросы — обращайтесь."),
+    ]
+    assert find_operator_reply_after(posts, 1, _STAFF) == "Готово, касса подключена."
+
+
+def test_closer_question_variant_stripped():
+    posts = [
+        _post(1, "cl", "терминал не работает"),              # anchor
+        _post(2, "op", "Сбились настройки терминала, обратитесь в банк. "
+                       "Подскажите, могу вам ещё чем-то помочь?"),
+    ]
+    ref = find_operator_reply_after(posts, 1, _STAFF)
+    assert ref == "Сбились настройки терминала, обратитесь в банк."
+
+
 def test_compare_matched_and_diverged():
     label, score = compare("Перезагрузите кассу", "Перезагрузите кассу")
     assert label == "matched" and score == 1.0
@@ -59,24 +86,74 @@ def test_compare_matched_and_diverged():
     assert label == "diverged" and score < 0.6
 
 
-def test_reconcile_one_matched():
+def _fake_embed(texts, task_type="query"):
+    """Детерминированные «эмбеддинги» по ключевым словам: ортогональные оси."""
+    import numpy as np
+
+    def vec(t):
+        t = t.lower()
+        if "перезагрузите" in t or "перезагрузку" in t:
+            return np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        if "бумаг" in t:
+            return np.array([0.0, 1.0, 0.0], dtype=np.float32)
+        return np.array([0.0, 0.0, 1.0], dtype=np.float32)
+
+    return [vec(t) for t in texts]
+
+
+async def _fake_embed_async(texts, task_type="query"):
+    return _fake_embed(texts, task_type=task_type)
+
+
+async def test_compare_semantic_matched_on_paraphrase():
+    from bot.agent.reconcile import compare_semantic
+    label, score = await compare_semantic(
+        "Перезагрузите кассу", "Выполните перезагрузку кассы",
+        _embed_fn=_fake_embed_async,
+    )
+    assert label == "matched" and score == 1.0
+
+
+async def test_compare_semantic_diverged_on_different_meaning():
+    from bot.agent.reconcile import compare_semantic
+    label, score = await compare_semantic(
+        "Проверьте бумагу в принтере", "Позвоните в банк по номеру 900",
+        _embed_fn=_fake_embed_async,
+    )
+    assert label == "diverged" and score < 0.85
+
+
+async def test_compare_semantic_falls_back_to_lexical():
+    from bot.agent.reconcile import compare_semantic
+
+    async def broken_embed(texts, task_type="query"):
+        return None
+
+    label, score = await compare_semantic(
+        "Перезагрузите кассу", "Перезагрузите кассу", _embed_fn=broken_embed,
+    )
+    assert label == "matched" and score == 1.0
+
+
+async def test_reconcile_one_matched():
     posts = [
         _post(1, "cl", "касса зависла"),                     # anchor
         _post(2, "op", "Перезагрузите кассу и попробуйте снова"),
     ]
-    res = reconcile_one(
+    res = await reconcile_one(
         ai_answer="Перезагрузите кассу и попробуйте снова",
-        posts=posts, anchor_post_id=1, staff=_STAFF,
+        posts=posts, anchor_post_id=1, staff=_STAFF, _embed_fn=_fake_embed_async,
     )
     assert res["label"] == "matched"
     assert res["reference_answer"] == "Перезагрузите кассу и попробуйте снова"
     assert res["score"] == 1.0
 
 
-def test_reconcile_one_none_without_reply():
+async def test_reconcile_one_none_without_reply():
     posts = [_post(1, "cl", "вопрос")]
-    assert reconcile_one(
-        ai_answer="любой", posts=posts, anchor_post_id=1, staff=_STAFF
+    assert await reconcile_one(
+        ai_answer="любой", posts=posts, anchor_post_id=1, staff=_STAFF,
+        _embed_fn=_fake_embed_async,
     ) is None
 
 
@@ -108,7 +185,7 @@ async def test_reconcile_recent_labels_counts_and_mapping():
     from bot.agent.reconcile import reconcile_recent
     stats = await reconcile_recent(
         hours=24, _suggestions_fn=sug_fn, _posts_fn=posts_fn,
-        _set_fn=set_fn, _staff={"op"},
+        _set_fn=set_fn, _staff={"op"}, _embed_fn=_fake_embed_async,
     )
     assert stats["matched"] == 1 and stats["diverged"] == 1 and stats["skipped"] == 1
     assert dict(saved) == {1: "accepted", 2: "corrected"}  # matched→accepted, diverged→corrected; T3 не сохранён
