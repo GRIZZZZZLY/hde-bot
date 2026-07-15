@@ -304,6 +304,59 @@ def _resolved_before_cutoff(ticket: dict, now: datetime, days: int = 7) -> bool:
     return True
 
 
+async def run_dialogue_backfill(
+    *, max_pages: int = 10, _client=None, _now=None
+) -> dict:
+    """Пагинированный майнинг закрытых тикетов (закрыт >7 дней назад).
+
+    Страница 1 — самые свежие закрытые, они моложе отсечки; майнимое окно лежит
+    глубже, поэтому идём по страницам до max_pages. Стоп раньше — на странице,
+    где нет ни свежих, ни новых тикетов (история уже обработана)."""
+    from .agent.dialogue_mining import mine_ticket_pairs, staff_id_set
+    from .hde_api import HDEApiClient
+    client = _client or HDEApiClient()
+    now = _now or _now_msk()
+    staff = staff_id_set(config.hde_owner_id, config.agent_staff_user_ids)
+    staff_cache: dict = {}
+    known = await db.dialogue_pair_hashes()
+    processed = await db.list_processed_ticket_ids()
+    stats = {"pages": 0, "new_pairs": 0, "mined_tickets": 0,
+             "fresh": 0, "known": 0, "errors": 0}
+    for page in range(1, max_pages + 1):
+        tickets, total_pages = await client.get_closed_tickets_page(
+            config.hde_owner_id, page
+        )
+        if not tickets:
+            break
+        stats["pages"] += 1
+        page_fresh = page_new = 0
+        for ticket in tickets:
+            tid = str(ticket.get("id") or ticket.get("ticket_id") or "")
+            if not tid or tid in processed:
+                stats["known"] += 1
+                continue
+            if not _resolved_before_cutoff(ticket, now):  # 7-day rule
+                stats["fresh"] += 1
+                page_fresh += 1
+                continue
+            page_new += 1
+            try:
+                stats["new_pairs"] += await mine_ticket_pairs(
+                    client, ticket, staff,
+                    known_hashes=known, staff_cache=staff_cache,
+                )
+                stats["mined_tickets"] += 1
+                await db.mark_ticket_processed(tid)
+            except Exception as exc:
+                stats["errors"] += 1
+                await db.log_ticket_error(tid, str(exc))
+        if page_fresh == 0 and page_new == 0:  # зона обработанной истории
+            break
+        if page >= total_pages:
+            break
+    return stats
+
+
 async def _maybe_backfill_dialogue_pairs(bot) -> None:
     """Ночной инкремент dialogue_pairs (Phase 2A). Отдельный флаг
     agent_dialogue_mining_enabled — НЕ зависит от agent_enabled. Берёт только
@@ -317,32 +370,10 @@ async def _maybe_backfill_dialogue_pairs(bot) -> None:
         return
     _last_dialogue_backfill_date = today
     try:
-        from .agent.dialogue_mining import mine_ticket_pairs, staff_id_set
-        from .hde_api import HDEApiClient
-        client = HDEApiClient()
-        staff = staff_id_set(config.hde_owner_id, config.agent_staff_user_ids)
-        staff_cache: dict = {}
-        known = await db.dialogue_pair_hashes()
-        processed = await db.list_processed_ticket_ids()
-        tickets, _ = await client.get_closed_tickets_page(config.hde_owner_id, 1)
-        saved = 0
-        for ticket in tickets:
-            tid = str(ticket.get("id") or ticket.get("ticket_id") or "")
-            if not tid or tid in processed:
-                continue
-            if not _resolved_before_cutoff(ticket, now):  # 7-day rule
-                continue
-            try:
-                saved += await mine_ticket_pairs(
-                    client, ticket, staff,
-                    known_hashes=known, staff_cache=staff_cache,
-                )
-                await db.mark_ticket_processed(tid)
-            except Exception as exc:
-                await db.log_ticket_error(tid, str(exc))
-        logger.info("Nightly dialogue backfill: +%d pairs", saved)
+        stats = await run_dialogue_backfill()
+        logger.info("Nightly dialogue backfill: %s", stats)
         from .agent.pair_quality import gate_pending_pairs
-        gate_stats = await gate_pending_pairs(limit=50)
+        gate_stats = await gate_pending_pairs(limit=300)
         logger.info("Nightly pair gating: %s", gate_stats)
     except Exception as exc:
         logger.warning("Nightly dialogue backfill failed: %s", exc)

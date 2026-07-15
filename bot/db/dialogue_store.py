@@ -76,6 +76,17 @@ async def dialogue_pair_hashes() -> set[str]:
     return {r[0] for r in rows}
 
 
+async def list_operator_answers_with_urls() -> list[str]:
+    """operator_answer всех пар со ссылкой — сырьё для URL-майнинга в RAG."""
+    async with connect() as db:
+        async with db.execute(
+            "SELECT operator_answer FROM dialogue_pairs "
+            "WHERE operator_answer LIKE '%http%'"
+        ) as cur:
+            rows = await cur.fetchall()
+    return [r[0] for r in rows]
+
+
 async def list_processed_ticket_ids() -> set[str]:
     raw = await get_setting(_PROCESSED_KEY, "")
     return set(json.loads(raw)) if raw else set()

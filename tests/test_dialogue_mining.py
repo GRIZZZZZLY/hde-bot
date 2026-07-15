@@ -295,3 +295,101 @@ async def test_mine_passes_operator_user_id_and_resolves_staff():
     )
     assert n == 1
     assert saved["operator_user_id"] == "48268"   # автор ответа зафиксирован
+
+
+# --- run_dialogue_backfill: пагинация вглубь до зоны отсечки -----------------
+
+from datetime import datetime, timedelta, timezone
+
+
+def _closed(tid, days_ago, now):
+    return {"id": tid, "date_updated": (now - timedelta(days=days_ago)).isoformat()}
+
+
+class _PagedClient:
+    def __init__(self, pages):
+        self.pages = pages
+        self.calls = []
+
+    async def get_closed_tickets_page(self, owner_id, page):
+        self.calls.append(page)
+        idx = page - 1
+        if idx >= len(self.pages):
+            return [], len(self.pages)
+        return self.pages[idx], len(self.pages)
+
+
+def _patch_backfill_db(monkeypatch, processed):
+    async def hashes():
+        return set()
+
+    async def processed_ids():
+        return set(processed)
+
+    marked = []
+
+    async def mark(tid):
+        marked.append(tid)
+
+    async def log_err(tid, msg):
+        pass
+
+    monkeypatch.setattr(scheduler_module.db, "dialogue_pair_hashes", hashes)
+    monkeypatch.setattr(scheduler_module.db, "list_processed_ticket_ids", processed_ids)
+    monkeypatch.setattr(scheduler_module.db, "mark_ticket_processed", mark)
+    monkeypatch.setattr(scheduler_module.db, "log_ticket_error", log_err)
+    return marked
+
+
+async def test_backfill_walks_past_fresh_page(monkeypatch):
+    """Страница 1 — свежак (<7 дней), майнимое лежит глубже. Раньше брали только
+    страницу 1 и уходили с нулём."""
+    now = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+    pages = [
+        [_closed("F1", 1, now), _closed("F2", 2, now)],       # свежие → skip
+        [_closed("N1", 8, now), _closed("N2", 9, now)],       # зона → майнить
+        [_closed("O1", 20, now), _closed("O2", 21, now)],     # старые, processed
+    ]
+    client = _PagedClient(pages)
+    marked = _patch_backfill_db(monkeypatch, processed={"O1", "O2"})
+
+    async def fake_mine(cl, ticket, staff, **kw):
+        return 2
+
+    monkeypatch.setattr("bot.agent.dialogue_mining.mine_ticket_pairs", fake_mine)
+    stats = await scheduler_module.run_dialogue_backfill(_client=client, _now=now)
+    assert marked == ["N1", "N2"]
+    assert stats["new_pairs"] == 4
+    assert client.calls == [1, 2, 3]              # дошёл до обработанной зоны и встал
+
+
+async def test_backfill_stops_on_all_known_page(monkeypatch):
+    now = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+    pages = [
+        [_closed("O1", 20, now), _closed("O2", 30, now)],     # всё processed
+        [_closed("O3", 40, now)],
+    ]
+    client = _PagedClient(pages)
+    _patch_backfill_db(monkeypatch, processed={"O1", "O2", "O3"})
+
+    async def fake_mine(cl, ticket, staff, **kw):
+        raise AssertionError("не должен майнить")
+
+    monkeypatch.setattr("bot.agent.dialogue_mining.mine_ticket_pairs", fake_mine)
+    stats = await scheduler_module.run_dialogue_backfill(_client=client, _now=now)
+    assert client.calls == [1]                    # история обработана → стоп сразу
+    assert stats["new_pairs"] == 0
+
+
+async def test_backfill_respects_max_pages(monkeypatch):
+    now = datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc)
+    pages = [[_closed(f"F{i}", 1, now)] for i in range(10)]   # всё свежее, стопа нет
+    client = _PagedClient(pages)
+    _patch_backfill_db(monkeypatch, processed=set())
+
+    async def fake_mine(cl, ticket, staff, **kw):
+        return 1
+
+    monkeypatch.setattr("bot.agent.dialogue_mining.mine_ticket_pairs", fake_mine)
+    await scheduler_module.run_dialogue_backfill(_client=client, _now=now, max_pages=2)
+    assert client.calls == [1, 2]

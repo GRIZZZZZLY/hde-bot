@@ -153,6 +153,7 @@ from .dialogue_store import (
     count_pairs_by_quality,
     dialogue_pair_hashes,
     list_fewshot_candidates,
+    list_operator_answers_with_urls,
     list_pairs_for_gating,
     list_pending_embeddings,
     list_processed_ticket_ids,

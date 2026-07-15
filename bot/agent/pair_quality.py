@@ -52,19 +52,33 @@ async def judge_pair_quality(pair: dict, *, _call_fn=None) -> tuple[str, str] | 
 
 async def gate_pending_pairs(
     limit: int = 50, *, _judge_fn=None, _list_fn=None, _set_fn=None,
+    _sleep_fn=None, pause_s: float = 6.0, retry_pause_s: float = 30.0,
 ) -> dict:
-    """Батч-фильтр: размечает до limit непроверенных пар. Не падает на сбоях."""
+    """Батч-фильтр: размечает до limit непроверенных пар. Не падает на сбоях.
+
+    Пейсинг под Groq free-tier (TPM 12k, ~1k токенов/вызов): pause_s между
+    парами; None-вердикт (rate-limit/мусорный JSON) → retry_pause_s и один
+    повтор, только потом skipped."""
     if _judge_fn is None:
         _judge_fn = judge_pair_quality
     if _list_fn is None:
         from ..db import list_pairs_for_gating as _list_fn
     if _set_fn is None:
         from ..db import set_pair_quality as _set_fn
+    if _sleep_fn is None:
+        import asyncio
+        _sleep_fn = asyncio.sleep
     from ..config import config
 
     stats = {"gated": 0, "accepted": 0, "rejected": 0, "outdated": 0, "skipped": 0}
-    for pair in await _list_fn(limit, own_operator_id=str(config.hde_owner_id)):
+    pairs = await _list_fn(limit, own_operator_id=str(config.hde_owner_id))
+    for i, pair in enumerate(pairs):
+        if i and pause_s:
+            await _sleep_fn(pause_s)
         verdict = await _judge_fn(pair)
+        if verdict is None:
+            await _sleep_fn(retry_pause_s)
+            verdict = await _judge_fn(pair)
         if verdict is None:
             stats["skipped"] += 1
             continue

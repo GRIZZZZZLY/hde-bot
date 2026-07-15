@@ -48,6 +48,7 @@ async def test_gate_pending_pairs_batch_counts_and_isolation():
 
     stats = await gate_pending_pairs(
         _judge_fn=fake_judge, _list_fn=fake_list, _set_fn=fake_set,
+        pause_s=0.0, retry_pause_s=0.0,
     )
     assert stats == {"gated": 2, "accepted": 1, "rejected": 1, "outdated": 0, "skipped": 1}
     assert (3, "auto_accepted") not in updates       # skipped не записан
@@ -81,4 +82,63 @@ async def test_nightly_job_gates_after_mining(monkeypatch):
     fake_now = _dt.datetime(2026, 7, 11, 1, 0, 0)
     monkeypatch.setattr(scheduler_module, "_now_msk", lambda: fake_now)
     await scheduler_module._maybe_backfill_dialogue_pairs(bot=None)
-    assert gate_called["limit"] == 50                 # гейт вызван после майнинга
+    assert gate_called["limit"] == 300                # гейт вызван после майнинга
+
+
+async def test_gate_retries_once_after_none():
+    """None-вердикт (rate-limit) → пауза и один повтор, не сразу skipped."""
+    from bot.agent.pair_quality import gate_pending_pairs
+
+    calls = {"n": 0}
+
+    async def judge(pair):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None                      # первый заход — рейт-лимит
+        return "auto_accepted", "ok"
+
+    async def list_fn(limit, own_operator_id):
+        return [{"pair_id": 1}]
+
+    saved = []
+
+    async def set_fn(pid, status, reason):
+        saved.append((pid, status))
+
+    sleeps = []
+
+    async def sleep_fn(s):
+        sleeps.append(s)
+
+    stats = await gate_pending_pairs(
+        limit=10, _judge_fn=judge, _list_fn=list_fn, _set_fn=set_fn,
+        _sleep_fn=sleep_fn, pause_s=0.0, retry_pause_s=30.0,
+    )
+    assert stats["gated"] == 1 and stats["skipped"] == 0
+    assert saved == [(1, "auto_accepted")]
+    assert 30.0 in sleeps                    # пауза перед ретраем была
+
+
+async def test_gate_paces_between_pairs():
+    from bot.agent.pair_quality import gate_pending_pairs
+
+    async def judge(pair):
+        return "rejected", "мусор"
+
+    async def list_fn(limit, own_operator_id):
+        return [{"pair_id": i} for i in (1, 2, 3)]
+
+    async def set_fn(pid, status, reason):
+        pass
+
+    sleeps = []
+
+    async def sleep_fn(s):
+        sleeps.append(s)
+
+    stats = await gate_pending_pairs(
+        limit=10, _judge_fn=judge, _list_fn=list_fn, _set_fn=set_fn,
+        _sleep_fn=sleep_fn, pause_s=6.0, retry_pause_s=30.0,
+    )
+    assert stats["gated"] == 3
+    assert sleeps.count(6.0) == 2            # паузы между парами, не после последней
