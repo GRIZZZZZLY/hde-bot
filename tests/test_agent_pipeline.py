@@ -113,7 +113,10 @@ async def test_pre_policy_escalates_before_retrieval():
     assert client == "" and "Эскалация" in memo
 
 
-async def test_partially_supported_also_falls_back_with_conf_30():
+async def test_partially_supported_keeps_draft_with_memo_warning():
+    """partially_supported — драфт живёт с пометкой в памятке, не заменяется на ASK."""
+    recorded = {}
+
     async def draft(ctx, title, **k):
         return {"action": "ANSWER", "suit": "s", "client": "полувыдумка",
                 "memo": "m", "confidence": 85, "confidence_reason": ""}
@@ -123,6 +126,7 @@ async def test_partially_supported_also_falls_back_with_conf_30():
                 "fallback_client_text": "уточните модель"}
 
     async def rec(**kw):
+        recorded.update(kw)
         return 1
 
     _, client, memo, conf = await run_agent(
@@ -131,8 +135,38 @@ async def test_partially_supported_also_falls_back_with_conf_30():
         _safety_pre=_PROCEED, _safety_post=_PROCEED,
         _record_fn=rec, _posts_fn=_fresh_posts_same,
     )
+    assert client == "полувыдумка"                     # драфт сохранён
+    assert conf == 50                                  # cap, не 85 и не 30
+    assert "проверь факты" in memo                     # пометка оператору
+    assert recorded["action_type"] == "ANSWER"
+
+
+async def test_unsupported_fallback_records_original_draft():
+    """unsupported — fallback как раньше, но исходный драфт уходит в трассу."""
+    recorded = {}
+
+    async def draft(ctx, title, **k):
+        return {"action": "ANSWER", "suit": "s", "client": "полувыдумка",
+                "memo": "m", "confidence": 85, "confidence_reason": ""}
+
+    async def sc(ct, gen, evidence, hist, **k):
+        return {"status": "unsupported", "fallback_action": "ASK",
+                "fallback_client_text": "уточните модель"}
+
+    async def rec(**kw):
+        recorded.update(kw)
+        return 1
+
+    _, client, memo, conf = await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T3b",
+        _context_fn=_ctx, _draft_fn=draft, _selfcheck_fn=sc,
+        _safety_pre=_PROCEED, _safety_post=_PROCEED,
+        _record_fn=rec, _posts_fn=_fresh_posts_same,
+    )
     assert client == "уточните модель"
-    assert conf == 30                                  # не 85 после fallback
+    assert conf == 30
+    assert recorded["ai_answer"] == "уточните модель"
+    assert recorded["draft_answer"] == "полувыдумка"   # оригинал не потерян
 
 
 async def test_superseded_triggers_one_regeneration():

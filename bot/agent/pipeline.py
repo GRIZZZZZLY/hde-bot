@@ -87,6 +87,7 @@ async def run_agent(
     stale_warning = False
     context = draft = None
     action = suit = client = base_memo = ""
+    draft_client = ""
     confidence = 0
     confidence_reason = ""
     self_status = "n/a"
@@ -97,6 +98,7 @@ async def run_agent(
             return None  # драфт не удался → откат на legacy
         action = draft["action"]
         suit, client, base_memo = draft["suit"], draft["client"], draft["memo"]
+        draft_client = client
         confidence, confidence_reason = draft["confidence"], draft["confidence_reason"]
         self_status = "n/a"
 
@@ -110,7 +112,13 @@ async def run_agent(
                 context["client_text"], client, context["evidence"], context["history"]
             )
             self_status = check["status"]
-            if self_status != "supported":
+            if self_status == "partially_supported":
+                # драфт живёт: пометка оператору вместо замены на шаблонный вопрос
+                base_memo = ("⚠️ Часть ответа без опоры на источники — проверь факты. "
+                             + base_memo)
+                confidence = min(confidence, 50)
+                confidence_reason = "self-check: partially_supported, драфт сохранён"
+            elif self_status != "supported":
                 action = check["fallback_action"]
                 client = check["fallback_client_text"]
                 confidence = 30
@@ -137,6 +145,7 @@ async def run_agent(
         trigger_source=trigger_source,
         ticket_title=ticket_title, history=context["history"],
         client_text=context["client_text"], client=client, suit=suit, memo=memo,
+        draft_client=draft_client,
         action=action, self_status=self_status, evidence=trace_refs,
         retrieval_query=context["retrieval_query"], confidence=confidence,
         confidence_reason=confidence_reason, started=started,
@@ -147,7 +156,7 @@ async def run_agent(
 async def _record_nonfatal(
     record_fn, *, anchor, info, ticket_id, topic_id, trigger_source, ticket_title,
     history, client_text, client, suit, memo, action, self_status, evidence,
-    retrieval_query, confidence, confidence_reason, started,
+    retrieval_query, confidence, confidence_reason, started, draft_client="",
 ) -> None:
     try:
         from ..ai_summary import prompt_version_tag
@@ -165,6 +174,7 @@ async def _record_nonfatal(
             client_text=client_text,
             ai_answer=client,
             ai_full_text=f"{suit}\n{client}\n{memo}",
+            draft_answer=draft_client,
             model=config.agent_draft_model,
             action_type=action,
             self_check=json.dumps({"status": self_status}, ensure_ascii=False),

@@ -28,6 +28,9 @@ def _build_selfcheck_prompt(client_text, generated_client, evidence, history):
         "часть без опоры; unsupported — ключевые утверждения не подтверждены.\n"
         "Если status != supported, предложи безопасный fallback: ASK (уточнить у "
         "клиента) или ESCALATE (передать оператору) и текст fallback_client_text.\n"
+        "fallback_client_text НЕ должен спрашивать то, что клиент уже сообщил в "
+        "вопросе или истории (перечитай их перед формулировкой). Если нужные факты "
+        "уже даны — предложи следующий диагностический шаг или выбери ESCALATE.\n"
         'Верни СТРОГО JSON: {"status":"...","fallback_action":"ASK|ESCALATE",'
         '"fallback_client_text":"..."}'
     )

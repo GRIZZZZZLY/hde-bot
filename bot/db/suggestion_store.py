@@ -60,6 +60,7 @@ async def record_suggestion(
     client_text: str = "",
     ai_answer: str = "",
     ai_full_text: str = "",
+    draft_answer: str = "",
     client_id: str | None = None,
     model: str | None = None,
     action_type: str | None = None,
@@ -81,15 +82,15 @@ async def record_suggestion(
             "INSERT OR IGNORE INTO ai_suggestions "
             "(ticket_id, topic_id, trigger_source, context_until_post_id, client_id, "
             " idempotency_key, title, history, client_text, ai_answer, ai_full_text, "
-            " pipeline_version, prompt_version, model, action_type, self_check, "
-            " retrieved_refs, confidence, confidence_reason, retrieval_query, "
+            " draft_answer, pipeline_version, prompt_version, model, action_type, "
+            " self_check, retrieved_refs, confidence, confidence_reason, retrieval_query, "
             " retrieval_config_version, embedding_model, generation_ms) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 ticket_id, topic_id, trigger_source, context_until_post_id, client_id,
                 key, title, history, client_text, ai_answer, ai_full_text,
-                pipeline_version, prompt_version, model, action_type, self_check,
-                retrieved_refs, confidence, confidence_reason, retrieval_query,
+                draft_answer, pipeline_version, prompt_version, model, action_type,
+                self_check, retrieved_refs, confidence, confidence_reason, retrieval_query,
                 retrieval_config_version, embedding_model, generation_ms,
             ),
         )

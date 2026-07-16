@@ -35,6 +35,19 @@ async def test_self_check_unsupported_fallback():
     assert r["fallback_action"] == "ESCALATE"
 
 
+async def test_self_check_prompt_forbids_reasking_known_facts():
+    """Fallback-вопрос не должен переспрашивать то, что клиент уже сообщил."""
+    seen = {}
+
+    async def fake_call(system, user, *, model=None, temperature=0.0, max_tokens=600):
+        seen["system"] = system
+        return json.dumps({"status": "supported", "fallback_action": "ASK",
+                           "fallback_client_text": ""})
+
+    await self_check("вопрос", "ответ", _EVIDENCE, "история", _call_fn=fake_call)
+    assert "уже сообщил" in seen["system"]
+
+
 async def test_self_check_conservative_default():
     async def bad_call(system, user, *, model=None, temperature=0.0, max_tokens=600):
         return "не json"

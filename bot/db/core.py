@@ -540,6 +540,7 @@ async def init_db() -> None:
                 action_type              TEXT,
                 ai_answer                TEXT DEFAULT '',
                 ai_full_text             TEXT DEFAULT '',
+                draft_answer             TEXT DEFAULT '',
                 confidence               INTEGER,
                 confidence_reason        TEXT,
                 self_check               TEXT,
@@ -566,6 +567,13 @@ async def init_db() -> None:
             )
             """
         )
+        # Migration: original draft answer before self-check fallback/downgrade
+        try:
+            await db.execute(
+                "ALTER TABLE ai_suggestions ADD COLUMN draft_answer TEXT DEFAULT ''"
+            )
+        except Exception:
+            pass  # column already exists
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_ai_suggestions_topic ON ai_suggestions(topic_id)"
         )

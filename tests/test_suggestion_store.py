@@ -30,9 +30,21 @@ async def test_ai_suggestions_table_created():
         "final_sent_text", "final_sent_post_id", "reviewed_at", "sent_at",
         "human_label", "judge_label", "judge_detail", "judge_reference_answer",
         "judged_at", "effective_label", "generation_ms", "tokens_in",
-        "tokens_out", "error", "created_at",
+        "tokens_out", "error", "created_at", "draft_answer",
     }
     assert expected <= cols
+
+
+async def test_record_suggestion_stores_draft_answer():
+    await db_module.init_db()
+    sid = await record_suggestion(
+        ticket_id="TDA1", topic_id=901, trigger_source="button",
+        context_until_post_id="1", pipeline_version="v1", prompt_version="p1",
+        ai_answer="fallback-вопрос", draft_answer="исходный драфт",
+    )
+    row = await get_suggestion(sid)
+    assert row["ai_answer"] == "fallback-вопрос"
+    assert row["draft_answer"] == "исходный драфт"
 
 
 async def test_ai_suggestion_events_table_created():
