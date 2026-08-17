@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import zoneinfo
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,11 @@ _vacation_until: datetime | None = None  # timezone-aware UTC
 
 
 # ── public API ────────────────────────────────────────────────────────────────
+
+def _today_msk():
+    """Today's date in Moscow time."""
+    return datetime.now(_UTC).astimezone(_MSK).date()
+
 
 def is_work_day() -> bool:
     """Return True if today is a scheduled work day (ignores the hour)."""
@@ -92,6 +97,71 @@ def is_on_vacation() -> bool:
 def vacation_until() -> datetime | None:
     """Return the UTC datetime until which vacation is active, or None."""
     return _vacation_until
+
+
+# ── persisted vacation window ────────────────────────────────────────────────
+#
+# set_vacation() only guards *today* — it says nothing about which past dates
+# were days off. The daily report needs that: HDE omits an operator with zero
+# closed tickets from the staff report entirely, so asking for a vacation day
+# fails with "Operator ... not found in staff report". The window also survives
+# a restart, which the in-process flag does not.
+
+_KEY_UNTIL = "vacation_until_utc"
+_KEY_START = "vacation_start_day"
+_KEY_END = "vacation_end_day"
+
+
+async def enable_vacation(until: datetime) -> None:
+    """Turn on vacation mode and persist it: resume time + the days off."""
+    from .db import set_setting
+
+    set_vacation(until)
+    start = _today_msk()
+    end = until.astimezone(_MSK).date() - timedelta(days=1)
+    await set_setting(_KEY_UNTIL, until.isoformat())
+    await set_setting(_KEY_START, start.isoformat())
+    await set_setting(_KEY_END, end.isoformat() if end >= start else "")
+
+
+async def disable_vacation() -> None:
+    """Turn off vacation mode early, keeping the days already taken off."""
+    from .db import set_setting
+
+    set_vacation(None)
+    await set_setting(_KEY_UNTIL, "")
+    start_raw = await _get(_KEY_START)
+    end = _today_msk() - timedelta(days=1)
+    if start_raw and date.fromisoformat(start_raw) <= end:
+        await set_setting(_KEY_END, end.isoformat())
+    else:
+        await set_setting(_KEY_START, "")
+        await set_setting(_KEY_END, "")
+
+
+async def is_vacation_day(day) -> bool:
+    """Return True if *day* falls inside the recorded vacation window."""
+    start_raw = await _get(_KEY_START)
+    end_raw = await _get(_KEY_END)
+    if not start_raw or not end_raw:
+        return False
+    return date.fromisoformat(start_raw) <= day <= date.fromisoformat(end_raw)
+
+
+async def restore_vacation() -> None:
+    """Re-arm in-memory vacation state from the DB (call on startup)."""
+    raw = await _get(_KEY_UNTIL)
+    if not raw:
+        return
+    until = datetime.fromisoformat(raw)
+    if until > datetime.now(_UTC):
+        set_vacation(until)
+
+
+async def _get(key: str) -> str:
+    from .db import get_setting
+
+    return await get_setting(key, "")
 
 
 def next_work_start() -> datetime:

@@ -161,6 +161,11 @@ async def _maybe_send_report_button(bot: Bot) -> None:
         logger.info("Report for %s already sent, skipping button", last_wd)
         _report_button_sent = today
         return
+    from .work_schedule import is_vacation_day
+    if await is_vacation_day(last_wd):
+        logger.info("%s was a vacation day, skipping report button", last_wd)
+        _report_button_sent = today
+        return
     _report_button_sent = today
     last_wd_str = last_wd.strftime("%d.%m.%Y")
     kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -196,6 +201,19 @@ async def _maybe_auto_run_report(bot: Bot) -> None:
     if _last_report_date == today:
         return
     last_wd = last_work_day()
+    # A vacation day has no closed tickets, and HDE omits zero-activity
+    # operators from the staff report — scraping it fails instead of returning 0.
+    from .work_schedule import is_vacation_day
+    if await is_vacation_day(last_wd):
+        logger.info("%s was a vacation day, skipping the report", last_wd)
+        await db.mark_report_sent(last_wd)  # nothing to fill — stop nagging
+        _last_report_date = today
+        await bot.send_message(
+            config.personal_chat_id,
+            f"🏖 <b>{last_wd.strftime('%d.%m.%Y')} — отпуск</b>, отчёт пропущен.",
+            parse_mode="HTML",
+        )
+        return
     # Claim the date BEFORE running: the slow scrape+append happens inside
     # run_report, so marking after it leaves a window where a second trigger
     # (another instance / restart) also sees "not sent" and writes a duplicate.

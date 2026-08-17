@@ -161,6 +161,9 @@ async def _main_async() -> None:
     if migrated:
         logger.info("Migration: backfilled %d past 👍 records into optimization_samples", migrated)
 
+    from .work_schedule import restore_vacation
+    await restore_vacation()
+
     bot = Bot(token=config.bot_token, session=RetrySession())
     dp = _build_dispatcher(bot)
 

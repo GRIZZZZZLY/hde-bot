@@ -320,11 +320,11 @@ async def cb_menu(callback: CallbackQuery) -> None:
             await callback.message.answer(f"⚠️ <b>Ошибка:</b> {exc}", parse_mode="HTML")
         return
     if action == "vacation":
-        from ..work_schedule import next_work_start, set_vacation
+        from ..work_schedule import enable_vacation, next_work_start
         import zoneinfo
         _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
         until = next_work_start()
-        set_vacation(until)
+        await enable_vacation(until)
         until_msk = until.astimezone(_MSK)
         await callback.message.answer(
             f"🏖 <b>Режим отпуска включён</b>\n"
@@ -333,11 +333,11 @@ async def cb_menu(callback: CallbackQuery) -> None:
         )
         return
     if action == "workon":
-        from ..work_schedule import is_on_vacation, set_vacation
+        from ..work_schedule import disable_vacation, is_on_vacation
         if not is_on_vacation():
             await callback.message.answer("ℹ️ Режим отпуска не активен.")
             return
-        set_vacation(None)
+        await disable_vacation()
         await callback.message.answer(
             "✅ <b>Режим отпуска отключён.</b> Уведомления возобновлены.", parse_mode="HTML"
         )
@@ -366,7 +366,7 @@ async def cmd_vacation(message: Message, command: CommandObject) -> None:
     /vacation 3d     — на N дней
     /vacation 2026-04-15  — до конкретной даты (МСК полночь)
     """
-    from ..work_schedule import next_work_start, set_vacation, vacation_until
+    from ..work_schedule import enable_vacation, next_work_start
     import zoneinfo
 
     args = (command.args or "").strip()
@@ -394,7 +394,7 @@ async def cmd_vacation(message: Message, command: CommandObject) -> None:
             )
             return
 
-    set_vacation(until)
+    await enable_vacation(until)
     until_msk = until.astimezone(_MSK)
     await message.answer(
         f"🏖 <b>Режим отпуска включён</b>\n"
@@ -406,13 +406,13 @@ async def cmd_vacation(message: Message, command: CommandObject) -> None:
 @router.message(Command("workon"))
 async def cmd_workon(message: Message) -> None:
     """Снять режим отпуска досрочно."""
-    from ..work_schedule import is_on_vacation, set_vacation
+    from ..work_schedule import disable_vacation, is_on_vacation
 
     if not is_on_vacation():
         await message.answer("ℹ️ Режим отпуска не активен.")
         return
 
-    set_vacation(None)
+    await disable_vacation()
     await message.answer("✅ <b>Режим отпуска отключён.</b> Уведомления возобновлены.", parse_mode="HTML")
 
 
