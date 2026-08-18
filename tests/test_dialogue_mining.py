@@ -98,17 +98,17 @@ def test_split_skips_comments_and_leading_staff():
         _post(1, "op", "внутренняя заметка", is_comment=True),
         _post(2, "op", "ответ без клиента"),
         _post(3, "client", "вопрос"),
-        _post(4, "op", "ответ"),
+        _post(4, "op", "перезагрузите кассу"),
     ]
     pairs = split_ticket_into_pairs("T1", posts, staff)
     assert len(pairs) == 1
-    assert pairs[0]["operator_answer"] == "ответ"
+    assert pairs[0]["operator_answer"] == "перезагрузите кассу"
 
 
 def test_content_hash_changes_with_edited_answer():
     staff = {"op"}
-    base = [_post(1, "client", "вопрос"), _post(2, "op", "ответ")]
-    edited = [_post(1, "client", "вопрос"), _post(2, "op", "ответ исправлен")]
+    base = [_post(1, "client", "вопрос"), _post(2, "op", "перезагрузите кассу")]
+    edited = [_post(1, "client", "вопрос"), _post(2, "op", "перезагрузите роутер")]
     h1 = split_ticket_into_pairs("T1", base, staff)[0]["content_hash"]
     h2 = split_ticket_into_pairs("T1", edited, staff)[0]["content_hash"]
     assert h1 != h2                                     # правка ответа → новый хэш
@@ -140,7 +140,7 @@ def test_build_embedding_text_is_problem_side():
 
 
 async def test_mine_ticket_pairs_embeds_problem_side_and_counts_created():
-    posts = [_post(1, "client", "вопрос один"), _post(2, "op", "ответ один")]
+    posts = [_post(1, "client", "вопрос один"), _post(2, "op", "перезагрузите кассу")]
     saved = {}
     embedded_texts = []
 
@@ -163,11 +163,11 @@ async def test_mine_ticket_pairs_embeds_problem_side_and_counts_created():
     assert pair["embedding_status"] == "ready"
     assert pair["embedding_model"] == "intfloat/multilingual-e5-large"
     assert "вопрос один" in embedded_texts[0]          # problem-side embedded
-    assert "ответ один" not in embedded_texts[0]
+    assert "перезагрузите кассу" not in embedded_texts[0]
 
 
 async def test_mine_saves_pending_when_embed_fails():
-    posts = [_post(1, "client", "вопрос"), _post(2, "op", "ответ")]
+    posts = [_post(1, "client", "вопрос"), _post(2, "op", "перезагрузите кассу")]
     saved = {}
 
     async def fail_embed(text, task_type="passage"):
@@ -266,7 +266,7 @@ async def test_resolve_staff_ids_uses_api_and_cache():
 
 def test_split_records_operator_user_id():
     staff = {"op"}
-    posts = [_post(1, "client", "вопрос"), _post(2, "op", "ответ")]
+    posts = [_post(1, "client", "вопрос"), _post(2, "op", "перезагрузите кассу")]
     pair = split_ticket_into_pairs("T1", posts, staff)[0]
     assert pair["operator_user_id"] == "op"
 
@@ -274,7 +274,7 @@ def test_split_records_operator_user_id():
 async def test_mine_passes_operator_user_id_and_resolves_staff():
     posts = [
         _post(1, "client", "вопрос"),
-        _post(2, "48268", "ответ Дины"),          # staff по API, не в base
+        _post(2, "48268", "ответ Дины про кассу"),          # staff по API, не в base
     ]
     saved = {}
 
@@ -393,3 +393,57 @@ async def test_backfill_respects_max_pages(monkeypatch):
     monkeypatch.setattr("bot.agent.dialogue_mining.mine_ticket_pairs", fake_mine)
     await scheduler_module.run_dialogue_backfill(_client=client, _now=now, max_pages=2)
     assert client.calls == [1, 2]
+
+
+# --- Служебные реплики оператора не становятся парами (п.5) -------------------
+# Строки взяты из прод-корпуса dialogue_pairs (самые частые ответы «оператора»).
+
+
+def test_no_pair_when_operator_turn_is_only_a_closer():
+    posts = [
+        _post(1, "client", "спасибо, всё работает"),
+        _post(2, "op", "Всегда рад помочь! Будут ещё вопросы — обращайтесь."),
+    ]
+    assert split_ticket_into_pairs("T1", posts, {"op"}) == []
+
+
+def test_no_pair_when_operator_turn_is_only_a_session_macro():
+    posts = [
+        _post(1, "client", "касса не печатает"),
+        _post(2, "op", "Примите запрос на компьютере"),
+    ]
+    assert split_ticket_into_pairs("T1", posts, {"op"}) == []
+
+
+def test_no_pair_when_operator_turn_is_only_a_broadcast():
+    posts = [
+        _post(1, "client", "чек не печатается"),
+        _post(2, "op", "Витрина стала современнее: новый заказ на одной странице, "
+                       "четкий логотип, баннер для акций. Хороших продаж!"),
+    ]
+    assert split_ticket_into_pairs("T1", posts, {"op"}) == []
+
+
+def test_no_pair_when_operator_turn_is_only_the_bot_keepalive():
+    posts = [
+        _post(1, "client", "ждём инженера"),
+        _post(2, "op", "Это автоматическое уведомление, чтобы чат оставался "
+                       "активным. Отвечать необязательно — мы на связи!"),
+    ]
+    assert split_ticket_into_pairs("T1", posts, {"op"}) == []
+
+
+def test_pair_kept_when_macro_is_glued_to_content_and_answer_stays_raw():
+    posts = [
+        _post(1, "client", "чек не печатается"),
+        _post(2, "op", "Примите запрос на компьютере"),
+        _post(3, "op", "Обновил вам драйвер. Попробуйте сейчас напечатать чек"),
+    ]
+    pairs = split_ticket_into_pairs("T1", posts, {"op"})
+    assert len(pairs) == 1
+    # Ответ хранится как есть: content_hash уже посчитан для 27k существующих
+    # пар, чистка текста пересоздала бы их как новые и заново прогнала бы гейт.
+    assert pairs[0]["operator_answer"] == (
+        "Примите запрос на компьютере\nОбновил вам драйвер. "
+        "Попробуйте сейчас напечатать чек"
+    )

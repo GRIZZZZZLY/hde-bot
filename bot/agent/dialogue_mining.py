@@ -9,6 +9,8 @@ import hashlib
 import html as _html
 import re as _re
 
+from .operator_text import clean_operator_text
+
 _EMBED_MODEL = "intfloat/multilingual-e5-large"
 
 
@@ -79,6 +81,12 @@ def split_ticket_into_pairs(ticket_id: str, posts: list, staff: set[str]) -> lis
             t for t in (_strip_html(p.text) for p in turn_posts) if t
         )
         if not operator_answer:
+            continue
+        # Обслуживание сеанса (макросы, закрывашки, подтверждения, рассылки) —
+        # не ответ клиенту и не пример для few-shot. Сам текст храним КАК ЕСТЬ:
+        # content_hash уже посчитан для существующих пар, и чистка пересоздала
+        # бы их как новые, заново прогнав через LLM-гейт.
+        if not clean_operator_text(operator_answer):
             continue
         context_lines = []
         for p in prior:

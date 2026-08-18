@@ -102,12 +102,27 @@ def test_remote_session_macro_stripped_but_content_kept():
     )
 
 
-def test_remote_access_instruction_macro_is_not_an_answer():
-    assert _ref(
+def test_remote_access_instruction_is_a_real_answer():
+    """Просьба поставить AnyDesk — ответ клиенту, а не обслуживание сеанса.
+
+    Если бот вместо этого отправил ждать специалиста, это осмысленное
+    расхождение (bot_escalated), и судья должен его увидеть. LLM-гейт пар
+    независимо согласен: 22 таких ответа в прод-выборке помечены auto_accepted.
+    """
+    text = (
         "Необходимо удаленно подключиться к вашему компьютеру. Скачайте программу "
         "для удаленного доступа AnyDesk на ваш компьютер по ссылке: "
         "https://anydesk.com/ru Запустите ее и пришлите номер рабочего места."
-    ) is None
+    )
+    assert _ref(text) == text
+
+
+def test_promise_stripped_but_remote_access_instruction_kept():
+    assert _ref("Через 15-20 минут, свяжусь с вами Скачайте программу для "
+                "удаленного доступа AnyDesk и пришлите номер рабочего места.") == (
+        "Скачайте программу для удаленного доступа AnyDesk и пришлите "
+        "номер рабочего места."
+    )
 
 
 def test_connection_failure_macro_is_not_an_answer():
