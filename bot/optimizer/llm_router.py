@@ -86,23 +86,35 @@ class OpenRouterClient:
 class LLMRouter:
     """Routes mutation requests to all available LLM clients in parallel."""
 
+    # Ключ OpenRouter-клиента в self.clients; пусто → фолбэка нет.
+    fallback_name: str = ""
+
     def __init__(
         self,
         groq_api_key: str,
         openrouter_api_key: str = "",
+        *,
+        models: tuple[str, ...] | None = None,
+        openrouter_model: str = "",
     ) -> None:
-        # Разные семейства моделей на отдельных Groq-квотах — разнообразие
-        # мутаций без межпровайдерной маршрутизации.
+        # Модели — из env (OPTIMIZER_MUTATION_MODELS / OPENROUTER_MODEL): зашитый
+        # в модуль id роняет весь прогон, когда провайдер снимает модель, и
+        # правится только релизом. Разные семейства держим специально —
+        # разнообразие мутаций плюс раздельные per-model квоты Groq.
+        from ..config import config  # noqa: PLC0415 — избегаем цикла импорта
+
+        if models is None:
+            models = config.optimizer_mutation_models
+        openrouter_model = openrouter_model or config.openrouter_model
         self.clients: dict[str, LLMClient] = {
-            "gptoss120": GroqClient(model="openai/gpt-oss-120b", api_key=groq_api_key),
-            "gptoss20": GroqClient(model="openai/gpt-oss-20b", api_key=groq_api_key),
-            "llama": GroqClient(model="llama-3.1-8b-instant", api_key=groq_api_key),
+            model: GroqClient(model=model, api_key=groq_api_key) for model in models
         }
         if openrouter_api_key:
-            self.clients["gemma4"] = OpenRouterClient(
-                model="google/gemma-4-31b-it:free",
+            self.clients[openrouter_model] = OpenRouterClient(
+                model=openrouter_model,
                 api_key=openrouter_api_key,
             )
+            self.fallback_name = openrouter_model
 
     async def complete_all(
         self, system: str, user: str
@@ -124,8 +136,12 @@ class LLMRouter:
                 logger.warning("LLM client %s failed: %s", name, exc)
                 return name, None, str(exc)
 
-        groq_clients = {k: v for k, v in self.clients.items() if k != "gemma4"}
-        openrouter_client = self.clients.get("gemma4")
+        groq_clients = {
+            k: v for k, v in self.clients.items() if k != self.fallback_name
+        }
+        openrouter_client = (
+            self.clients.get(self.fallback_name) if self.fallback_name else None
+        )
 
         results: dict[str, str] = {}
         errors: dict[str, str] = {}
@@ -139,7 +155,7 @@ class LLMRouter:
 
         # OpenRouter — последний резерв, когда весь Groq недоступен
         if not results and openrouter_client is not None:
-            name, text, err = await _safe_complete("gemma4", openrouter_client)
+            name, text, err = await _safe_complete(self.fallback_name, openrouter_client)
             if text is not None:
                 results[name] = text
             elif err is not None:

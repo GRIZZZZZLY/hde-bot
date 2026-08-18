@@ -45,9 +45,6 @@ _FEW_SHOT_EXAMPLES: list[dict] = _load_few_shot_examples()
 _VOICE_EXAMPLES: list[str] = load_voice_examples()
 
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-# Multimodal: qwen3.6 принимает image_url в content. Прежний llama-4-scout
-# Groq вывел из обслуживания (404 model_not_found), как и llama-3.3-70b.
-_GROQ_VISION_MODEL = "qwen/qwen3.6-27b"
 
 _AUDIO_TYPES = {"mp3", "ogg", "wav", "m4a", "opus", "aac", "flac", "oga"}
 _DEEPGRAM_URL = "https://api.deepgram.com/v1/listen"
@@ -233,7 +230,7 @@ async def _call_groq_vision_for_summary(
         return None
     content: list[dict] = [{"type": "text", "text": f"Переписка:\n{history}"}] + image_parts
     payload = {
-        "model": _GROQ_VISION_MODEL,
+        "model": config.groq_vision_model,
         "messages": [
             {"role": "system", "content": system_text},
             {"role": "user", "content": content},

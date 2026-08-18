@@ -131,7 +131,8 @@ async def test_classify_uses_configured_model_and_reasoning_effort():
 @pytest.mark.asyncio
 async def test_classify_fallback_model_is_alive_and_without_reasoning_effort():
     """Фолбэк — не выключенная llama; reasoning_effort ей не передаём."""
-    from bot.ticket_fields import _GROQ_FALLBACK_MODEL
+    from bot.config import config as _cfg
+    _GROQ_FALLBACK_MODEL = _cfg.groq_classify_fallback_model
 
     assert "llama" not in _GROQ_FALLBACK_MODEL
 
@@ -169,7 +170,8 @@ async def test_classify_strips_think_block():
 @pytest.mark.asyncio
 async def test_classify_environment_groq_500_falls_back_to_scout():
     """Первичная модель отдала HTTP 500 → фолбэк (отдельная квота) использован."""
-    from bot.ticket_fields import _GROQ_FALLBACK_MODEL
+    from bot.config import config as _cfg
+    _GROQ_FALLBACK_MODEL = _cfg.groq_classify_fallback_model
 
     calls = {"n": 0, "models": []}
 

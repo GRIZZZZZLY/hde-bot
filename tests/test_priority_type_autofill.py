@@ -92,7 +92,7 @@ async def test_classify_pt_falls_back_to_scout(monkeypatch):
     result = await tf.classify_priority_type("Клиент: настройте принтер")
     assert result == ("10", "2")
     assert groq.await_count == 2
-    assert groq.await_args_list[1].kwargs["model"] == tf._GROQ_FALLBACK_MODEL
+    assert groq.await_args_list[1].kwargs["model"] == __import__('bot.config', fromlist=['config']).config.groq_classify_fallback_model
 
 
 @pytest.mark.asyncio

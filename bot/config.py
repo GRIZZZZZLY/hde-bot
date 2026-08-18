@@ -72,9 +72,22 @@ class Config:
     agent_dialogue_mining_enabled: bool
     groq_summary_model: str
     groq_reasoning_effort: str
+    groq_vision_model: str
+    groq_classify_fallback_model: str
+    openrouter_model: str
+    optimizer_judge_model: str
+    optimizer_mutation_models: tuple[str, ...]
+    llm_canary_enabled: bool
 
     @classmethod
     def from_env(cls) -> "Config":
+        # Все id моделей — из env, ни одного литерала в модулях: провайдер снимает
+        # модели без предупреждения (2026-08-18: llama-3.3-70b и llama-4-scout →
+        # 404 на каждом вызове), и тогда правится конфиг, а не код.
+        summary_model = (
+            os.getenv("GROQ_SUMMARY_MODEL", "qwen/qwen3.6-27b").strip()
+            or "qwen/qwen3.6-27b"
+        )
         personal_chat_id = int(os.environ["PERSONAL_CHAT_ID"])
         operator_ids = tuple(
             int(value) for value in _parse_csv(os.getenv("OPERATOR_TELEGRAM_USER_IDS"))
@@ -141,10 +154,30 @@ class Config:
             agent_dialogue_mining_enabled=_parse_bool(
                 os.getenv("AGENT_DIALOGUE_MINING_ENABLED"), default=False
             ),
-            groq_summary_model=os.getenv(
-                "GROQ_SUMMARY_MODEL", "qwen/qwen3.6-27b"
-            ).strip() or "qwen/qwen3.6-27b",
+            groq_summary_model=summary_model,
             groq_reasoning_effort=os.getenv("GROQ_REASONING_EFFORT", "").strip(),
+            # Мультимодальная модель для картинок. Дефолт — модель суммарки:
+            # сейчас она мультимодальна, но роль отдельная, поэтому и env свой.
+            groq_vision_model=os.getenv("GROQ_VISION_MODEL", "").strip() or summary_model,
+            # Фолбэк классификаторов: живёт на ОТДЕЛЬНОЙ per-model квоте Groq,
+            # поэтому переживает 429 основной модели.
+            groq_classify_fallback_model=os.getenv(
+                "GROQ_CLASSIFY_FALLBACK_MODEL", "openai/gpt-oss-20b"
+            ).strip() or "openai/gpt-oss-20b",
+            openrouter_model=os.getenv(
+                "OPENROUTER_MODEL", "google/gemma-4-31b-it:free"
+            ).strip() or "google/gemma-4-31b-it:free",
+            # Судья держится ДРУГОГО семейства, чем генератор (qwen) — иначе
+            # модель поощряет собственный стиль (self-preference).
+            optimizer_judge_model=os.getenv(
+                "OPTIMIZER_JUDGE_MODEL", "openai/gpt-oss-120b"
+            ).strip() or "openai/gpt-oss-120b",
+            # Разные семейства специально: разнообразие мутаций + раздельные
+            # per-model квоты Groq.
+            optimizer_mutation_models=_parse_csv(
+                os.getenv("OPTIMIZER_MUTATION_MODELS")
+            ) or ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"),
+            llm_canary_enabled=_parse_bool(os.getenv("LLM_CANARY_ENABLED"), default=True),
         )
 
     def matches_owner(self, owner_id: str, owner_name: str) -> bool:

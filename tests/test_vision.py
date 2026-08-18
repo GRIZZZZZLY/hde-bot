@@ -32,12 +32,13 @@ async def test_describe_image_returns_text():
     with patch("bot.vision.aiohttp.ClientSession", return_value=mock_session), \
          patch("bot.vision.config") as mock_config:
         mock_config.groq_api_key = "fake-key"
+        mock_config.groq_vision_model = "vision/model-from-env"
         result = await vision.describe_image(b"\x89PNG\r\n\x1a\n fake", "photo.png")
 
     assert result == "Ошибка ФН 234"
-    # Image must go as OpenAI-style data URI to the vision model
+    # Image must go as OpenAI-style data URI to the vision model from env
     payload = mock_session.post.call_args.kwargs["json"]
-    assert payload["model"] == vision._GROQ_MODEL
+    assert payload["model"] == "vision/model-from-env"
     content = payload["messages"][0]["content"]
     image_parts = [p for p in content if p.get("type") == "image_url"]
     assert image_parts

@@ -150,6 +150,7 @@ async def test_complete_all_runs_groq_clients_in_parallel():
     gptoss = _FakeClient(text="мутация от gpt-oss")
     gemma4 = _FakeClient(text="мутация от gemma4")
     router.clients = {"llama": llama, "gptoss120": gptoss, "gemma4": gemma4}
+    router.fallback_name = "gemma4"  # ключ OpenRouter-клиента
 
     results, errors = await router.complete_all("s", "u")
     assert results == {
@@ -166,6 +167,7 @@ async def test_complete_all_falls_back_to_openrouter_when_groq_fails():
     llama = _FakeClient(error="quota")
     gemma4 = _FakeClient(text="мутация от gemma4")
     router.clients = {"llama": llama, "gemma4": gemma4}
+    router.fallback_name = "gemma4"
 
     results, errors = await router.complete_all("s", "u")
     assert results == {"gemma4": "мутация от gemma4"}

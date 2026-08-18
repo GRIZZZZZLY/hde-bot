@@ -119,8 +119,10 @@ async def test_transcribe_audio_keeps_order_and_skips_failures(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_groq_vision_fallback_sends_images(monkeypatch):
-    """Fallback summary goes to Groq Scout with OpenAI-style image parts."""
-    from bot.ai_summary import _call_groq_vision_for_summary, _GROQ_VISION_MODEL
+    """Fallback summary goes to the env vision model with OpenAI-style image parts."""
+    from bot.ai_summary import _call_groq_vision_for_summary
+    from bot.config import config as _cfg
+    monkeypatch.setattr(_cfg, "groq_vision_model", "vision/model-from-env")
 
     resp = MagicMock()
     resp.status = 200
@@ -140,7 +142,7 @@ async def test_groq_vision_fallback_sends_images(monkeypatch):
 
     assert text == "Суть: касса не печатает"
     payload = sess.post.call_args.kwargs["json"]
-    assert payload["model"] == _GROQ_VISION_MODEL
+    assert payload["model"] == "vision/model-from-env"
     user_content = payload["messages"][1]["content"]
     assert any(p.get("type") == "image_url" for p in user_content)
     assert any(p.get("type") == "text" and "история" in p["text"] for p in user_content)

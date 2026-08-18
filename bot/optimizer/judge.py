@@ -1,9 +1,10 @@
 """LLM-as-judge: оценка ответа кандидата против реального ответа оператора.
 
-Используется офлайн-харнессом (scripts/eval_prompt.py) и ночным
-оптимизатором (agent.py) для финальной оценки на holdout-наборе.
-Groq gpt-oss-120b (другое семейство, чем генератор llama — без
-self-preference), temperature=0, JSON-режим.
+Используется офлайн-харнессом (scripts/eval_prompt.py) и оптимизатором
+(agent.py, запуск ручной через /aioptimize) для финальной оценки на
+holdout-наборе. Модель — OPTIMIZER_JUDGE_MODEL: обязана быть другого
+семейства, чем генератор, иначе судья поощряет собственный стиль
+(self-preference). temperature=0, JSON-режим.
 """
 from __future__ import annotations
 
@@ -20,7 +21,6 @@ from .evaluator import combined_score, _generate_answer
 logger = logging.getLogger(__name__)
 
 _URL = "https://api.groq.com/openai/v1/chat/completions"
-_MODEL = "openai/gpt-oss-120b"
 
 CallFn = Callable[[str, str], Awaitable[str]]
 JudgeFn = Callable[[str, str, str, str], Awaitable[dict | None]]
@@ -71,7 +71,7 @@ async def _call_groq_judge(system: str, user: str) -> str:
     from ..config import config
 
     payload = {
-        "model": _MODEL,
+        "model": config.optimizer_judge_model,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},

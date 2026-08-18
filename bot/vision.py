@@ -12,8 +12,6 @@ from .llm_semaphore import LLM_SEMAPHORE
 
 logger = logging.getLogger(__name__)
 
-# llama-4-scout Groq вывел из обслуживания (404) — qwen3.6 тоже принимает image_url
-_GROQ_MODEL = "qwen/qwen3.6-27b"
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 _PROMPT = (
@@ -52,7 +50,7 @@ async def describe_image(image_bytes: bytes, filename: str = "") -> str | None:
     b64 = base64.b64encode(image_bytes).decode("ascii")
     data_uri = f"data:{_guess_mime(filename)};base64,{b64}"
     payload = {
-        "model": _GROQ_MODEL,
+        "model": config.groq_vision_model,
         "messages": [{
             "role": "user",
             "content": [

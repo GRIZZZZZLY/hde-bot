@@ -173,6 +173,15 @@ async def _main_async() -> None:
     await bot.delete_my_commands()
     for entry in build_command_scopes(config.group_chat_id):
         await bot.set_my_commands(entry["commands"], scope=entry["scope"])
+
+    # Канарейка моделей: снятый провайдером id иначе всплывёт только на первом
+    # живом тикете. Ни таймаут, ни ошибка не должны мешать старту — бот без
+    # суммарки полезнее выключенного бота.
+    from .llm_canary import report_dead_models
+    try:
+        await asyncio.wait_for(report_dead_models(bot), timeout=30)
+    except Exception as exc:
+        logger.warning("LLM canary skipped: %s", exc)
     logger.info("Bot started (polling mode)")
 
     stop_event = asyncio.Event()

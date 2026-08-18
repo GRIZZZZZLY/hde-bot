@@ -556,9 +556,9 @@ async def cmd_aianalyze(message: Message) -> None:
     # Модели: основная из env, фолбэк — на отдельной per-model квоте Groq.
     # llama-3.3-70b и llama-4-scout Groq вывел из обслуживания (404).
     _GROQ_MODEL = _config.groq_summary_model
-    _GROQ_FALLBACK_MODEL = "openai/gpt-oss-20b"
+    _GROQ_FALLBACK_MODEL = _config.groq_classify_fallback_model
     _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-    _OPENROUTER_MODEL = "google/gemma-4-31b-it:free"
+    _OPENROUTER_MODEL = _config.openrouter_model
 
     def _parse_json_list(raw: str) -> list | None:
         raw = _re.sub(r"^```[^\n]*\n?", "", raw).rstrip("`").strip()

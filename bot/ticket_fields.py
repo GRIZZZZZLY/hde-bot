@@ -153,11 +153,10 @@ def _parse_pt_combo(raw: str) -> tuple[str, str] | None:
 
 
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-# Основная модель — та же, что у суммарки (env GROQ_SUMMARY_MODEL): жёстко
+# Обе модели — из env (GROQ_SUMMARY_MODEL и GROQ_CLASSIFY_FALLBACK_MODEL): жёстко
 # прописанные llama-3.3-70b / llama-4-scout Groq вывел из обслуживания, и оба
 # вызова возвращали 404 model_not_found.
 # Fallback — на отдельной per-model квоте Groq (переживает 429 основной).
-_GROQ_FALLBACK_MODEL = "openai/gpt-oss-20b"
 
 
 def _build_env_prompt() -> str:
@@ -263,7 +262,8 @@ async def classify_environment(
     if raw is None:
         # gpt-oss не принимает reasoning_effort="none" → фолбэку не передаём
         raw = await _groq_classify(
-            prompt, user_content, model=_GROQ_FALLBACK_MODEL, reasoning_effort=""
+            prompt, user_content,
+            model=config.groq_classify_fallback_model, reasoning_effort=""
         )
     if raw is None:
         return None
@@ -293,7 +293,8 @@ async def classify_priority_type(
     raw = await _groq_classify(prompt, user_content)
     if raw is None:
         raw = await _groq_classify(
-            prompt, user_content, model=_GROQ_FALLBACK_MODEL, reasoning_effort=""
+            prompt, user_content,
+            model=config.groq_classify_fallback_model, reasoning_effort=""
         )
     if raw is None:
         return None
