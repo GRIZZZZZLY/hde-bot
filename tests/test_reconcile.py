@@ -1,7 +1,7 @@
+import json
 from types import SimpleNamespace
 
 from bot.agent.reconcile import (
-    compare,
     find_operator_reply_after,
     reconcile_one,
 )
@@ -13,6 +13,12 @@ def _post(pid, uid, text, is_comment=False, dc="00:00:00 01.01.2024"):
 
 
 _STAFF = {"op"}
+
+
+def _ref(operator_text, anchor=1):
+    """Эталон из одного ответа оператора после якоря."""
+    posts = [_post(anchor, "cl", "вопрос клиента"), _post(anchor + 1, "op", operator_text)]
+    return find_operator_reply_after(posts, anchor, _STAFF)
 
 
 def test_finds_first_operator_turn_after_anchor():
@@ -79,96 +85,201 @@ def test_closer_question_variant_stripped():
     assert ref == "Сбились настройки терминала, обратитесь в банк."
 
 
-def test_compare_matched_and_diverged():
-    label, score = compare("Перезагрузите кассу", "Перезагрузите кассу")
-    assert label == "matched" and score == 1.0
-    label, score = compare("Перезагрузите кассу", "Позвоните в банк по номеру 900")
-    assert label == "diverged" and score < 0.6
+# --- Отсев реплик, которые не являются ответом на вопрос клиента ------------
+# Все строки ниже — дословные эталоны из прода (ai_suggestions за 30 дней).
 
 
-def _fake_embed(texts, task_type="query"):
-    """Детерминированные «эмбеддинги» по ключевым словам: ортогональные оси."""
-    import numpy as np
-
-    def vec(t):
-        t = t.lower()
-        if "перезагрузите" in t or "перезагрузку" in t:
-            return np.array([1.0, 0.0, 0.0], dtype=np.float32)
-        if "бумаг" in t:
-            return np.array([0.0, 1.0, 0.0], dtype=np.float32)
-        return np.array([0.0, 0.0, 1.0], dtype=np.float32)
-
-    return [vec(t) for t in texts]
+def test_remote_session_macro_only_is_not_an_answer():
+    assert _ref("Примите запрос на компьютере") is None
+    assert _ref("Примите запрос на компьютере, я к вам подключаюсь") is None
+    assert _ref("Примите запрос ещё раз") is None
 
 
-async def _fake_embed_async(texts, task_type="query"):
-    return _fake_embed(texts, task_type=task_type)
+def test_remote_session_macro_stripped_but_content_kept():
+    assert _ref("Примите запрос на компьютере Обновил вам драйвер. "
+                "Попробуйте сейчас напечатать чек") == (
+        "Обновил вам драйвер. Попробуйте сейчас напечатать чек"
+    )
 
 
-async def test_compare_semantic_matched_on_paraphrase():
-    from bot.agent.reconcile import compare_semantic
-    label, score = await compare_semantic(
+def test_remote_access_instruction_macro_is_not_an_answer():
+    assert _ref(
+        "Необходимо удаленно подключиться к вашему компьютеру. Скачайте программу "
+        "для удаленного доступа AnyDesk на ваш компьютер по ссылке: "
+        "https://anydesk.com/ru Запустите ее и пришлите номер рабочего места."
+    ) is None
+
+
+def test_connection_failure_macro_is_not_an_answer():
+    assert _ref("Не могу к вам подключиться, интернет есть на компьютере?") is None
+    assert _ref("Не смог вам дозвониться, есть другой номер для связи?") is None
+    assert _ref("По какому номеру могу с вами связаться?") is None
+
+
+def test_connection_failure_macro_survives_typo_and_phone():
+    assert _ref("Не могу к вам подключиться, интерент есть на компьютере? "
+                "По этому номеру не могу вам дозвониться 89600518688 "
+                "Есть другой номер для связи?") is None
+
+
+def test_callback_arrangement_is_not_an_answer():
+    assert _ref("Не смог вам дозвониться, напишите когда могу перезвонить "
+                "или другой номер для связи") is None
+    assert _ref("Связался с инженером, напишите, когда нужно будет перезвонить") is None
+
+
+def test_punctuation_left_by_filters_is_not_kept():
+    assert _ref("Подскажите, кассу Эвотор и Wifi роутер перезагрузили? "
+                "Не получил ответ на последнее сообщение. Если возникнут вопросы, "
+                "напишите мне снова, я буду здесь.") == (
+        "Подскажите, кассу Эвотор и Wifi роутер перезагрузили?"
+    )
+
+
+def test_no_reply_chase_is_not_an_answer():
+    assert _ref("Не получил ответ на последнее сообщение. Если возникнут вопросы, "
+                "напишите мне снова, я буду здесь.") is None
+    assert _ref("Подскажите, вопрос актуален?") is None
+    assert _ref("Скажите, пожалуйста, вопрос еще актуален? Ждем ответа, "
+                "чтобы помочь вам!") is None
+
+
+def test_callback_promise_is_not_an_answer():
+    assert _ref("Через 15-20 минут, подключусь к вам") is None
+    assert _ref("Перезвоню вам через 20 минут") is None
+    assert _ref("Связался") is None
+    assert _ref("Подключился к вам") is None
+
+
+def test_ack_only_is_not_an_answer():
+    assert _ref("Хорошо") is None
+    assert _ref("Хорошо, спасибо") is None
+    assert _ref("Отлично.") is None
+
+
+def test_emoji_only_is_not_an_answer():
+    assert _ref("🤝") is None
+    assert _ref("✍") is None
+
+
+def test_marketing_broadcast_is_not_an_answer():
+    assert _ref(
+        "Витрина стала современнее: новый заказ на одной странице, четкий логотип, "
+        "баннер для акций, простые настройки дизайна и скрытие букетов без фото."
+    ) is None
+
+
+def test_short_real_instruction_survives_the_filter():
+    assert _ref("Пробуйте печатать чек") == "Пробуйте печатать чек"
+    assert _ref("Откройте сейчас смену, пожалуйста") == "Откройте сейчас смену, пожалуйста"
+
+
+# --- LLM-судья --------------------------------------------------------------
+
+
+def _call_returning(obj):
+    async def _call(system, user, *, model, **kwargs):
+        return json.dumps(obj, ensure_ascii=False)
+    return _call
+
+
+async def test_judge_returns_category_and_reason():
+    from bot.agent.reconcile import judge_divergence
+    verdict = await judge_divergence(
         "Перезагрузите кассу", "Выполните перезагрузку кассы",
-        _embed_fn=_fake_embed_async,
+        _call_fn=_call_returning({"category": "same_action", "reason": "то же действие"}),
     )
-    assert label == "matched" and score == 1.0
+    assert verdict == ("same_action", "то же действие")
 
 
-async def test_compare_semantic_diverged_on_different_meaning():
-    from bot.agent.reconcile import compare_semantic
-    label, score = await compare_semantic(
-        "Проверьте бумагу в принтере", "Позвоните в банк по номеру 900",
-        _embed_fn=_fake_embed_async,
-    )
-    assert label == "diverged" and score < 0.85
+async def test_judge_none_on_unknown_category():
+    from bot.agent.reconcile import judge_divergence
+    assert await judge_divergence(
+        "a", "b", _call_fn=_call_returning({"category": "whatever", "reason": ""}),
+    ) is None
 
 
-async def test_compare_semantic_falls_back_to_lexical():
-    from bot.agent.reconcile import compare_semantic
+async def test_judge_none_on_broken_json():
+    from bot.agent.reconcile import judge_divergence
 
-    async def broken_embed(texts, task_type="query"):
-        return None
+    async def _call(system, user, *, model, **kwargs):
+        return "не json"
 
-    label, score = await compare_semantic(
-        "Перезагрузите кассу", "Перезагрузите кассу", _embed_fn=broken_embed,
-    )
-    assert label == "matched" and score == 1.0
+    assert await judge_divergence("a", "b", _call_fn=_call) is None
 
 
-async def test_reconcile_one_matched():
+def _judge_returning(*verdicts):
+    """Судья, отдающий вердикты по очереди (последний повторяется)."""
+    calls = []
+
+    async def _judge(ai_answer, reference, **kwargs):
+        calls.append((ai_answer, reference))
+        return verdicts[min(len(calls) - 1, len(verdicts) - 1)]
+
+    _judge.calls = calls
+    return _judge
+
+
+async def test_reconcile_one_returns_category_and_reason():
     posts = [
         _post(1, "cl", "касса зависла"),                     # anchor
         _post(2, "op", "Перезагрузите кассу и попробуйте снова"),
     ]
     res = await reconcile_one(
-        ai_answer="Перезагрузите кассу и попробуйте снова",
-        posts=posts, anchor_post_id=1, staff=_STAFF, _embed_fn=_fake_embed_async,
+        ai_answer="Выполните перезагрузку кассы",
+        posts=posts, anchor_post_id=1, staff=_STAFF,
+        _judge_fn=_judge_returning(("same_action", "то же действие")),
     )
-    assert res["label"] == "matched"
-    assert res["reference_answer"] == "Перезагрузите кассу и попробуйте снова"
-    assert res["score"] == 1.0
+    assert res == {
+        "reference_answer": "Перезагрузите кассу и попробуйте снова",
+        "category": "same_action",
+        "reason": "то же действие",
+    }
+
+
+async def test_reconcile_one_none_when_reference_is_a_macro():
+    posts = [_post(1, "cl", "вопрос"), _post(2, "op", "Примите запрос на компьютере")]
+    judge = _judge_returning(("same_action", ""))
+    assert await reconcile_one(
+        ai_answer="любой", posts=posts, anchor_post_id=1, staff=_STAFF, _judge_fn=judge,
+    ) is None
+    assert judge.calls == []  # судью не зовём, сравнивать нечего
 
 
 async def test_reconcile_one_none_without_reply():
     posts = [_post(1, "cl", "вопрос")]
     assert await reconcile_one(
         ai_answer="любой", posts=posts, anchor_post_id=1, staff=_STAFF,
-        _embed_fn=_fake_embed_async,
+        _judge_fn=_judge_returning(("same_action", "")),
     ) is None
 
 
-async def test_reconcile_recent_labels_counts_and_mapping():
+async def test_reconcile_recent_maps_categories_to_labels():
     suggestions = [
-        {"id": 1, "ticket_id": "T1", "ai_answer": "Перезагрузите кассу и попробуйте снова",
+        {"id": 1, "ticket_id": "T1", "ai_answer": "Выполните перезагрузку кассы",
          "context_until_post_id": "1"},
-        {"id": 2, "ticket_id": "T2", "ai_answer": "Проверьте бумагу",
+        {"id": 2, "ticket_id": "T2", "ai_answer": "Специалист свяжется с вами",
          "context_until_post_id": "1"},
-        {"id": 3, "ticket_id": "T3", "ai_answer": "любой", "context_until_post_id": "1"},
+        {"id": 3, "ticket_id": "T3", "ai_answer": "Настройку делает только банк",
+         "context_until_post_id": "1"},
+        {"id": 4, "ticket_id": "T4", "ai_answer": "Пришлите фото чека",
+         "context_until_post_id": "1"},
+        {"id": 5, "ticket_id": "T5", "ai_answer": "любой", "context_until_post_id": "1"},
+        {"id": 6, "ticket_id": "T6", "ai_answer": "любой", "context_until_post_id": "1"},
     ]
     posts_by = {
-        "T1": [_post(1, "cl", "q"), _post(2, "op", "Перезагрузите кассу и попробуйте снова")],
-        "T2": [_post(1, "cl", "q"), _post(2, "op", "Позвоните в банк 900 и уточните лимит по карте")],
-        "T3": [_post(1, "cl", "q")],  # оператор ещё не ответил → skip
+        "T1": [_post(1, "cl", "q"), _post(2, "op", "Перезагрузите кассу")],
+        "T2": [_post(1, "cl", "q"), _post(2, "op", "Обновил драйвер, пробуйте печатать чек")],
+        "T3": [_post(1, "cl", "q"), _post(2, "op", "Подключился и настроил терминал сам")],
+        "T4": [_post(1, "cl", "q"), _post(2, "op", "Какой IP-адрес прописан в настройках?")],
+        "T5": [_post(1, "cl", "q")],                                   # оператор молчит
+        "T6": [_post(1, "cl", "q"), _post(2, "op", "Примите запрос на компьютере")],
+    }
+    verdicts = {
+        "T1": ("same_action", "то же"),
+        "T2": ("bot_escalated", "оператор решил сам"),
+        "T3": ("bot_wrong_fact", "банк тут не нужен"),
+        "T4": ("not_comparable", "про разное"),
     }
 
     async def sug_fn(hours):
@@ -177,18 +288,65 @@ async def test_reconcile_recent_labels_counts_and_mapping():
     async def posts_fn(tid):
         return posts_by[tid]
 
+    async def judge_fn(ai_answer, reference, **kwargs):
+        tid = next(t for t, p in posts_by.items() if len(p) > 1 and reference in p[1].text)
+        return verdicts[tid]
+
     saved = []
 
     async def set_fn(sid, *, reference_answer, label, detail):
-        saved.append((sid, label))
+        saved.append((sid, label, detail))
+
+    async def sleep_fn(_seconds):
+        return None
 
     from bot.agent.reconcile import reconcile_recent
     stats = await reconcile_recent(
-        hours=24, _suggestions_fn=sug_fn, _posts_fn=posts_fn,
-        _set_fn=set_fn, _staff={"op"}, _embed_fn=_fake_embed_async,
+        hours=24, _suggestions_fn=sug_fn, _posts_fn=posts_fn, _set_fn=set_fn,
+        _staff={"op"}, _judge_fn=judge_fn, _sleep_fn=sleep_fn,
     )
-    assert stats["matched"] == 1 and stats["diverged"] == 1 and stats["skipped"] == 1
-    assert dict(saved) == {1: "accepted", 2: "corrected"}  # matched→accepted, diverged→corrected; T3 не сохранён
+    assert stats == {
+        "same_action": 1, "bot_escalated": 1, "bot_wrong_fact": 1,
+        "not_comparable": 1, "skipped": 2, "errors": 0,
+    }
+    assert [(sid, label) for sid, label, _ in saved] == [
+        (1, "accepted"), (2, "corrected"), (3, "corrected"),
+    ]
+    assert saved[1][2].startswith("judge:bot_escalated")
+
+
+async def test_reconcile_recent_retries_judge_once_then_skips():
+    suggestions = [{"id": 1, "ticket_id": "T1", "ai_answer": "текст",
+                    "context_until_post_id": "1"}]
+    posts = [_post(1, "cl", "q"), _post(2, "op", "Обновил драйвер, пробуйте печатать чек")]
+
+    async def sug_fn(hours):
+        return suggestions
+
+    async def posts_fn(tid):
+        return posts
+
+    calls = []
+
+    async def judge_fn(ai_answer, reference, **kwargs):
+        calls.append(reference)
+        return None
+
+    saved = []
+
+    async def set_fn(sid, **kwargs):
+        saved.append(sid)
+
+    async def sleep_fn(_seconds):
+        return None
+
+    from bot.agent.reconcile import reconcile_recent
+    stats = await reconcile_recent(
+        hours=24, _suggestions_fn=sug_fn, _posts_fn=posts_fn, _set_fn=set_fn,
+        _staff={"op"}, _judge_fn=judge_fn, _sleep_fn=sleep_fn,
+    )
+    assert len(calls) == 2 and saved == []
+    assert stats["skipped"] == 1
 
 
 async def test_reconciliation_digest_counts_and_top():
