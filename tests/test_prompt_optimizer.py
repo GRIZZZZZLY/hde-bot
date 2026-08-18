@@ -457,6 +457,8 @@ async def test_run_optimizer_applies_by_holdout_score(monkeypatch):
     async def fake_save_version(content, score, proposed_by):
         return 7
 
+    # Основной источник — сверка; кнопочный остаётся резервом (см. _load_eval_samples)
+    monkeypatch.setattr(agent.db, "get_evaluation_samples", fake_get_samples)
     monkeypatch.setattr(agent.db, "get_optimization_samples", fake_get_samples)
     monkeypatch.setattr(agent.db, "save_prompt_version", fake_save_version)
     monkeypatch.setattr(agent, "combined_score", fake_combined)

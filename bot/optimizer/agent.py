@@ -11,7 +11,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from .. import db
 from ..ai_summary import get_active_format_instructions, invalidate_prompt_cache
 from ..config import config
-from .dataset import split_samples
+from .dataset import exclude_tickets, load_golden_ticket_ids, split_samples
 from .evaluator import combined_score
 from .judge import holdout_score
 from .llm_router import LLMRouter
@@ -21,6 +21,26 @@ logger = logging.getLogger(__name__)
 
 _MIN_SAMPLES = 10
 _MIN_IMPROVEMENT = 0.03
+_EVAL_DAYS = 90
+
+
+async def _load_eval_samples() -> tuple[list[dict], str]:
+    """Выборка для оценки + человекочитаемая метка источника.
+
+    Основной источник — ночная сверка: эталон там фактический ответ оператора,
+    и корпус пополняется сам каждую ночь. Кнопочный сигнал остаётся резервом:
+    он встал 2026-06-21, но на машине, где сверка ещё не накопила вердиктов,
+    лучше оценить на старых данных, чем не оценить вовсе.
+
+    Источник печатается в отчёте: у двух источников разный набор исходов
+    (сверка даёт accepted/corrected, кнопки — ещё sent/rejected), поэтому
+    абсолютные скоры между источниками несравнимы.
+    """
+    samples = await db.get_evaluation_samples(days=_EVAL_DAYS)
+    if samples:
+        return samples, f"сверка · {_EVAL_DAYS} дн."
+    samples = await db.get_optimization_samples(days=30)
+    return samples, "кнопки · 30 дн. (устаревший источник)"
 
 
 def _progress_bar(pct: int) -> str:
@@ -61,18 +81,22 @@ async def run_optimizer(bot: Bot) -> None:
     except Exception as exc:
         logger.warning("Optimizer: could not send start notification: %s", exc)
 
-    samples = await db.get_optimization_samples(days=30)
+    samples, source = await _load_eval_samples()
+    # Golden set — независимый audit-набор: его тикеты не участвуют ни в
+    # настройке мутаций, ни в apply-решении.
+    samples = exclude_tickets(samples, load_golden_ticket_ids())
     if len(samples) < _MIN_SAMPLES:
         logger.info(
-            "Prompt optimizer: not enough samples (%d < %d), skipping",
-            len(samples), _MIN_SAMPLES,
+            "Prompt optimizer: not enough samples (%d < %d, source=%s), skipping",
+            len(samples), _MIN_SAMPLES, source,
         )
         if progress_msg:
             try:
                 await progress_msg.edit_text(
                     f"⚙️ <b>Оптимизация промпта</b>\n\n"
                     f"{_progress_bar(100)}\n\n"
-                    f"⏭ Пропущено — недостаточно данных ({len(samples)} из {_MIN_SAMPLES} нужных).",
+                    f"⏭ Пропущено — недостаточно данных "
+                    f"({len(samples)} из {_MIN_SAMPLES} нужных, источник: {escape(source)}).",
                     parse_mode="HTML",
                 )
             except Exception as exc:
@@ -90,7 +114,10 @@ async def run_optimizer(bot: Bot) -> None:
         )
 
     if progress_msg:
-        await _update_progress(progress_msg, 10, f"Данные загружены: {len(samples)} тикетов за 30 дней.\nСчитаю базовый скор...")
+        await _update_progress(
+            progress_msg, 10,
+            f"Данные загружены: {len(samples)} сэмплов ({source}).\nСчитаю базовый скор...",
+        )
 
     current_instructions = await get_active_format_instructions()
 
@@ -224,6 +251,7 @@ async def run_optimizer(bot: Bot) -> None:
         baseline=baseline,
         current_instructions=current_instructions,
         sample_count=len(samples),
+        source=source,
         all_scores=scores,
     )
 
@@ -249,6 +277,7 @@ async def _send_report(
     baseline: float,
     current_instructions: str,
     sample_count: int,
+    source: str,
     all_scores: dict[str, tuple[str, float]],
 ) -> None:
     """Send Telegram report to operator with Apply/Reject/Detail buttons."""
@@ -272,7 +301,7 @@ async def _send_report(
 
     text = (
         "\U0001f9ea <b>Ночная оптимизация промпта</b>\n\n"
-        f"\U0001f4ca Данные: {sample_count} тикетов · 30 дней\n"
+        f"\U0001f4ca Данные: {sample_count} сэмплов · {escape(source)}\n"
         f"\u26a1 Сейчас: {baseline_int} баллов\n\n"
         f"\U0001f947 Победитель: <b>{escape(winner_model)}</b>\n"
         f"\U0001f4c8 Результат: {winner_int} баллов (+{improvement_pct}%)\n\n"

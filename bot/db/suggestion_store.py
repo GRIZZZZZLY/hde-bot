@@ -129,6 +129,46 @@ async def get_unjudged_suggestions(hours: int = 24, limit: int = 200) -> list[di
     return [dict(r) for r in rows]
 
 
+# Датасет офлайн-оценки промптов. Эталон и метка берутся из ночной сверки, а не
+# из кнопок: кнопочный сигнал (optimization_samples) встал 2026-06-21, операторы
+# отвечают клиенту в HDE напрямую. Форма строки совместима с
+# get_optimization_samples, поэтому evaluator/judge/eval_prompt читают оба
+# источника одинаково. Один SQL на два потребителя — асинхронный загрузчик бота
+# и sqlite3-копия прод-базы в scripts/eval_prompt.py: иначе фильтры разъедутся.
+#
+# COALESCE(human_label, judge_label), а не effective_label: тот же смысл (человек
+# сильнее модели — он видел тикет), но не зависит от того, пересчитывался ли
+# денормализованный столбец.
+EVAL_SAMPLES_SQL = (
+    "SELECT id, ticket_id, title, history, ai_answer, "
+    "       judge_reference_answer AS op_answer, "
+    "       COALESCE(human_label, judge_label) AS outcome, "
+    "       confidence, judge_category, prompt_version, created_at "
+    "FROM ai_suggestions "
+    "WHERE judge_reference_answer IS NOT NULL AND judge_reference_answer != '' "
+    "  AND COALESCE(human_label, judge_label) IN ('sent','accepted','corrected','rejected') "
+    "  AND history IS NOT NULL AND history != '' "
+    "  AND created_at >= datetime('now', ?) "
+    "ORDER BY id DESC LIMIT ?"
+)
+
+
+async def get_evaluation_samples(days: int = 90, *, limit: int = 500) -> list[dict]:
+    """Сэмплы для оценки промптов: предложение бота + фактический ответ оператора.
+
+    Без эталона или без метки сэмпл не берётся — сравнивать не с чем, и «нет
+    данных» не должно превращаться в «ответ плохой» (та же логика, что
+    not_comparable в сверке).
+    """
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            EVAL_SAMPLES_SQL, (f"-{int(days)} days", int(limit))
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
 async def set_judge_result(
     suggestion_id: int, *, reference_answer: str, label: str, detail: str = "",
     category: str | None = None,

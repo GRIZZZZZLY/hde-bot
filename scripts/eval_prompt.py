@@ -26,8 +26,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
     sys.stdout.reconfigure(encoding="utf-8")
 
+from bot.db.suggestion_store import EVAL_SAMPLES_SQL
 from bot.optimizer import evaluator
-from bot.optimizer.dataset import split_samples
+from bot.optimizer.dataset import exclude_tickets, load_golden_ticket_ids, split_samples
 from bot.optimizer.judge import holdout_score
 
 MIN_SAMPLES_WARN = 30
@@ -87,15 +88,29 @@ def make_cached_generate(cache: EvalCache, prompt_text: str):
     return generate
 
 
-def load_samples(db_path: str, days: int) -> list[dict]:
+def load_samples(db_path: str, days: int, limit: int = 500) -> tuple[list[dict], str]:
+    """Выборка + метка источника.
+
+    Основной источник — ночная сверка (ai_suggestions с вердиктом): эталон там
+    фактический ответ оператора. Кнопочный optimization_samples остаётся
+    резервом на случай базы, где сверка ещё не отработала. SQL для сверки один
+    с ботом (bot.db.suggestion_store.EVAL_SAMPLES_SQL), чтобы фильтры не
+    разъезжались между харнессом и продом.
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(EVAL_SAMPLES_SQL, (f"-{days} days", limit)).fetchall()
+    except sqlite3.OperationalError:
+        rows = []  # старый дамп без ai_suggestions — работаем на кнопочном источнике
+    if rows:
+        return [dict(r) for r in rows], f"сверка · {days} дн."
     rows = conn.execute(
         "SELECT id, ticket_id, title, history, ai_answer, op_answer, outcome, confidence "
         "FROM optimization_samples WHERE created_at >= datetime('now', ?) ORDER BY id",
         (f"-{days} days",),
     ).fetchall()
-    return [dict(r) for r in rows]
+    return [dict(r) for r in rows], f"кнопки · {days} дн. (устаревший источник)"
 
 
 def load_prompt_from_db(db_path: str, version: int | None) -> tuple[str, str]:
@@ -189,7 +204,13 @@ async def amain() -> int:
         print(f"ERROR: база не найдена: {args.db}. Сначала bash scripts/pull_kb.sh", file=sys.stderr)
         return 1
 
-    samples = load_samples(args.db, args.days)
+    samples, source = load_samples(args.db, args.days)
+    golden_tickets = load_golden_ticket_ids()
+    if golden_tickets:
+        before = len(samples)
+        samples = exclude_tickets(samples, golden_tickets)
+        print(f"Исключено кейсов golden set: {before - len(samples)}")
+    print(f"Источник: {source}")
     if len(samples) < MIN_SAMPLES_WARN:
         print(
             f"⚠️  Всего {len(samples)} сэмплов (< {MIN_SAMPLES_WARN}) — "
