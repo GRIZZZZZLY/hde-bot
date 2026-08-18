@@ -103,8 +103,72 @@ async def test_classify_environment_no_key_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_classify_uses_configured_model_and_reasoning_effort():
+    """Первичная модель — из GROQ_SUMMARY_MODEL, а не хардкод (Groq выключил llama-3.3)."""
+    sent: dict = {}
+
+    def post(*a, **k):
+        sent.update(k["json"])
+        return _groq_resp("145")
+
+    session = MagicMock()
+    session.post = MagicMock(side_effect=post)
+    sess_cm = MagicMock()
+    sess_cm.__aenter__ = AsyncMock(return_value=session)
+    sess_cm.__aexit__ = AsyncMock(return_value=False)
+    with patch("bot.ticket_fields.config.groq_api_key", "test-key"), \
+         patch("bot.ticket_fields.config.groq_summary_model", "qwen/qwen3.6-27b"), \
+         patch("bot.ticket_fields.config.groq_reasoning_effort", "none"), \
+         patch("bot.ticket_fields.aiohttp.ClientSession", return_value=sess_cm):
+        result = await classify_environment("Клиент: проблема")
+    assert result == "145"
+    assert sent["model"] == "qwen/qwen3.6-27b"
+    assert sent["reasoning_effort"] == "none"
+    # reasoning-модели тратят часть лимита на рассуждения — 64 токенов мало
+    assert sent["max_tokens"] >= 256
+
+
+@pytest.mark.asyncio
+async def test_classify_fallback_model_is_alive_and_without_reasoning_effort():
+    """Фолбэк — не выключенная llama; reasoning_effort ей не передаём."""
+    from bot.ticket_fields import _GROQ_FALLBACK_MODEL
+
+    assert "llama" not in _GROQ_FALLBACK_MODEL
+
+    calls: list[dict] = []
+
+    def post(*a, **k):
+        calls.append(k["json"])
+        return _groq_resp("145", status=404) if len(calls) == 1 else _groq_resp("146")
+
+    session = MagicMock()
+    session.post = MagicMock(side_effect=post)
+    sess_cm = MagicMock()
+    sess_cm.__aenter__ = AsyncMock(return_value=session)
+    sess_cm.__aexit__ = AsyncMock(return_value=False)
+    with patch("bot.ticket_fields.config.groq_api_key", "test-key"), \
+         patch("bot.ticket_fields.config.groq_reasoning_effort", "none"), \
+         patch("bot.ticket_fields.aiohttp.ClientSession", return_value=sess_cm):
+        result = await classify_environment("Клиент: проблема")
+    assert result == "146"
+    assert calls[1]["model"] == _GROQ_FALLBACK_MODEL
+    assert "reasoning_effort" not in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_classify_strips_think_block():
+    """<think> reasoning-модели не должен подсовывать парсеру чужие числа."""
+    with patch("bot.ticket_fields.config.groq_api_key", "test-key"), \
+         patch("bot.ticket_fields.aiohttp.ClientSession",
+               return_value=_session_cm(
+                   _groq_resp("<think>похоже на 146, хотя может 145</think>\n155"))):
+        result = await classify_environment("Клиент: проблема")
+    assert result == "155"
+
+
+@pytest.mark.asyncio
 async def test_classify_environment_groq_500_falls_back_to_scout():
-    """llama-3.3 HTTP 500 → Scout (separate quota) fallback used."""
+    """Первичная модель отдала HTTP 500 → фолбэк (отдельная квота) использован."""
     from bot.ticket_fields import _GROQ_FALLBACK_MODEL
 
     calls = {"n": 0, "models": []}

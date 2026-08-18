@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 _WIKI_DIR = "data/wiki"
 _INDEX_PATH = f"{_WIKI_DIR}/_index.json"
-_GROQ_MODEL = "llama-3.3-70b-versatile"
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
@@ -55,12 +54,15 @@ async def _call_llm(
     session: aiohttp.ClientSession,
 ) -> str | None:
     """Send a single-turn prompt to Groq using the provided session."""
+    # Модель из env: жёстко прописанный llama-3.3-70b Groq отключил (404)
     payload = {
-        "model": _GROQ_MODEL,
+        "model": config.groq_summary_model,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.3,
         "max_tokens": 2000,
     }
+    if config.groq_reasoning_effort:
+        payload["reasoning_effort"] = config.groq_reasoning_effort
     try:
         async with LLM_SEMAPHORE, session.post(
             _GROQ_URL,

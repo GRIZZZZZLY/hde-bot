@@ -12,7 +12,7 @@ from bot.agent.actions import (
 
 def test_agent_model_config_defaults():
     fresh = config_module.Config.from_env()
-    assert fresh.agent_draft_model == "llama-3.3-70b-versatile"
+    assert fresh.agent_draft_model == "qwen/qwen3.6-27b"
     assert fresh.agent_selfcheck_model == "openai/gpt-oss-120b"
 
 

@@ -6,7 +6,7 @@ import bot.config as config_module
 
 def test_config_summary_model_and_reasoning_defaults():
     fresh = config_module.Config.from_env()
-    assert fresh.groq_summary_model == "llama-3.3-70b-versatile"
+    assert fresh.groq_summary_model == "qwen/qwen3.6-27b"
     assert fresh.groq_reasoning_effort == ""
 
 

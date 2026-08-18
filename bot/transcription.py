@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 
 _DEEPGRAM_URL = "https://api.deepgram.com/v1/listen"
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-_GROQ_MODEL = "llama-3.3-70b-versatile"
+# Модель — из env вместе с суммаркой (config.groq_summary_model):
+# жёстко прописанный llama-3.3-70b Groq вывел из обслуживания (404).
 
 # Расширение -> MIME для документов без внятного mime_type
 _AUDIO_EXT_MIME = {
@@ -113,7 +114,7 @@ async def transcribe_audio(
 async def summarize_transcript(
     transcript: str, ticket_title: str, session: aiohttp.ClientSession
 ) -> str | None:
-    """Distill raw call transcript into 'Проблема/Решение' via Groq llama-3.3."""
+    """Distill raw call transcript into 'Проблема/Решение' via Groq."""
     if not config.groq_api_key:
         logger.info("Transcript summary skipped: GROQ_API_KEY not set")
         return None
@@ -122,7 +123,7 @@ async def summarize_transcript(
             async with session.post(
                 _GROQ_URL,
                 json={
-                    "model": _GROQ_MODEL,
+                    "model": config.groq_summary_model,
                     "messages": [
                         {"role": "system", "content": _SUMMARY_SYSTEM},
                         {
@@ -135,6 +136,8 @@ async def summarize_transcript(
                     ],
                     "max_tokens": 1000,
                     "temperature": 0.2,
+                    **({"reasoning_effort": config.groq_reasoning_effort}
+                       if config.groq_reasoning_effort else {}),
                 },
                 headers={"Authorization": f"Bearer {config.groq_api_key}"},
                 timeout=aiohttp.ClientTimeout(total=30),

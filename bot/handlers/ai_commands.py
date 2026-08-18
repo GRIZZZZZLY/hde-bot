@@ -553,8 +553,10 @@ async def cmd_aianalyze(message: Message) -> None:
     import asyncio as _asyncio
     _RATE_DELAY = 8.0    # seconds between requests — keeps well under free-tier RPM limits
     _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-    _GROQ_MODEL = "llama-3.3-70b-versatile"
-    _GROQ_SCOUT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+    # Модели: основная из env, фолбэк — на отдельной per-model квоте Groq.
+    # llama-3.3-70b и llama-4-scout Groq вывел из обслуживания (404).
+    _GROQ_MODEL = _config.groq_summary_model
+    _GROQ_FALLBACK_MODEL = "openai/gpt-oss-20b"
     _OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
     _OPENROUTER_MODEL = "google/gemma-4-31b-it:free"
 
@@ -699,22 +701,22 @@ async def cmd_aianalyze(message: Message) -> None:
             else:
                 reasons["Gemma 4"] = or_reason or "unknown"
                 await _notify_fallback(
-                    batch_num, "Gemma 4", or_reason or "unknown", "Groq llama-3.3-70b"
+                    batch_num, "Gemma 4", or_reason or "unknown", f"Groq {_GROQ_MODEL}"
                 )
 
-                # --- Groq llama-3.3-70b fallback ---
+                # --- Groq (основная модель) fallback ---
                 patterns, gq_reason = await _try_groq_batch(session, full_prompt)
                 if patterns is not None:
                     model_stats["groq"] += 1
                 else:
                     reasons["Groq"] = gq_reason or "unknown"
                     await _notify_fallback(
-                        batch_num, "Groq", gq_reason or "unknown", "Llama 4 Scout"
+                        batch_num, "Groq", gq_reason or "unknown", _GROQ_FALLBACK_MODEL
                     )
 
-                    # --- Groq Llama 4 Scout fallback (separate per-model quota) ---
+                    # --- Groq fallback-модель (отдельная per-model квота) ---
                     patterns, scout_reason = await _try_groq_batch(
-                        session, full_prompt, model=_GROQ_SCOUT_MODEL
+                        session, full_prompt, model=_GROQ_FALLBACK_MODEL
                     )
                     if patterns is not None:
                         model_stats["scout"] += 1
@@ -778,8 +780,8 @@ async def cmd_aianalyze(message: Message) -> None:
     total_batches = sum(model_stats.values())
     model_breakdown_lines = [
         f"• Gemma 4 31B (OpenRouter): {model_stats['gemma4']}/{total_batches} батчей",
-        f"• Groq llama-3.3-70b: {model_stats['groq']}/{total_batches} батчей",
-        f"• Llama 4 Scout: {model_stats['scout']}/{total_batches} батчей",
+        f"• Groq {_GROQ_MODEL}: {model_stats['groq']}/{total_batches} батчей",
+        f"• Groq {_GROQ_FALLBACK_MODEL}: {model_stats['scout']}/{total_batches} батчей",
         f"• Упали все 3: {model_stats['failed']}/{total_batches} батчей",
     ]
     report = (

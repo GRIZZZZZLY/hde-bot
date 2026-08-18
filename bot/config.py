@@ -132,8 +132,8 @@ class Config:
                 os.getenv("AGENT_CALL_FIXATION_ENABLED"), default=False
             ),
             agent_draft_model=os.getenv(
-                "AGENT_DRAFT_MODEL", "llama-3.3-70b-versatile"
-            ).strip() or "llama-3.3-70b-versatile",
+                "AGENT_DRAFT_MODEL", "qwen/qwen3.6-27b"
+            ).strip() or "qwen/qwen3.6-27b",
             agent_selfcheck_model=os.getenv(
                 "AGENT_SELFCHECK_MODEL", "openai/gpt-oss-120b"
             ).strip() or "openai/gpt-oss-120b",
@@ -142,8 +142,8 @@ class Config:
                 os.getenv("AGENT_DIALOGUE_MINING_ENABLED"), default=False
             ),
             groq_summary_model=os.getenv(
-                "GROQ_SUMMARY_MODEL", "llama-3.3-70b-versatile"
-            ).strip() or "llama-3.3-70b-versatile",
+                "GROQ_SUMMARY_MODEL", "qwen/qwen3.6-27b"
+            ).strip() or "qwen/qwen3.6-27b",
             groq_reasoning_effort=os.getenv("GROQ_REASONING_EFFORT", "").strip(),
         )
 

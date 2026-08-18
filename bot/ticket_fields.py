@@ -153,9 +153,11 @@ def _parse_pt_combo(raw: str) -> tuple[str, str] | None:
 
 
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-_GROQ_MODEL = "llama-3.3-70b-versatile"
-# Fallback on a separate per-model Groq quota (survives llama-3.3 429/limits)
-_GROQ_FALLBACK_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+# Основная модель — та же, что у суммарки (env GROQ_SUMMARY_MODEL): жёстко
+# прописанные llama-3.3-70b / llama-4-scout Groq вывел из обслуживания, и оба
+# вызова возвращали 404 model_not_found.
+# Fallback — на отдельной per-model квоте Groq (переживает 429 основной).
+_GROQ_FALLBACK_MODEL = "openai/gpt-oss-20b"
 
 
 def _build_env_prompt() -> str:
@@ -187,18 +189,29 @@ def _parse_env_id(raw: str) -> str | None:
     return None
 
 
-async def _groq_classify(prompt: str, user_content: str, model: str = _GROQ_MODEL) -> str | None:
+async def _groq_classify(
+    prompt: str,
+    user_content: str,
+    model: str = "",
+    reasoning_effort: str | None = None,
+) -> str | None:
+    """Один классифицирующий вызов Groq. reasoning_effort=None → берём из config."""
     if not config.groq_api_key:
         return None
     payload = {
-        "model": model,
+        "model": model or config.groq_summary_model,
         "messages": [
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.0,
-        "max_tokens": 64,
+        # С запасом: reasoning-модели часть лимита тратят на рассуждения,
+        # при обрезке content приходит пустым и ответ теряется целиком.
+        "max_tokens": 512,
     }
+    effort = config.groq_reasoning_effort if reasoning_effort is None else reasoning_effort
+    if effort:
+        payload["reasoning_effort"] = effort
     try:
         async with shared_session() as session:
             async with session.post(
@@ -212,7 +225,9 @@ async def _groq_classify(prompt: str, user_content: str, model: str = _GROQ_MODE
                     logger.warning("Env classifier Groq HTTP %s: %s", resp.status, body[:200])
                     return None
                 data = await resp.json()
-        return data["choices"][0]["message"]["content"].strip()
+        raw = data["choices"][0]["message"]["content"].strip()
+        # Убираем <think>…</think>: числа из рассуждений сбивают парсеры
+        return re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
     except Exception as exc:
         logger.warning("Env classifier Groq failed: %s", exc)
         return None
@@ -223,9 +238,9 @@ async def classify_environment(
 ) -> str | None:
     """Return an Окружение option_id, or None if undetermined / unknown / error.
 
-    Keyword pre-pass first (deterministic, no API). Then llama-3.3 (fast);
-    falls back to Llama 4 Scout (separate Groq quota) when llama-3.3 is
-    unavailable (e.g. daily token limit / 429).
+    Keyword pre-pass first (deterministic, no API). Then основная модель;
+    falls back to gpt-oss (separate Groq quota) when она недоступна
+    (e.g. daily token limit / 429).
     """
     if not history.strip() and not ticket_title.strip():
         return None
@@ -246,7 +261,10 @@ async def classify_environment(
     prompt = _build_env_prompt()
     raw = await _groq_classify(prompt, user_content)
     if raw is None:
-        raw = await _groq_classify(prompt, user_content, model=_GROQ_FALLBACK_MODEL)
+        # gpt-oss не принимает reasoning_effort="none" → фолбэку не передаём
+        raw = await _groq_classify(
+            prompt, user_content, model=_GROQ_FALLBACK_MODEL, reasoning_effort=""
+        )
     if raw is None:
         return None
     option_id = _parse_env_id(raw)
@@ -261,7 +279,7 @@ async def classify_priority_type(
     """(priority_id, type_id) по матрице комбинаций, или None если не определено.
 
     Один LLM-вызов на оба поля: приоритет и тип — одно решение.
-    llama-3.3 (fast), фолбэк Llama 4 Scout. Keyword pre-pass не делаем:
+    Основная модель, фолбэк gpt-oss. Keyword pre-pass не делаем:
     «блокирует/не блокирует торговлю» регулярками не различить.
     """
     if not history.strip() and not ticket_title.strip():
@@ -274,7 +292,9 @@ async def classify_priority_type(
     prompt = _build_pt_prompt()
     raw = await _groq_classify(prompt, user_content)
     if raw is None:
-        raw = await _groq_classify(prompt, user_content, model=_GROQ_FALLBACK_MODEL)
+        raw = await _groq_classify(
+            prompt, user_content, model=_GROQ_FALLBACK_MODEL, reasoning_effort=""
+        )
     if raw is None:
         return None
     combo = _parse_pt_combo(raw)

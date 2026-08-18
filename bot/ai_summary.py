@@ -1,4 +1,4 @@
-"""Generate ticket summary via Groq API (llama-3.3 + Llama 4 Scout fallback)."""
+"""Generate ticket summary via Groq API (text model + multimodal fallback)."""
 from __future__ import annotations
 
 import asyncio
@@ -45,9 +45,9 @@ _FEW_SHOT_EXAMPLES: list[dict] = _load_few_shot_examples()
 _VOICE_EXAMPLES: list[str] = load_voice_examples()
 
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-_GROQ_MODEL = "llama-3.3-70b-versatile"
-# Multimodal fallback: separate per-model quota on Groq + image support
-_GROQ_VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+# Multimodal: qwen3.6 принимает image_url в content. Прежний llama-4-scout
+# Groq вывел из обслуживания (404 model_not_found), как и llama-3.3-70b.
+_GROQ_VISION_MODEL = "qwen/qwen3.6-27b"
 
 _AUDIO_TYPES = {"mp3", "ogg", "wav", "m4a", "opus", "aac", "flac", "oga"}
 _DEEPGRAM_URL = "https://api.deepgram.com/v1/listen"
@@ -79,11 +79,11 @@ async def call_groq_text(
     prompt: str,
     *,
     system: str | None = None,
-    model: str = _GROQ_MODEL,
+    model: str = "",
     max_tokens: int = 300,
     temperature: float = 0.1,
     timeout_seconds: float = 20,
-    reasoning_effort: str = "",
+    reasoning_effort: str | None = None,
 ) -> str | None:
     """One-shot Groq chat completion via the shared session and LLM semaphore.
 
@@ -91,8 +91,9 @@ async def call_groq_text(
     Returns the reply text, or None on any failure (missing key, non-200,
     network error) — callers treat LLM output as optional.
 
+    model пусто → модель суммарки из env (жёсткий llama-3.3 Groq отключил).
     reasoning_effort (напр. "none") прокидывается для reasoning-моделей (qwen3),
-    чтобы отключить <think> и не жечь токены; пусто — не передаётся.
+    чтобы отключить <think> и не жечь токены; None → значение из config.
     """
     if not config.groq_api_key:
         return None
@@ -101,11 +102,13 @@ async def call_groq_text(
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
     payload: dict = {
-        "model": model,
+        "model": model or config.groq_summary_model,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
+    if reasoning_effort is None:
+        reasoning_effort = config.groq_reasoning_effort
     if reasoning_effort:
         payload["reasoning_effort"] = reasoning_effort
     started = time.monotonic()
@@ -174,7 +177,7 @@ async def call_groq_json(
 
 
 async def _call_groq_for_summary(system_text: str, history: str, ticket_id: str) -> str | None:
-    """Primary: text-only summary via Groq llama-3.3-70b."""
+    """Primary: text-only summary via the Groq model from env."""
     if not config.groq_api_key:
         logger.info("Groq fallback skipped: GROQ_API_KEY not set")
         return None
@@ -222,7 +225,7 @@ async def _call_groq_vision_for_summary(
     ticket_id: str,
     session: aiohttp.ClientSession,
 ) -> str | None:
-    """Fallback: summary via Groq Llama 4 Scout (multimodal, separate quota).
+    """Fallback: summary via the Groq multimodal model (images + text).
 
     Retries on 429/503 — Groq limits are per-minute, short waits suffice.
     """
@@ -238,6 +241,8 @@ async def _call_groq_vision_for_summary(
         "max_tokens": 3000,
         "temperature": 0.3,
     }
+    if config.groq_reasoning_effort:
+        payload["reasoning_effort"] = config.groq_reasoning_effort
     for attempt in range(3):
         try:
             async with LLM_SEMAPHORE, session.post(
@@ -737,10 +742,10 @@ async def generate_ticket_summary(
         format_instructions=format_instructions,
     )
 
-    # Groq llama-3.3 first — fast, text-only
+    # Text-only Groq call first — fast
     raw_text: str | None = await _call_groq_for_summary(system_text, history, ticket_id)
 
-    # Groq Scout fallback if llama failed (separate quota, supports images/audio)
+    # Multimodal fallback if the text call failed (supports images/audio)
     if raw_text is None:
         try:
             async with shared_session() as session:

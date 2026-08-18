@@ -1,4 +1,4 @@
-"""Vision-RAG: describe images via Groq Llama 4 Scout for knowledge indexing."""
+"""Vision-RAG: describe images via the Groq multimodal model for knowledge indexing."""
 from __future__ import annotations
 
 import base64
@@ -12,7 +12,8 @@ from .llm_semaphore import LLM_SEMAPHORE
 
 logger = logging.getLogger(__name__)
 
-_GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+# llama-4-scout Groq вывел из обслуживания (404) — qwen3.6 тоже принимает image_url
+_GROQ_MODEL = "qwen/qwen3.6-27b"
 _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 _PROMPT = (
@@ -62,6 +63,8 @@ async def describe_image(image_bytes: bytes, filename: str = "") -> str | None:
         "temperature": 0.1,
         "max_tokens": 200,
     }
+    if config.groq_reasoning_effort:
+        payload["reasoning_effort"] = config.groq_reasoning_effort
 
     try:
         async with LLM_SEMAPHORE:
