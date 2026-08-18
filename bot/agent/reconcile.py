@@ -138,7 +138,7 @@ async def reconcile_one(
 
 async def reconcile_recent(
     *, hours: int = 24, _suggestions_fn=None, _posts_fn=None, _set_fn=None,
-    _staff=None, _judge_fn=None, _sleep_fn=None,
+    _staff=None, _judge_fn=None, _sleep_fn=None, _candidate_fn=None,
     pause_s: float = 4.0, retry_pause_s: float = 30.0,
 ) -> dict:
     """Ночная сверка свежих предложений с фактическими ответами операторов.
@@ -146,7 +146,8 @@ async def reconcile_recent(
     Тянет посты через HDE API (под троттлом), судит LLM-судьёй, пишет
     judge_reference_answer + канонический judge_label (accepted/corrected) и
     категорию в judge_detail. not_comparable не размечается — только считается.
-    Пейсинг под Groq free-tier: pause_s между парами, один повтор после
+    Вердикт bot_wrong_fact дополнительно встаёт в очередь кандидатов в базу
+    знаний. Пейсинг под Groq free-tier: pause_s между парами, один повтор после
     retry_pause_s. Ошибка по одному тикету не роняет проход.
     """
     from ..config import config
@@ -155,6 +156,8 @@ async def reconcile_recent(
         from ..db import get_unjudged_suggestions as _suggestions_fn
     if _set_fn is None:
         from ..db import set_judge_result as _set_fn
+    if _candidate_fn is None:
+        from ..db import save_kb_candidate as _candidate_fn
     if _judge_fn is None:
         _judge_fn = judge_divergence
     if _sleep_fn is None:
@@ -204,6 +207,24 @@ async def reconcile_recent(
                 detail=f"judge:{category} {reason}".strip(),
                 category=category,
             )
+            if category == "bot_wrong_fact":
+                # Неверный факт — либо в базе знаний нет статьи, либо она врёт.
+                # Ставим в очередь; решает человек (категорию поставила модель).
+                try:
+                    await _candidate_fn(
+                        suggestion_id=sug["id"],
+                        ticket_id=str(sug["ticket_id"]),
+                        title=sug.get("title") or "",
+                        history=sug.get("history") or "",
+                        ai_answer=ai_answer,
+                        reference_answer=reference,
+                        reason=reason,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "reconcile: KB candidate queue failed for ticket %s: %s",
+                        sug.get("ticket_id"), exc,
+                    )
         except Exception as exc:
             stats["errors"] += 1
             logger.warning("reconcile: ticket %s failed: %s", sug.get("ticket_id"), exc)

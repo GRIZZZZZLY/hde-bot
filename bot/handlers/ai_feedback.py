@@ -68,6 +68,33 @@ def answer_feedback_kb() -> InlineKeyboardMarkup:
     ])
 
 
+def kb_candidate_kb(candidate_id: int) -> InlineKeyboardMarkup:
+    """Решение по кандидату в базу знаний из ночной сверки."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="➕ В базу", callback_data=f"kbc:add:{candidate_id}"),
+        InlineKeyboardButton(text="✖️ Мимо", callback_data=f"kbc:skip:{candidate_id}"),
+    ]])
+
+
+@router.callback_query(F.data.startswith("kbc:"))
+async def cb_kb_candidate(callback: CallbackQuery) -> None:
+    from ..agent.kb_candidates import apply_kb_candidate
+
+    _, action, raw_id = callback.data.split(":", 2)
+    row = await apply_kb_candidate(int(raw_id), add=(action == "add"))
+    if row is None:
+        await callback.answer("Уже обработано", show_alert=False)
+    else:
+        await callback.answer(
+            "✅ Добавлено в базу знаний" if action == "add" else "Пропущено",
+            show_alert=False,
+        )
+    try:
+        await callback.message.edit_reply_markup(reply_markup=None)
+    except Exception as exc:
+        logger.debug("kb candidate: reply markup cleanup failed: %s", exc)
+
+
 def memo_feedback_kb() -> InlineKeyboardMarkup:
     """Keyboard for the Памятка message."""
     return InlineKeyboardMarkup(inline_keyboard=[[

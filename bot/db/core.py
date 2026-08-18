@@ -582,6 +582,29 @@ async def init_db() -> None:
             )
         except Exception:
             pass  # column already exists
+        # Knowledge-base candidates queued by reconciliation (bot_wrong_fact):
+        # the judge is a model, so a human decides before anything reaches the KB.
+        await db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS kb_candidates (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                suggestion_id    INTEGER NOT NULL UNIQUE,
+                ticket_id        TEXT NOT NULL,
+                title            TEXT,
+                history          TEXT,
+                ai_answer        TEXT,
+                reference_answer TEXT,
+                reason           TEXT,
+                status           TEXT NOT NULL DEFAULT 'pending',
+                created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+                decided_at       TEXT
+            )
+            """
+        )
+        await db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_kb_candidates_status "
+            "ON kb_candidates(status)"
+        )
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_ai_suggestions_topic ON ai_suggestions(topic_id)"
         )

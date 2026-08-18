@@ -136,6 +136,12 @@ from .optimizer_store import (
     save_optimization_sample,
     save_prompt_version,
 )
+from .kb_candidates import (
+    get_kb_candidate,
+    list_pending_kb_candidates,
+    save_kb_candidate,
+    set_kb_candidate_status,
+)
 from .suggestion_store import (
     collect_suggestion_daily_stats,
     compute_idempotency_key,
