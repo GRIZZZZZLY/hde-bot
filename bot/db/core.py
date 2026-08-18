@@ -574,6 +574,14 @@ async def init_db() -> None:
             )
         except Exception:
             pass  # column already exists
+        # Migration: reconciliation verdict category (same_action / bot_escalated /
+        # bot_wrong_fact) — the morning digest groups by it
+        try:
+            await db.execute(
+                "ALTER TABLE ai_suggestions ADD COLUMN judge_category TEXT"
+            )
+        except Exception:
+            pass  # column already exists
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_ai_suggestions_topic ON ai_suggestions(topic_id)"
         )

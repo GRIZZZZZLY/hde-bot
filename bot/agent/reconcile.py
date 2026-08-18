@@ -202,6 +202,7 @@ async def reconcile_recent(
                 reference_answer=reference,
                 label=label,
                 detail=f"judge:{category} {reason}".strip(),
+                category=category,
             )
         except Exception as exc:
             stats["errors"] += 1

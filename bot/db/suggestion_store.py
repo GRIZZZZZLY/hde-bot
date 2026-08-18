@@ -130,15 +130,17 @@ async def get_unjudged_suggestions(hours: int = 24, limit: int = 200) -> list[di
 
 
 async def set_judge_result(
-    suggestion_id: int, *, reference_answer: str, label: str, detail: str = ""
+    suggestion_id: int, *, reference_answer: str, label: str, detail: str = "",
+    category: str | None = None,
 ) -> None:
     """Вердикт сверки: эталон = фактический ответ оператора; label канонический
-    (accepted/corrected). Пересчитывает effective_label."""
+    (accepted/corrected), category — что именно разошлось (см. agent.reconcile).
+    Пересчитывает effective_label."""
     async with connect() as db:
         await db.execute(
             "UPDATE ai_suggestions SET judge_reference_answer=?, judge_label=?, "
-            "judge_detail=?, judged_at=datetime('now') WHERE id=?",
-            (reference_answer, label, detail, suggestion_id),
+            "judge_detail=?, judge_category=?, judged_at=datetime('now') WHERE id=?",
+            (reference_answer, label, detail, category, suggestion_id),
         )
         await db.commit()
     await _recompute_labels(suggestion_id)
@@ -253,27 +255,59 @@ async def collect_suggestion_daily_stats(hours: int = 24) -> dict:
     return stats
 
 
-async def get_reconciliation_digest(hours: int = 24, top: int = 5) -> dict:
-    """Сводка ночной сверки за N часов: сколько предложений совпало с оператором
-    (accepted) и разошлось (corrected) + топ расхождений (бот ↔ оператор) для ревью."""
+async def get_reconciliation_digest(
+    hours: int = 24, top: int = 5, trend_days: int = 7
+) -> dict:
+    """Сводка ночной сверки: сколько вердиктов за N часов, разбивка по категориям,
+    сами расхождения (эскалация вместо решения / неверный факт) и тренд за неделю.
+
+    Показывать имеет смысл только расхождения — по ним есть что делать. Счётчик
+    и тренд остаются, чтобы молчание сводки нельзя было спутать с «задача не
+    запустилась»."""
+    window = f"-{int(hours)} hours"
     async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT judge_label, COUNT(*) AS n FROM ai_suggestions "
-            "WHERE judged_at >= datetime('now', ?) AND judge_label IS NOT NULL "
-            "GROUP BY judge_label",
-            (f"-{int(hours)} hours",),
+            "SELECT COUNT(*) AS n FROM ai_suggestions "
+            "WHERE judged_at >= datetime('now', ?) AND judge_label IS NOT NULL",
+            (window,),
         ) as cur:
-            counts = {r["judge_label"]: r["n"] for r in await cur.fetchall()}
+            judged = int((await cur.fetchone())["n"])
         async with db.execute(
-            "SELECT ticket_id, ai_answer, judge_reference_answer FROM ai_suggestions "
-            "WHERE judged_at >= datetime('now', ?) AND judge_label='corrected' "
-            "ORDER BY id DESC LIMIT ?",
-            (f"-{int(hours)} hours", int(top)),
+            "SELECT judge_category AS c, COUNT(*) AS n FROM ai_suggestions "
+            "WHERE judged_at >= datetime('now', ?) AND judge_category IS NOT NULL "
+            "GROUP BY judge_category",
+            (window,),
         ) as cur:
-            diverged = [dict(r) for r in await cur.fetchall()]
+            counts = {r["c"]: r["n"] for r in await cur.fetchall()}
+
+        async def _by_category(category: str) -> list[dict]:
+            async with db.execute(
+                "SELECT ticket_id, ai_answer, judge_reference_answer, judge_detail "
+                "FROM ai_suggestions WHERE judged_at >= datetime('now', ?) "
+                "AND judge_category=? ORDER BY id DESC LIMIT ?",
+                (window, category, int(top)),
+            ) as cur:
+                return [dict(r) for r in await cur.fetchall()]
+
+        escalated = await _by_category("bot_escalated")
+        wrong_fact = await _by_category("bot_wrong_fact")
+        async with db.execute(
+            "SELECT date(judged_at) AS day, COUNT(*) AS judged, "
+            "SUM(judge_label='corrected') AS diverged FROM ai_suggestions "
+            "WHERE judged_at >= datetime('now', ?) AND judge_label IS NOT NULL "
+            "GROUP BY day ORDER BY day",
+            (f"-{int(trend_days)} days",),
+        ) as cur:
+            trend = [
+                {"day": r["day"], "judged": int(r["judged"]),
+                 "diverged": int(r["diverged"] or 0)}
+                for r in await cur.fetchall()
+            ]
     return {
-        "matched": counts.get("accepted", 0),
-        "diverged": counts.get("corrected", 0),
-        "top_diverged": diverged,
+        "judged": judged,
+        "counts": counts,
+        "escalated": escalated,
+        "wrong_fact": wrong_fact,
+        "trend": trend,
     }

@@ -309,8 +309,8 @@ async def test_reconcile_recent_maps_categories_to_labels():
 
     saved = []
 
-    async def set_fn(sid, *, reference_answer, label, detail):
-        saved.append((sid, label, detail))
+    async def set_fn(sid, *, reference_answer, label, detail, category=None):
+        saved.append((sid, label, detail, category))
 
     async def sleep_fn(_seconds):
         return None
@@ -324,10 +324,14 @@ async def test_reconcile_recent_maps_categories_to_labels():
         "same_action": 1, "bot_escalated": 1, "bot_wrong_fact": 1,
         "not_comparable": 1, "skipped": 2, "errors": 0,
     }
-    assert [(sid, label) for sid, label, _ in saved] == [
+    assert [(sid, label) for sid, label, _, _ in saved] == [
         (1, "accepted"), (2, "corrected"), (3, "corrected"),
     ]
     assert saved[1][2].startswith("judge:bot_escalated")
+    # Категория — отдельным полем: по ней строится утренняя сводка (п.3).
+    assert [cat for _, _, _, cat in saved] == [
+        "same_action", "bot_escalated", "bot_wrong_fact",
+    ]
 
 
 async def test_reconcile_recent_retries_judge_once_then_skips():
@@ -364,32 +368,122 @@ async def test_reconcile_recent_retries_judge_once_then_skips():
     assert stats["skipped"] == 1
 
 
-async def test_reconciliation_digest_counts_and_top():
+async def test_reconciliation_digest_groups_by_category():
     import bot.db as db_module
     from bot.db.suggestion_store import (
         get_reconciliation_digest, record_suggestion, set_judge_result,
     )
     await db_module.init_db()
-    s1 = await record_suggestion(ticket_id="A", topic_id=1, trigger_source="first",
-        context_until_post_id="1", pipeline_version="v0", prompt_version="legacy")
-    s2 = await record_suggestion(ticket_id="B", topic_id=2, trigger_source="first",
-        context_until_post_id="1", pipeline_version="v0", prompt_version="legacy")
-    await set_judge_result(s1, reference_answer="норм", label="accepted", detail="x")
-    await set_judge_result(s2, reference_answer="Позвоните в банк 900", label="corrected", detail="x")
+
+    async def _sug(ticket):
+        return await record_suggestion(
+            ticket_id=ticket, topic_id=1, trigger_source="first",
+            context_until_post_id="1", pipeline_version="v0", prompt_version="legacy",
+            ai_answer=f"черновик для {ticket}",
+        )
+
+    ok, esc, wrong = await _sug("A"), await _sug("B"), await _sug("C")
+    await set_judge_result(ok, reference_answer="то же самое", label="accepted",
+                           detail="judge:same_action ок", category="same_action")
+    await set_judge_result(esc, reference_answer="Обновил драйвер, пробуйте",
+                           label="corrected", detail="judge:bot_escalated решил сам",
+                           category="bot_escalated")
+    await set_judge_result(wrong, reference_answer="Настроили без банка",
+                           label="corrected", detail="judge:bot_wrong_fact банк не нужен",
+                           category="bot_wrong_fact")
+
     d = await get_reconciliation_digest(hours=24)
-    assert d["matched"] == 1 and d["diverged"] == 1
-    assert len(d["top_diverged"]) == 1
-    assert d["top_diverged"][0]["ticket_id"] == "B"
-    assert d["top_diverged"][0]["judge_reference_answer"] == "Позвоните в банк 900"
+    assert d["judged"] == 3
+    assert d["counts"] == {"same_action": 1, "bot_escalated": 1, "bot_wrong_fact": 1}
+    assert [r["ticket_id"] for r in d["escalated"]] == ["B"]
+    assert [r["ticket_id"] for r in d["wrong_fact"]] == ["C"]
+    assert d["wrong_fact"][0]["judge_reference_answer"] == "Настроили без банка"
+    assert d["wrong_fact"][0]["ai_answer"] == "черновик для C"
 
 
-def test_format_reconciliation_digest():
+async def test_reconciliation_digest_trend_is_seven_days_oldest_first():
+    import bot.db as db_module
+    from bot.db.core import connect
+    from bot.db.suggestion_store import (
+        get_reconciliation_digest, record_suggestion, set_judge_result,
+    )
+    await db_module.init_db()
+    for ticket, category, label, days_ago in [
+        ("D1", "same_action", "accepted", 0),
+        ("D2", "bot_escalated", "corrected", 0),
+        ("D3", "bot_wrong_fact", "corrected", 3),
+        ("D4", "same_action", "accepted", 30),      # вне окна тренда
+    ]:
+        sid = await record_suggestion(
+            ticket_id=ticket, topic_id=1, trigger_source="first",
+            context_until_post_id="1", pipeline_version="v0", prompt_version="legacy",
+            ai_answer="черновик",
+        )
+        await set_judge_result(sid, reference_answer="эталон", label=label,
+                               detail=f"judge:{category}", category=category)
+        if days_ago:
+            async with connect() as db:
+                await db.execute(
+                    "UPDATE ai_suggestions SET judged_at=datetime('now', ?) WHERE id=?",
+                    (f"-{days_ago} days", sid),
+                )
+                await db.commit()
+
+    d = await get_reconciliation_digest(hours=24)
+    trend = d["trend"]
+    assert [t["diverged"] for t in trend][-1] == 1        # сегодня: одно расхождение
+    assert sum(t["judged"] for t in trend) == 3           # 30-дневный вердикт не в окне
+    assert [t["day"] for t in trend] == sorted(t["day"] for t in trend)  # старый→новый
+
+
+def test_format_reconciliation_digest_silent_without_verdicts():
     from bot.formatter import format_reconciliation_digest
-    assert format_reconciliation_digest({"matched": 0, "diverged": 0, "top_diverged": []}) is None
+    assert format_reconciliation_digest(
+        {"judged": 0, "counts": {}, "escalated": [], "wrong_fact": [], "trend": []}
+    ) is None
+
+
+def test_format_reconciliation_digest_keeps_heartbeat_without_divergences():
+    """Расхождений нет — сводка не молчит, а отчитывается одной строкой.
+
+    Полная тишина неотличима от «ночная задача не запустилась», а это уже
+    случалось (отпускной отчёт 17.08).
+    """
+    from bot.formatter import format_reconciliation_digest
     txt = format_reconciliation_digest({
-        "matched": 3, "diverged": 2,
-        "top_diverged": [{"ticket_id": "T9", "ai_answer": "бот текст",
-                          "judge_reference_answer": "опер текст"}],
+        "judged": 4, "counts": {"same_action": 4},
+        "escalated": [], "wrong_fact": [], "trend": [],
     })
-    assert "Совпало с оператором" in txt and "3" in txt
-    assert "T9" in txt and "опер текст" in txt
+    assert txt is not None
+    assert "4" in txt and "расхождений нет" in txt.lower()
+
+
+def test_format_reconciliation_digest_lists_divergences_with_links(monkeypatch):
+    import bot.config as config_module
+    from bot.formatter import format_reconciliation_digest
+    monkeypatch.setattr(
+        config_module.config, "hde_api_base_url",
+        "https://posiflora.helpdeskeddy.com/api/v2", raising=False,
+    )
+    txt = format_reconciliation_digest({
+        "judged": 5,
+        "counts": {"same_action": 3, "bot_escalated": 1, "bot_wrong_fact": 1},
+        "escalated": [{"ticket_id": "190098", "ai_answer": "передадим специалисту",
+                       "judge_reference_answer": "Обновил драйвер, пробуйте",
+                       "judge_detail": "judge:bot_escalated решил сам"}],
+        "wrong_fact": [{"ticket_id": "188203", "ai_answer": "настройку делает только банк",
+                        "judge_reference_answer": "Подключился и настроил сам",
+                        "judge_detail": "judge:bot_wrong_fact банк не нужен"}],
+        "trend": [{"day": "2026-08-17", "judged": 5, "diverged": 2},
+                  {"day": "2026-08-18", "judged": 5, "diverged": 2}],
+    })
+    assert "posiflora.helpdeskeddy.com/ru/ticket/list/filter/id/1/ticket/190098" in txt
+    assert "188203" in txt
+    assert "решил сам" in txt and "банк не нужен" in txt
+
+
+def test_hde_ticket_url_without_configured_base(monkeypatch):
+    import bot.config as config_module
+    from bot.formatter import hde_ticket_url
+    monkeypatch.setattr(config_module.config, "hde_api_base_url", "", raising=False)
+    assert hde_ticket_url("123") == ""

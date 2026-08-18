@@ -223,26 +223,76 @@ def format_morning_digest(unassigned_equipment_count: int = 0) -> str:
     ])
 
 
+def hde_ticket_url(ticket_id: str) -> str:
+    """Ссылка на тикет в интерфейсе оператора. Пусто, если база API не настроена."""
+    from .config import config
+    base = (config.hde_api_base_url or "").strip().rstrip("/")
+    if not base:
+        return ""
+    base = base.split("/api/")[0].rstrip("/")
+    return f"{base}/ru/ticket/list/filter/id/1/ticket/{ticket_id}"
+
+
+def _ticket_ref(ticket_id: str) -> str:
+    tid = escape(str(ticket_id or ""))
+    url = hde_ticket_url(tid)
+    return f'<a href="{url}">#{tid}</a>' if url else f"#{tid}"
+
+
+def _judge_reason(detail: str) -> str:
+    """Из judge_detail («judge:bot_escalated оператор решил сам») — только причину."""
+    text = (detail or "").strip()
+    if text.startswith("judge:"):
+        parts = text.split(None, 1)
+        text = parts[1] if len(parts) > 1 else ""
+    return text.strip()
+
+
+def _divergence_block(title: str, rows: list) -> list[str]:
+    lines = ["", f"<b>{title}</b>"]
+    for row in rows:
+        reason = escape(_judge_reason(row.get("judge_detail", ""))[:160])
+        bot_a = escape((row.get("ai_answer") or "").strip())[:180]
+        op_a = escape((row.get("judge_reference_answer") or "").strip())[:180]
+        lines.append(f"{_ticket_ref(row.get('ticket_id', ''))} — {reason}")
+        lines.append(f"   бот: {bot_a}")
+        lines.append(f"   опер: {op_a}")
+    return lines
+
+
 def format_reconciliation_digest(data: dict) -> Optional[str]:
-    """Утренняя сводка ночной сверки «бот ↔ оператор». None, если сверять было нечего."""
-    matched = int(data.get("matched", 0) or 0)
-    diverged = int(data.get("diverged", 0) or 0)
-    total = matched + diverged
-    if total == 0:
+    """Утренняя сводка ночной сверки «бот ↔ оператор».
+
+    Показывает только то, по чему есть что делать: эскалация вместо решения и
+    неверный факт. None — если вердиктов не было вовсе; если они были, но все
+    совпали, остаётся одна строка: полная тишина неотличима от несработавшей
+    задачи."""
+    judged = int(data.get("judged", 0) or 0)
+    if judged == 0:
         return None
-    lines = [
-        "🧭 <b>Сверка ответов за сутки</b>",
-        f"Совпало с оператором: <b>{matched}</b> из {total}",
-        f"Разошлось: <b>{diverged}</b>",
-    ]
-    top = data.get("top_diverged") or []
-    if top:
-        lines += ["", "<b>Топ расхождений</b> (бот → оператор):"]
-        for i, d in enumerate(top, 1):
-            tid = escape(str(d.get("ticket_id", "")))
-            bot_a = escape((d.get("ai_answer") or "").strip())[:200]
-            op_a = escape((d.get("judge_reference_answer") or "").strip())[:200]
-            lines += [f"{i}. #{tid}", f"   бот: {bot_a}", f"   опер: {op_a}"]
+    counts = data.get("counts") or {}
+    escalated = data.get("escalated") or []
+    wrong_fact = data.get("wrong_fact") or []
+    lines = ["🧭 <b>Сверка ответов за сутки</b>"]
+    if not escalated and not wrong_fact:
+        lines.append(f"Сверено: <b>{judged}</b> — расхождений нет.")
+    else:
+        lines.append(
+            f"Сверено: <b>{judged}</b> · совпало {counts.get('same_action', 0)} · "
+            f"эскалация вместо решения {counts.get('bot_escalated', 0)} · "
+            f"неверный факт {counts.get('bot_wrong_fact', 0)}"
+        )
+        if wrong_fact:
+            lines += _divergence_block("❌ Неверно по существу", wrong_fact)
+        if escalated:
+            lines += _divergence_block("🔁 Оператор решил сам", escalated)
+    trend = data.get("trend") or []
+    if len(trend) > 1:
+        cells = " · ".join(
+            f"{(t.get('day') or '')[5:]} {t.get('diverged', 0)}/{t.get('judged', 0)}"
+            for t in trend
+        )
+        lines += ["", f"<i>Расхождений/сверено по дням: {cells}</i>"]
     return "\n".join(lines)
 
 

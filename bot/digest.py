@@ -48,8 +48,8 @@ async def send_reconciliation_digest(bot: Bot) -> None:
             disable_web_page_preview=True,
         )
         logger.info(
-            "Reconciliation digest sent: matched=%s diverged=%s",
-            data.get("matched"), data.get("diverged"),
+            "Reconciliation digest sent: judged=%s categories=%s",
+            data.get("judged"), data.get("counts"),
         )
     except TelegramAPIError as exc:
         logger.error("Failed to send reconciliation digest: %s", exc)
