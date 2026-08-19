@@ -13,14 +13,14 @@ from ..ai_summary import get_active_format_instructions, invalidate_prompt_cache
 from ..config import config
 from .dataset import exclude_tickets, load_golden_ticket_ids, split_samples
 from .evaluator import combined_score
-from .judge import holdout_score
+from .gate import apply_gate
+from .judge import holdout_detail
 from .llm_router import LLMRouter
 from .mutations import build_mutation_prompt
 
 logger = logging.getLogger(__name__)
 
 _MIN_SAMPLES = 10
-_MIN_IMPROVEMENT = 0.03
 _EVAL_DAYS = 90
 
 
@@ -41,6 +41,11 @@ async def _load_eval_samples() -> tuple[list[dict], str]:
         return samples, f"сверка · {_EVAL_DAYS} дн."
     samples = await db.get_optimization_samples(days=30)
     return samples, "кнопки · 30 дн. (устаревший источник)"
+
+
+def _fmt(value: float | None) -> str:
+    """Дельта/интервал в отчёт. None — когда парных кейсов не хватило на оценку."""
+    return "н/д" if value is None else f"{value:+.3f}"
 
 
 def _progress_bar(pct: int) -> str:
@@ -192,23 +197,30 @@ async def run_optimizer(bot: Bot) -> None:
         await _update_progress(progress_msg, 78, "Финальная проверка на holdout-наборе...")
 
     # Holdout-гейт: топ-2 кандидата по train-скору пересчитываются судьёй
-    # на отложенных сэмплах; apply-решение — только по holdout.
+    # на отложенных сэмплах; apply-решение — только по holdout, и только
+    # по-кейсово (см. gate.apply_gate).
     top_models = sorted(scores, key=lambda m: scores[m][1], reverse=True)[:2]
     try:
-        baseline_holdout = await holdout_score(holdout, current_instructions)
-        final_scores: dict[str, float] = {}
+        baseline_detail = await holdout_detail(holdout, current_instructions)
+        details: dict[str, dict] = {}
         for model_name in top_models:
-            final_scores[model_name] = await holdout_score(holdout, scores[model_name][0])
+            details[model_name] = await holdout_detail(holdout, scores[model_name][0])
     except Exception as exc:
         logger.warning("Optimizer: holdout evaluation failed: %s", exc)
         if progress_msg:
             await _update_progress(progress_msg, 78, f"❌ Ошибка holdout-оценки: {exc}")
         return
 
-    winner_model = max(final_scores, key=lambda m: final_scores[m])
+    winner_model = max(details, key=lambda m: details[m]["score"])
     winner_content = scores[winner_model][0]
-    winner_score = final_scores[winner_model]
-    baseline = baseline_holdout  # гейт и отчёт сравнивают holdout с holdout
+    winner_score = details[winner_model]["score"]
+    baseline = baseline_detail["score"]  # гейт и отчёт сравнивают holdout с holdout
+    verdict = apply_gate(baseline_detail, details[winner_model])
+    logger.info(
+        "Optimizer gate: mean_delta=%s ci_low=%s n=%d passed=%s reasons=%s",
+        verdict["mean_delta"], verdict["ci_low"], verdict["n"],
+        verdict["passed"], verdict["reasons"],
+    )
 
     if progress_msg:
         await _update_progress(progress_msg, 80, "Сохраняю кандидатов...")
@@ -218,10 +230,9 @@ async def run_optimizer(bot: Bot) -> None:
         vid = await db.save_prompt_version(content=content, score=score, proposed_by=model_name)
         version_ids[model_name] = vid
 
-    if winner_score < baseline + _MIN_IMPROVEMENT:
+    if not verdict["passed"]:
         logger.info(
-            "Optimizer: winner %.3f does not beat baseline %.3f + threshold %.2f, no report",
-            winner_score, baseline, _MIN_IMPROVEMENT,
+            "Optimizer: gate rejected %s (%s)", winner_model, "; ".join(verdict["reasons"]),
         )
         await db.reject_all_prompt_candidates()
         if progress_msg:
@@ -229,9 +240,10 @@ async def run_optimizer(bot: Bot) -> None:
                 await progress_msg.edit_text(
                     f"⚙️ <b>Оптимизация промпта</b>\n\n"
                     f"{_progress_bar(100)}\n\n"
-                    f"✅ Завершено. Улучшений не найдено.\n"
-                    f"Базовый скор: {round(baseline * 100)} баллов · "
-                    f"Лучший кандидат: {round(winner_score * 100)} баллов ({winner_model}).",
+                    f"✅ Завершено. Кандидат не принят.\n"
+                    f"Базовый скор: {round(baseline * 100)} · "
+                    f"лучший: {round(winner_score * 100)} ({escape(winner_model)})\n"
+                    f"Причины:\n" + "\n".join(f"• {escape(r)}" for r in verdict["reasons"]),
                     parse_mode="HTML",
                 )
             except Exception as exc:
@@ -249,6 +261,7 @@ async def run_optimizer(bot: Bot) -> None:
         winner_score=winner_score,
         winner_vid=winner_vid,
         baseline=baseline,
+        verdict=verdict,
         current_instructions=current_instructions,
         sample_count=len(samples),
         source=source,
@@ -278,6 +291,7 @@ async def _send_report(
     current_instructions: str,
     sample_count: int,
     source: str,
+    verdict: dict,
     all_scores: dict[str, tuple[str, float]],
 ) -> None:
     """Send Telegram report to operator with Apply/Reject/Detail buttons."""
@@ -304,7 +318,9 @@ async def _send_report(
         f"\U0001f4ca Данные: {sample_count} сэмплов · {escape(source)}\n"
         f"\u26a1 Сейчас: {baseline_int} баллов\n\n"
         f"\U0001f947 Победитель: <b>{escape(winner_model)}</b>\n"
-        f"\U0001f4c8 Результат: {winner_int} баллов (+{improvement_pct}%)\n\n"
+        f"\U0001f4c8 Результат: {winner_int} баллов (+{improvement_pct}%)\n"
+        f"\U0001f9ee Парная дельта: {_fmt(verdict['mean_delta'])} "
+        f"(нижняя граница {_fmt(verdict['ci_low'])}, кейсов {verdict['n']})\n\n"
         f"\U0001f4dd <b>Первое отличие:</b>\n"
         f"— <i>{escape(old_snippet)}</i>\n"
         f"+ <i>{escape(new_snippet)}</i>\n\n"

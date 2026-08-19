@@ -29,7 +29,8 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf8"):
 from bot.db.suggestion_store import EVAL_SAMPLES_SQL
 from bot.optimizer import evaluator
 from bot.optimizer.dataset import exclude_tickets, load_golden_ticket_ids, split_samples
-from bot.optimizer.judge import holdout_score
+from bot.optimizer.gate import apply_gate
+from bot.optimizer.judge import holdout_detail
 
 MIN_SAMPLES_WARN = 30
 
@@ -47,6 +48,9 @@ class EvalCache:
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS eval_cache (key TEXT PRIMARY KEY, answer TEXT)"
         )
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS verdict_cache (key TEXT PRIMARY KEY, verdict TEXT)"
+        )
         self.conn.commit()
 
     def get(self, key: str) -> str | None:
@@ -58,6 +62,32 @@ class EvalCache:
     def put(self, key: str, answer: str) -> None:
         self.conn.execute(
             "INSERT OR REPLACE INTO eval_cache (key, answer) VALUES (?,?)", (key, answer)
+        )
+        self.conn.commit()
+
+
+class VerdictCache:
+    """Кеш вердиктов судьи. Ключ строит judge.verdict_cache_key — он включает
+    индекс повтора, модель, версию рубрики и температуру.
+
+    Индекса повтора одного мало: без версии рубрики кеш отдал бы вердикт,
+    вынесенный по прежним правилам, и правка рубрики выглядела бы как отсутствие
+    эффекта. Отдельная таблица от кеша генераций: их инвалидируют разные вещи.
+    """
+
+    def __init__(self, cache: EvalCache) -> None:
+        self.conn = cache.conn
+
+    def get(self, key: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT verdict FROM verdict_cache WHERE key=?", (key,)
+        ).fetchone()
+        return row[0] if row else None
+
+    def put(self, key: str, verdict: str) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO verdict_cache (key, verdict) VALUES (?,?)",
+            (key, verdict),
         )
         self.conn.commit()
 
@@ -153,18 +183,25 @@ async def evaluate_prompt(
     holdout: list[dict],
     cache: EvalCache,
     use_judge: bool,
+    verdict_cache: VerdictCache | None = None,
 ) -> dict:
     generate = make_cached_generate(cache, prompt_text)
+    detail = None
     train_score = await evaluator.combined_score(
         train, prompt_text, max_samples=None, _generate_fn=generate
     )
     if use_judge:
-        hold = await holdout_score(holdout, prompt_text, _generate_fn=generate)
+        detail = await holdout_detail(
+            holdout, prompt_text, _generate_fn=generate, cache=verdict_cache
+        )
+        hold = detail["score"]
     else:
         hold = await evaluator.combined_score(
             holdout, prompt_text, max_samples=None, _generate_fn=generate
         )
-    return {"label": label, "train": train_score, "holdout": hold}
+    return {
+        "label": label, "train": train_score, "holdout": hold, "detail": detail,
+    }
 
 
 async def worst_regressions(
@@ -197,6 +234,10 @@ async def amain() -> int:
     ap.add_argument("--version", type=int, help="id версии из prompt_versions")
     ap.add_argument("--days", type=int, default=90)
     ap.add_argument("--no-judge", action="store_true")
+    ap.add_argument(
+        "--resample-judge", action="store_true",
+        help="игнорировать кеш вердиктов — замер текущей вариативности судьи",
+    )
     ap.add_argument("--cache", default="data/eval_cache.db")
     args = ap.parse_args()
 
@@ -234,19 +275,39 @@ async def amain() -> int:
 
     cache = EvalCache(args.cache)
     use_judge = not args.no_judge
+    # --resample-judge: кеш вердиктов игнорируется, судья спрашивается заново.
+    # Этим меряется его собственный разброс — то, из чего берётся минимум гейта.
+    verdict_cache = None if args.resample_judge else VerdictCache(cache)
 
     results = []
     for label, text in (("active", active_text), (cand_label, cand_text)):
         print(f"Оцениваю «{label}»...")
-        results.append(await evaluate_prompt(label, text, train, holdout, cache, use_judge))
+        results.append(
+            await evaluate_prompt(
+                label, text, train, holdout, cache, use_judge, verdict_cache
+            )
+        )
 
     print("\n=== Результаты ===")
     print(f"{'промт':<20} {'train':>8} {'holdout':>8}")
     for r in results:
         print(f"{r['label']:<20} {r['train']:>8.3f} {r['holdout']:>8.3f}")
     delta = results[1]["holdout"] - results[0]["holdout"]
-    verdict = "✅ кандидат лучше" if delta > 0 else "❌ кандидат не лучше"
-    print(f"\nДельта на holdout: {delta:+.3f} — {verdict}")
+    print(f"\nДельта средних на holdout: {delta:+.3f}")
+    # Решает не разница средних, а парные дельты: baseline и кандидат считаются
+    # на ОДНИХ кейсах, и согласованность улучшения видна только по ним.
+    if results[0]["detail"] and results[1]["detail"]:
+        gate = apply_gate(results[0]["detail"], results[1]["detail"])
+        if gate["mean_delta"] is None or gate["ci_low"] is None:
+            print(f"Парные дельты: кейсов {gate['n']} — мало для оценки")
+        else:
+            print(
+                f"Парные дельты: средняя {gate['mean_delta']:+.3f}, "
+                f"нижняя граница {gate['ci_low']:+.3f}, кейсов {gate['n']}"
+            )
+        print("✅ кандидат проходит гейт" if gate["passed"] else "❌ кандидат не проходит гейт")
+        for reason in gate["reasons"]:
+            print(f"   • {reason}")
 
     regs = await worst_regressions(holdout, active_text, cand_text, cache)
     if regs:

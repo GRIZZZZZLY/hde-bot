@@ -81,6 +81,10 @@ def model_roles() -> dict[tuple[str, str], list[str]]:
     return roles
 
 
+def provider_key(provider: str) -> str:
+    return config.groq_api_key if provider == GROQ else config.openrouter_api_key
+
+
 async def probe_model(provider: str, model: str) -> str | None:
     """None — модель ответила (или проверять нечем). Иначе текст ошибки.
 
@@ -88,9 +92,12 @@ async def probe_model(provider: str, model: str) -> str | None:
     приходят на этом же запросе; 429 не считается провалом (см. модульный
     докстринг). Сетевой сбой тоже не провал модели — о нём только лог.
     """
-    key = config.groq_api_key if provider == GROQ else config.openrouter_api_key
+    key = provider_key(provider)
     if not key:
-        return None  # без ключа проверять нечего — молчим, а не паникуем
+        # Без ключа проверять нечего. Отличать «не проверяли» от «живо» обязан
+        # вызывающий (см. report_dead_models): молчаливое «всё ок» на нулевом
+        # числе запросов — это ложная зелёнка, ровно то, от чего канарейка нужна.
+        return None
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": "ping"}],
@@ -153,10 +160,25 @@ async def report_dead_models(bot, *, _check_fn=None) -> dict[tuple[str, str], st
     if not config.llm_canary_enabled:
         return {}
     roles = model_roles()
+
+    # «Проверка не выполнена» и «всё живо» — разные состояния, и путать их
+    # нельзя: без ключа ни один запрос не уходит, и отчёт «N моделей живы» был бы
+    # ложью на нулевом числе проверок.
+    skipped = [target for target in roles if not provider_key(target[0])]
+    if len(skipped) == len(roles):
+        logger.warning(
+            "LLM canary: ключа провайдера нет — проверка НЕ выполнена (%d моделей)",
+            len(roles),
+        )
+        return {}
+
     check = _check_fn or check_models
     dead = await check(roles)
     if not dead:
-        logger.info("LLM canary: %d model(s) alive", len(roles))
+        logger.info(
+            "LLM canary: %d model(s) alive, %d skipped (no key)",
+            len(roles) - len(skipped), len(skipped),
+        )
         return {}
     for (provider, model), error in dead.items():
         logger.error(

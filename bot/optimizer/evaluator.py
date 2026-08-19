@@ -22,38 +22,27 @@ _MAX_EVAL_SAMPLES = 20
 # Anti-degradation thresholds — penalise "lazy" short/structurally broken answers
 _MIN_LENGTH_RATIO = 0.3           # generated must be ≥30% of reference length
 _LENGTH_PENALTY = 0.5             # multiplier when length gate fails
-_MIN_JACCARD = 0.3                # word-set overlap with reference
-_JACCARD_PENALTY = 0.7            # multiplier when jaccard gate fails
 _CLIENT_SECTION_RE = re.compile(r"клиенту\s*:", re.IGNORECASE)
-_WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 GenerateFn = Callable[[str, str, str], Awaitable[str]]
-
-
-def _word_set(text: str) -> set[str]:
-    return {w.lower() for w in _WORD_RE.findall(text) if len(w) > 2}
 
 
 def _quality_multiplier(generated: str, ref_text: str) -> float:
     """Return multiplier in [0, 1] penalising lazy/broken answers.
 
-    Zero if structural check fails (no "Клиенту:" section).
-    Otherwise combines length-gate and jaccard-gate penalties.
+    Zero if structural check fails (no "Клиенту:" section), otherwise the
+    length gate.
+
+    Гейта по пересечению множеств слов (jaccard) здесь больше нет: он мерил «те
+    же слова», тогда как верный ответ может быть сформулирован иначе — и
+    наказывал именно перефразировку. Смысловую близость оценивает судья на
+    holdout (judge.AXES); train-прокси обязан остаться бесплатным.
     """
     if not _CLIENT_SECTION_RE.search(generated):
         return 0.0
-
-    mult = 1.0
     if ref_text and len(generated) < _MIN_LENGTH_RATIO * len(ref_text):
-        mult *= _LENGTH_PENALTY
-
-    ref_words = _word_set(ref_text)
-    if ref_words:
-        gen_words = _word_set(generated)
-        overlap = len(gen_words & ref_words) / len(ref_words)
-        if overlap < _MIN_JACCARD:
-            mult *= _JACCARD_PENALTY
-    return mult
+        return _LENGTH_PENALTY
+    return 1.0
 
 
 async def combined_score(
@@ -110,13 +99,15 @@ async def combined_score(
             logger.warning("Evaluator generate failed for sample %s: %s", sample.get("ticket_id"), exc)
             continue
 
-        # Acceptance: does generated answer resemble what operator approved/sent?
+        # Acceptance: насколько ответ похож на то, что оператор отправил.
+        # Ratio идёт НЕПРЕРЫВНО, без порога 0.65: бинарный гейт выбрасывал
+        # информацию и делал близкие кандидаты искусственно разными (0.649 и
+        # 0.651 получали 0 и 1). Стоимость не меняется — difflib бесплатен.
         ratio = difflib.SequenceMatcher(
             None, generated.lower(), ref_text.lower()
         ).ratio()
-        accepted = 1.0 if ratio >= 0.65 else 0.0
         quality = _quality_multiplier(generated, ref_text)
-        acceptance_scores.append(accepted * weight * quality)
+        acceptance_scores.append(ratio * weight * quality)
 
         # Similarity ground-truth (only for 'corrected' — op_answer is what operator wrote)
         if outcome == "corrected" and sample.get("op_answer"):

@@ -188,6 +188,41 @@ async def test_report_disabled_by_flag(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_no_key_reports_not_performed_not_healthy(monkeypatch, caplog):
+    """Без ключа ни один запрос не уходит — «всё живо» было бы ложью.
+
+    Ровно этот случай дал ложную зелёнку 2026-08-19: канарейка отчиталась «4
+    модели живы», не сделав ни одной проверки, потому что ключа не было.
+    """
+    monkeypatch.setattr(config_module.config, "groq_api_key", "")
+    monkeypatch.setattr(config_module.config, "openrouter_api_key", "")
+
+    async def fake_check(roles):  # pragma: no cover — проверять нечем
+        raise AssertionError("без ключа проверка не должна запускаться")
+
+    bot = _FakeBot()
+    with caplog.at_level("WARNING"):
+        assert await report_dead_models(bot, _check_fn=fake_check) == {}
+
+    assert bot.sent == []
+    assert any("НЕ выполнена" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_partial_key_still_probes_available_provider(monkeypatch):
+    """Есть ключ Groq, нет OpenRouter — Groq проверяется, OpenRouter пропускается."""
+    monkeypatch.setattr(config_module.config, "openrouter_api_key", "")
+    probed = []
+
+    async def fake_check(roles):
+        probed.extend(roles)
+        return {}
+
+    assert await report_dead_models(_FakeBot(), _check_fn=fake_check) == {}
+    assert probed and all(provider == GROQ for provider, _ in probed)
+
+
+@pytest.mark.asyncio
 async def test_report_survives_telegram_failure():
     """Не смогли доложить — не роняем старт бота."""
     async def fake_check(roles):

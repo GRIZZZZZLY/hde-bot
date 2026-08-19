@@ -426,8 +426,8 @@ async def test_get_active_format_instructions_returns_db_version():
 
 
 @pytest.mark.asyncio
-async def test_run_optimizer_applies_by_holdout_score(monkeypatch):
-    """Победитель и apply-гейт определяются holdout_score, а не train-скором."""
+async def test_run_optimizer_applies_when_gate_passes(monkeypatch):
+    """Победитель и apply-решение — по holdout, и решает гейт, а не train-скор."""
     from bot.optimizer import agent
 
     samples = [
@@ -444,9 +444,15 @@ async def test_run_optimizer_applies_by_holdout_score(monkeypatch):
 
     holdout_calls = []
 
-    async def fake_holdout(s, instructions, **kw):
+    async def fake_detail(s, instructions, **kw):
         holdout_calls.append(instructions)
-        return 0.4 if instructions == "CURRENT" else 0.9
+        # согласованное улучшение по всем кейсам: гейт должен пропустить
+        base = 0.50 if instructions == "CURRENT" else 0.60
+        return {
+            "score": base,
+            "cases": {str(i): base for i in range(10)},
+            "axes": {"diagnosis": 0.8, "actionability": 0.7},
+        }
 
     async def fake_get_active():
         return "CURRENT"
@@ -454,17 +460,16 @@ async def test_run_optimizer_applies_by_holdout_score(monkeypatch):
     class FakeRouter:
         def __init__(self, *a, **kw): pass
         async def complete_all(self, system, user):
-            return {"gemini": "MUTATED INSTRUCTIONS LONG ENOUGH TO PASS"}, {}
+            return {"gptoss120": "MUTATED INSTRUCTIONS LONG ENOUGH TO PASS"}, {}
 
     async def fake_save_version(content, score, proposed_by):
         return 7
 
-    # Основной источник — сверка; кнопочный остаётся резервом (см. _load_eval_samples)
     monkeypatch.setattr(agent.db, "get_evaluation_samples", fake_get_samples)
     monkeypatch.setattr(agent.db, "get_optimization_samples", fake_get_samples)
     monkeypatch.setattr(agent.db, "save_prompt_version", fake_save_version)
     monkeypatch.setattr(agent, "combined_score", fake_combined)
-    monkeypatch.setattr(agent, "holdout_score", fake_holdout)
+    monkeypatch.setattr(agent, "holdout_detail", fake_detail)
     monkeypatch.setattr(agent, "get_active_format_instructions", fake_get_active)
     monkeypatch.setattr(agent, "LLMRouter", FakeRouter)
 
@@ -480,8 +485,82 @@ async def test_run_optimizer_applies_by_holdout_score(monkeypatch):
             return FakeMsg()
 
     await agent.run_optimizer(FakeBot())
-    # holdout_score вызван и для CURRENT (baseline), и для мутации
+
     assert "CURRENT" in holdout_calls
     assert any("MUTATED" in c for c in holdout_calls)
-    # отчёт с кнопкой apply отправлен (0.9 > 0.4 + 0.03)
     assert any("opt:apply" in str(kw.get("reply_markup", "")) for kw in sent)
+
+
+@pytest.mark.asyncio
+async def test_run_optimizer_rejects_when_spread_is_wide(monkeypatch):
+    """Среднее выросло, но улучшение не согласовано по кейсам — apply запрещён.
+
+    Прежний порог `_MIN_IMPROVEMENT` такой кандидат пропускал: он видел только
+    разницу двух средних.
+    """
+    from bot.optimizer import agent
+
+    samples = [
+        {"id": i, "ticket_id": str(i), "title": "t", "history": f"h{i}",
+         "ai_answer": "a", "op_answer": "Клиенту: ответ", "outcome": "corrected"}
+        for i in range(20)
+    ]
+
+    async def fake_get_samples(days=30):
+        return samples
+
+    async def fake_combined(s, instructions, **kw):
+        return 0.5
+
+    async def fake_detail(s, instructions, **kw):
+        if instructions == "CURRENT":
+            return {"score": 0.50, "cases": {str(i): 0.50 for i in range(8)},
+                    "axes": {"diagnosis": 0.8}}
+        cases = {"0": 1.0, "1": 0.42, "2": 0.44, "3": 0.41,
+                 "4": 0.46, "5": 0.40, "6": 0.45, "7": 0.43}
+        return {"score": 0.55, "cases": cases, "axes": {"diagnosis": 0.8}}
+
+    async def fake_get_active():
+        return "CURRENT"
+
+    class FakeRouter:
+        def __init__(self, *a, **kw): pass
+        async def complete_all(self, system, user):
+            return {"gptoss120": "MUTATED INSTRUCTIONS LONG ENOUGH TO PASS"}, {}
+
+    rejected = []
+
+    async def fake_reject_all():
+        rejected.append(1)
+
+    monkeypatch.setattr(agent.db, "get_evaluation_samples", fake_get_samples)
+    monkeypatch.setattr(agent.db, "get_optimization_samples", fake_get_samples)
+    monkeypatch.setattr(agent.db, "save_prompt_version", lambda **kw: 7)
+    monkeypatch.setattr(agent.db, "reject_all_prompt_candidates", fake_reject_all)
+    monkeypatch.setattr(agent, "combined_score", fake_combined)
+    monkeypatch.setattr(agent, "holdout_detail", fake_detail)
+    monkeypatch.setattr(agent, "get_active_format_instructions", fake_get_active)
+    monkeypatch.setattr(agent, "LLMRouter", FakeRouter)
+
+    async def fake_save_version(content, score, proposed_by):
+        return 7
+
+    monkeypatch.setattr(agent.db, "save_prompt_version", fake_save_version)
+
+    sent = []
+    edits = []
+
+    class FakeMsg:
+        async def edit_text(self, text, **k):
+            edits.append(text)
+
+    class FakeBot:
+        async def send_message(self, **kw):
+            sent.append(kw)
+            return FakeMsg()
+
+    await agent.run_optimizer(FakeBot())
+
+    assert not any("opt:apply" in str(kw.get("reply_markup", "")) for kw in sent)
+    assert rejected  # кандидаты отклонены
+    assert any("не принят" in text for text in edits)
