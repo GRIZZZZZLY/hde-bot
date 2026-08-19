@@ -78,6 +78,9 @@ class Config:
     optimizer_judge_model: str
     optimizer_mutation_models: tuple[str, ...]
     llm_canary_enabled: bool
+    db_backup_dir: str
+    db_backup_keep: int
+    db_backup_hour_utc: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -178,6 +181,11 @@ class Config:
                 os.getenv("OPTIMIZER_MUTATION_MODELS")
             ) or ("openai/gpt-oss-120b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"),
             llm_canary_enabled=_parse_bool(os.getenv("LLM_CANARY_ENABLED"), default=True),
+            # Пустой DB_BACKUP_DIR выключает бэкап. Копий три, а не семь: база
+            # 242 МБ и почти вся — плохо сжимаемые эмбеддинги float32.
+            db_backup_dir=os.getenv("DB_BACKUP_DIR", "backups").strip(),
+            db_backup_keep=int(os.getenv("DB_BACKUP_KEEP", "3") or 3),
+            db_backup_hour_utc=int(os.getenv("DB_BACKUP_HOUR_UTC", "1") or 1),
         )
 
     def matches_owner(self, owner_id: str, owner_name: str) -> bool:

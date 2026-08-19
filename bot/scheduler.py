@@ -40,6 +40,7 @@ _last_value_report_date: Optional[str] = None   # daily AI-value report
 _last_general_flush_date: Optional[str] = None  # "YYYY-MM-DD" UTC date
 _last_general_reconcile_at: Optional[datetime] = None  # last in-hours reconcile time
 _GENERAL_RECONCILE_INTERVAL_SEC = 7 * 60
+_last_db_backup_date: Optional[str] = None  # "YYYY-MM-DD" UTC — суточный снапшот базы
 _last_report_date: Optional[str] = None         # "YYYY-MM-DD" UTC date — set when report runs
 _report_button_sent: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when button is sent
 _thursday_evening_done: Optional[str] = None  # "YYYY-MM-DD" MSK date — Thu evening auto-run flag
@@ -431,6 +432,35 @@ async def _maybe_reconcile_answers(bot) -> None:
         logger.warning("Nightly answer reconciliation failed: %s", exc)
 
 
+async def _maybe_backup_db(bot: Bot) -> None:
+    """Суточный снапшот базы (VACUUM INTO). Раз в сутки, в тихий час UTC.
+
+    Провал докладывается оператору: молчаливо не сделанный бэкап хуже
+    отсутствующего — о нём узнают в момент, когда он понадобился. Дата
+    отмечается ДО попытки, чтобы неудача не повторялась каждые 30 секунд.
+    """
+    global _last_db_backup_date
+    if not config.db_backup_dir:
+        return
+    now = datetime.now(timezone.utc)
+    today = now.strftime("%Y-%m-%d")
+    if now.hour != config.db_backup_hour_utc or _last_db_backup_date == today:
+        return
+    _last_db_backup_date = today
+    from .db.backup import backup_database
+    try:
+        await backup_database()
+    except Exception as exc:
+        logger.error("DB backup failed: %s", exc)
+        try:
+            await bot.send_message(
+                config.personal_chat_id,
+                f"⚠️ Бэкап базы не сделан: {exc}",
+            )
+        except Exception as send_exc:
+            logger.warning("DB backup alert not delivered: %s", send_exc)
+
+
 async def process_scheduled_actions(bot: Bot) -> None:
     from .work_schedule import is_work_day, is_work_time, last_work_day, was_yesterday_work_day
 
@@ -483,6 +513,10 @@ async def process_scheduled_actions(bot: Bot) -> None:
     # Nightly answer reconciliation: сверка предложений бота с фактическими
     # ответами операторов (learning без кнопок). Результат — в judge-поля.
     await _maybe_reconcile_answers(bot)
+
+    # Суточный снапшот базы: схема не версионируется, откат релиза данные не
+    # откатывает.
+    await _maybe_backup_db(bot)
 
     # Weekly knowledge expiry (Sunday 00:xx UTC)
     global _last_knowledge_expiry_date

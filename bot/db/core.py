@@ -392,24 +392,11 @@ async def init_db() -> None:
         )
         # Migrations: add columns that may be missing in existing DBs
         for col, col_type in [("company_id", "TEXT"), ("company_name", "TEXT")]:
-            try:
-                await db.execute(f"ALTER TABLE knowledge_items ADD COLUMN {col} {col_type}")
-            except Exception:
-                pass  # column already exists
+            await _add_column_if_missing(db, "knowledge_items", col, col_type)
         # Migration: add last_used_at to knowledge_items if missing
-        try:
-            await db.execute(
-                "ALTER TABLE knowledge_items ADD COLUMN last_used_at TEXT"
-            )
-        except Exception:
-            pass  # column already exists
+        await _add_column_if_missing(db, "knowledge_items", "last_used_at", "TEXT")
         # Migration: add analyzed_at to track which items were processed by /aianalyze
-        try:
-            await db.execute(
-                "ALTER TABLE knowledge_items ADD COLUMN analyzed_at TEXT"
-            )
-        except Exception:
-            pass  # column already exists
+        await _add_column_if_missing(db, "knowledge_items", "analyzed_at", "TEXT")
 
         # Migration: normalize equipment names in solution_patterns (idempotent)
         _norm_updates = [
@@ -425,28 +412,32 @@ async def init_db() -> None:
             ("ВТБ",            ["втб", "Втб"]),
             ("ПТК",            ["птк", "Птк"]),
         ]
-        for canonical, variants in _norm_updates:
-            for variant in variants:
-                try:
+        # На свежей базе solution_patterns создаётся ниже в этой же init_db,
+        # поэтому нормализация — no-op. Спрашиваем, есть ли таблица, вместо
+        # `except Exception: pass`: тот вариант вместе с «таблицы ещё нет» глотал
+        # и настоящие ошибки UPDATE.
+        if await _table_exists(db, "solution_patterns"):
+            for canonical, variants in _norm_updates:
+                for variant in variants:
                     await db.execute(
                         "UPDATE solution_patterns SET equipment = ? WHERE equipment = ?",
                         (canonical, variant),
                     )
-                except Exception:
-                    pass  # table created later in init_db — migration no-op on fresh DB
 
-        # Populate FTS index for existing items (first-time migration, idempotent)
-        try:
-            await db.execute(
-                """
-                INSERT INTO knowledge_fts(rowid, content)
-                SELECT id, content FROM knowledge_items
-                WHERE quality NOT IN ('bad', 'expired')
-                  AND id NOT IN (SELECT rowid FROM knowledge_fts)
-                """
-            )
-        except Exception:
-            pass  # FTS may already be populated or query not supported
+        # Populate FTS index for existing items (first-time migration, idempotent
+        # благодаря NOT IN — повторный старт ничего не дублирует).
+        # Блока try здесь больше нет: CREATE VIRTUAL TABLE выше уже падает на
+        # сборке SQLite без FTS5, поэтому отказ именно на этом шаге — настоящая
+        # ошибка, а проглотить её значит стартовать с пустым индексом и молча
+        # деградировавшим до одного косинуса поиском.
+        await db.execute(
+            """
+            INSERT INTO knowledge_fts(rowid, content)
+            SELECT id, content FROM knowledge_items
+            WHERE quality NOT IN ('bad', 'expired')
+              AND id NOT IN (SELECT rowid FROM knowledge_fts)
+            """
+        )
 
         await db.execute(
             """
@@ -462,18 +453,12 @@ async def init_db() -> None:
             """
         )
         # Migration: add answer_text if missing in existing DBs
-        try:
-            await db.execute(
-                "ALTER TABLE ai_feedback_pending ADD COLUMN answer_text TEXT NOT NULL DEFAULT ''"
-            )
-        except Exception:
-            pass  # column already exists
-        try:
-            await db.execute(
-                "ALTER TABLE ai_feedback_pending ADD COLUMN ai_full_text TEXT NOT NULL DEFAULT ''"
-            )
-        except Exception:
-            pass  # column already exists
+        await _add_column_if_missing(
+            db, "ai_feedback_pending", "answer_text", "TEXT NOT NULL DEFAULT ''"
+        )
+        await _add_column_if_missing(
+            db, "ai_feedback_pending", "ai_full_text", "TEXT NOT NULL DEFAULT ''"
+        )
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS solution_patterns (
@@ -568,20 +553,12 @@ async def init_db() -> None:
             """
         )
         # Migration: original draft answer before self-check fallback/downgrade
-        try:
-            await db.execute(
-                "ALTER TABLE ai_suggestions ADD COLUMN draft_answer TEXT DEFAULT ''"
-            )
-        except Exception:
-            pass  # column already exists
+        await _add_column_if_missing(
+            db, "ai_suggestions", "draft_answer", "TEXT DEFAULT ''"
+        )
         # Migration: reconciliation verdict category (same_action / bot_escalated /
         # bot_wrong_fact) — the morning digest groups by it
-        try:
-            await db.execute(
-                "ALTER TABLE ai_suggestions ADD COLUMN judge_category TEXT"
-            )
-        except Exception:
-            pass  # column already exists
+        await _add_column_if_missing(db, "ai_suggestions", "judge_category", "TEXT")
         # Knowledge-base candidates queued by reconciliation (bot_wrong_fact):
         # the judge is a model, so a human decides before anything reaches the KB.
         await db.execute(
@@ -657,12 +634,7 @@ async def init_db() -> None:
         )
         # Migration: operator_user_id added after the table shipped (staff team ~10 people,
         # нужно отличать авторов ответов для персонального few-shot)
-        try:
-            await db.execute(
-                "ALTER TABLE dialogue_pairs ADD COLUMN operator_user_id TEXT"
-            )
-        except Exception:
-            pass  # column already exists
+        await _add_column_if_missing(db, "dialogue_pairs", "operator_user_id", "TEXT")
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_dialogue_pairs_quality "
             "ON dialogue_pairs(quality_status)"
@@ -722,6 +694,33 @@ async def _ensure_ticket_topic_columns(db: aiosqlite.Connection) -> None:
     for name, ddl in TICKET_TOPIC_COLUMNS.items():
         if name not in columns:
             await db.execute(f"ALTER TABLE ticket_topics ADD COLUMN {name} {ddl}")
+
+
+async def _table_exists(db: aiosqlite.Connection, table: str) -> bool:
+    async with db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+    ) as cursor:
+        return await cursor.fetchone() is not None
+
+
+async def _add_column_if_missing(
+    db: aiosqlite.Connection, table: str, column: str, ddl: str
+) -> bool:
+    """ALTER TABLE только если колонки нет. True — колонку добавили.
+
+    Раньше каждая такая миграция стояла в `try/except Exception: pass` с
+    комментарием «column already exists». Это глотало ЛЮБУЮ ошибку — занятую
+    базу, битый файл, кончившееся место на диске — и все они выглядели как
+    «колонка уже есть»: бот стартовал на неполной схеме и падал позже, в другом
+    месте и без следа причины. Спрашиваем PRAGMA (так с самого начала сделано в
+    _ensure_ticket_topic_columns): тогда «колонка есть» — это ответ, а не
+    пойманное исключение, и настоящая ошибка летит наверх.
+    """
+    if column in await _table_columns(db, table):
+        return False
+    await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    logger.info("Migration: added column %s.%s", table, column)
+    return True
 
 
 async def _table_columns(db: aiosqlite.Connection, table_name: str) -> set[str]:
