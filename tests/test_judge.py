@@ -155,7 +155,7 @@ async def test_repeats_are_averaged_exactly():
         value = next(scores)
         return _verdict(diagnosis=value, equipment=value, actionability=value, human=value)
 
-    result = await judge_axes("h", "t", "cand", "ref", repeats=3, _call_fn=fake_call)
+    result = await judge_axes("h", "t", "cand", "ref", repeats=3, pause_s=0, _call_fn=fake_call)
 
     expected = (normalize(20) + normalize(10) + normalize(1)) / 3
     assert result["score"] == pytest.approx(expected)
@@ -171,7 +171,7 @@ async def test_one_broken_repeat_of_three_survives():
     async def fake_call(system, user, *, temperature):
         return next(answers)
 
-    result = await judge_axes("h", "t", "c", "r", repeats=3, _call_fn=fake_call)
+    result = await judge_axes("h", "t", "c", "r", repeats=3, pause_s=0, _call_fn=fake_call)
 
     assert result["invalid"] == 1
     assert len(result["verdicts"]) == 2
@@ -184,18 +184,77 @@ async def test_all_repeats_broken_gives_none_not_zero():
     async def fake_call(system, user, *, temperature):
         return "мусор"
 
-    result = await judge_axes("h", "t", "c", "r", repeats=2, _call_fn=fake_call)
+    result = await judge_axes("h", "t", "c", "r", repeats=2, pause_s=0, _call_fn=fake_call)
     assert result["score"] is None
     assert result["invalid"] == 2
 
 
 @pytest.mark.asyncio
-async def test_call_exception_counted_as_invalid():
-    async def fake_call(system, user, *, temperature):
-        raise RuntimeError("429")
+async def test_non_rate_limit_error_counted_as_invalid_without_retry():
+    calls = []
 
-    result = await judge_axes("h", "t", "c", "r", repeats=2, _call_fn=fake_call)
+    async def fake_call(system, user, *, temperature):
+        calls.append(1)
+        raise RuntimeError("bad gateway")
+
+    slept = []
+
+    async def no_sleep(seconds):
+        slept.append(seconds)
+
+    result = await judge_axes(
+        "h", "t", "c", "r", repeats=2, pause_s=0, _call_fn=fake_call, _sleep=no_sleep
+    )
     assert result["score"] is None and result["invalid"] == 2
+    assert len(calls) == 2   # по одному разу на повтор, без ретраев
+    assert slept == []
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_is_retried_not_counted_as_broken_verdict():
+    """429 — это «минута исчерпана», а не «модель не смогла оценить».
+
+    Без ретрая free-tier превращал почти каждый прогон в набор битых вердиктов
+    (замер на проде: судья терял оценки на втором же кейсе).
+    """
+    attempts = []
+    slept = []
+
+    async def flaky_call(system, user, *, temperature):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError(
+                "Rate limit reached for model ... on tokens per minute (TPM): Limit 8000"
+            )
+        return _verdict()
+
+    async def no_sleep(seconds):
+        slept.append(seconds)
+
+    result = await judge_axes(
+        "h", "t", "c", "r", repeats=1, pause_s=0, _call_fn=flaky_call, _sleep=no_sleep
+    )
+
+    assert result["invalid"] == 0
+    assert result["score"] == pytest.approx(1.0)
+    assert len(attempts) == 2 and slept  # подождали и переспросили
+
+
+@pytest.mark.asyncio
+async def test_pacing_sleeps_between_repeats():
+    """Один кейс при k=3 — около 7000 токенов при лимите 8000/мин."""
+    slept = []
+
+    async def fake_call(system, user, *, temperature):
+        return _verdict()
+
+    async def no_sleep(seconds):
+        slept.append(seconds)
+
+    await judge_axes(
+        "h", "t", "c", "r", repeats=3, pause_s=3.0, _call_fn=fake_call, _sleep=no_sleep
+    )
+    assert slept == [3.0, 3.0]   # между повторами, но не перед первым
 
 
 # --- кеш вердиктов ----------------------------------------------------------
@@ -247,8 +306,8 @@ async def test_cache_hit_skips_call():
         return _verdict()
 
     cache = _Cache()
-    first = await judge_axes("h", "t", "c", "r", repeats=2, _call_fn=fake_call, cache=cache)
-    second = await judge_axes("h", "t", "c", "r", repeats=2, _call_fn=fake_call, cache=cache)
+    first = await judge_axes("h", "t", "c", "r", repeats=2, pause_s=0, _call_fn=fake_call, cache=cache)
+    second = await judge_axes("h", "t", "c", "r", repeats=2, pause_s=0, _call_fn=fake_call, cache=cache)
 
     assert len(calls) == 2          # только первый прогон дошёл до модели
     assert second["score"] == first["score"]
@@ -262,7 +321,7 @@ async def test_judge_case_skips_judge_on_fatal_check():
         raise AssertionError("судью не надо звать, если ответ структурно сломан")
 
     sample = {"history": "h", "title": "t", "op_answer": "ref"}
-    result = await judge_case(sample, "нет секции клиенту", _call_fn=fake_call)
+    result = await judge_case(sample, "нет секции клиенту", pause_s=0, _call_fn=fake_call)
 
     assert result["score"] == 0.0
     assert result["hard"].fatal == "no_client_section"
@@ -276,7 +335,7 @@ async def test_judge_case_applies_length_penalty():
 
     long_client = "Клиенту: " + " ".join(f"слово{i}" for i in range(40))
     sample = {"history": "h", "title": "t", "op_answer": "ref", "action_type": "ASK"}
-    result = await judge_case(sample, long_client, repeats=1, _call_fn=fake_call)
+    result = await judge_case(sample, long_client, repeats=1, pause_s=0, _call_fn=fake_call)
 
     assert result["score"] == pytest.approx(0.8)  # штраф, а не ноль
     assert "лимите" in result["hard"].detail

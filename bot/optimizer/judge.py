@@ -61,6 +61,20 @@ AXIS_WEIGHTS: dict[str, float] = {
 
 SCALE_MIN, SCALE_MAX = 1, 20
 
+# Судье нужен свой лимит вывода: четыре оси с обоснованиями не влезали в 700, и
+# JSON обрезался посередине — вердикт становился невалидным (замер на проде).
+JUDGE_MAX_TOKENS = 1200
+
+# Groq на free-tier отдаёт 429 с текстом «Rate limit reached … try again in Ns».
+# Это НЕ битый вердикт: считать его таким значит терять большинство оценок.
+_RATE_LIMIT_MARKERS = ("rate limit", "429", "tokens per minute", "tpm")
+_RATE_LIMIT_RETRIES = 2
+_RATE_LIMIT_BASE_DELAY = 20.0
+
+# Пауза между вызовами судьи. Один кейс при k=3 — около 7000 токенов, лимит 8000
+# в минуту: без пейсинга прогон утыкается в 429 на втором же кейсе.
+JUDGE_PAUSE_SECONDS = 3.0
+
 JUDGE_REPEATS = 3
 # Стартовая гипотеза, НЕ измеренный оптимум: значение подбирается замером по
 # стабильности, согласию с ручной разметкой и частоте битого JSON.
@@ -125,7 +139,7 @@ def build_judge_prompt(
         "При applicable=false ставь score=null.\n\n"
         "Верни СТРОГО JSON без пояснений вне него:\n"
         '{"diagnosis": {"score": 1-20 или null, "applicable": true/false, '
-        '"reason": "кратко"}, "equipment": {...}, "actionability": {...}, '
+        '"reason": "не больше 10 слов"}, "equipment": {...}, "actionability": {...}, '
         '"human": {...}}\n\n'
         "Стайлгайд для оси human:\n"
         f"{_load_style_guide()}"
@@ -290,7 +304,7 @@ async def _call_groq_judge(
             {"role": "user", "content": user},
         ],
         "temperature": temperature,
-        "max_tokens": 700,
+        "max_tokens": JUDGE_MAX_TOKENS,
         "response_format": {"type": "json_object"},
     }
     async with LLM_SEMAPHORE, aiohttp.ClientSession() as session:
@@ -309,6 +323,35 @@ async def _call_groq_judge(
     return choices[0]["message"]["content"].strip()
 
 
+def is_rate_limit(exc: Exception) -> bool:
+    """429 от провайдера, а не ошибка вердикта. Общий предикат для судьи и golden."""
+    return any(m in str(exc).lower() for m in _RATE_LIMIT_MARKERS)
+
+
+async def _call_with_backoff(call, system: str, user: str, *, temperature: float,
+                             _sleep=None) -> str:
+    """Вызов судьи с backoff на rate-limit.
+
+    Без него free-tier превращает почти каждый прогон в набор «битых» вердиктов:
+    429 приходит не потому, что модель не смогла оценить, а потому что минута
+    исчерпана — подождать дешевле, чем потерять оценку.
+    """
+    if _sleep is None:
+        import asyncio as _asyncio  # noqa: PLC0415
+        _sleep = _asyncio.sleep
+    last: Exception | None = None
+    for attempt in range(_RATE_LIMIT_RETRIES + 1):
+        try:
+            return await call(system, user, temperature=temperature)
+        except Exception as exc:
+            last = exc
+            if attempt < _RATE_LIMIT_RETRIES and is_rate_limit(exc):
+                await _sleep(_RATE_LIMIT_BASE_DELAY * (attempt + 1))
+                continue
+            raise
+    raise last  # pragma: no cover
+
+
 async def judge_axes(
     history: str,
     title: str,
@@ -317,7 +360,9 @@ async def judge_axes(
     *,
     repeats: int = JUDGE_REPEATS,
     temperature: float = JUDGE_TEMPERATURE,
+    pause_s: float = JUDGE_PAUSE_SECONDS,
     _call_fn: CallFn | None = None,
+    _sleep=None,
     cache=None,
 ) -> dict:
     """k оценок одного кейса. Сырые вердикты сохраняются целиком.
@@ -328,6 +373,10 @@ async def judge_axes(
     from ..config import config
 
     call = _call_fn or _call_groq_judge
+    if _sleep is None:
+        import asyncio as _asyncio  # noqa: PLC0415
+        _sleep = _asyncio.sleep
+    _pause = _sleep
     system, user = build_judge_prompt(history, title, candidate, op_answer)
 
     verdicts: list[dict] = []
@@ -349,8 +398,12 @@ async def judge_axes(
                 if parsed is not None:
                     verdicts.append(parsed)
                     continue
+        if index and pause_s:
+            await _pause(pause_s)
         try:
-            raw = await call(system, user, temperature=temperature)
+            raw = await _call_with_backoff(
+                call, system, user, temperature=temperature, _sleep=_pause
+            )
         except Exception as exc:
             logger.warning("judge call %d failed: %s", index, exc)
             invalid += 1
@@ -385,8 +438,10 @@ async def judge_case(
     *,
     repeats: int = JUDGE_REPEATS,
     temperature: float = JUDGE_TEMPERATURE,
+    pause_s: float = JUDGE_PAUSE_SECONDS,
     _call_fn: CallFn | None = None,
     _hard_fn=None,
+    _sleep=None,
     cache=None,
 ) -> dict:
     """Полная оценка одного кейса: hard-checks → k осей → нормировка → caps.
@@ -405,7 +460,7 @@ async def judge_case(
     result = await judge_axes(
         sample.get("history", ""), sample.get("title", ""), generated,
         sample.get("op_answer") or "", repeats=repeats, temperature=temperature,
-        _call_fn=_call_fn, cache=cache,
+        pause_s=pause_s, _call_fn=_call_fn, _sleep=_sleep, cache=cache,
     )
     if result["score"] is None:
         return {**result, "score": None, "hard": hard, "judged": False}
@@ -425,8 +480,10 @@ async def holdout_detail(
     *,
     repeats: int = JUDGE_REPEATS,
     temperature: float = JUDGE_TEMPERATURE,
+    pause_s: float = JUDGE_PAUSE_SECONDS,
     _generate_fn=None,
     _judge_case_fn=None,
+    _sleep=None,
     cache=None,
 ) -> dict:
     """По-кейсовые скоры для парных дельт (§11.7) плюс агрегаты.
@@ -462,7 +519,8 @@ async def holdout_detail(
                 sample.get("history", ""), sample.get("title", ""), format_instructions
             )
             result = await judge_one(
-                sample, generated, repeats=repeats, temperature=temperature, cache=cache
+                sample, generated, repeats=repeats, temperature=temperature,
+                pause_s=pause_s, _sleep=_sleep, cache=cache,
             )
         except Exception as exc:
             logger.warning("judge failed for sample %s: %s", sample.get("ticket_id"), exc)
@@ -498,13 +556,16 @@ async def holdout_score(
     samples: list[dict],
     format_instructions: str,
     *,
+    pause_s: float = JUDGE_PAUSE_SECONDS,
     _generate_fn=None,
     _judge_case_fn=None,
+    _sleep=None,
     cache=None,
 ) -> float:
     """Финальный скор на holdout в [0,1] — контракт для agent.py и харнесса."""
     detail = await holdout_detail(
-        samples, format_instructions,
-        _generate_fn=_generate_fn, _judge_case_fn=_judge_case_fn, cache=cache,
+        samples, format_instructions, pause_s=pause_s,
+        _generate_fn=_generate_fn, _judge_case_fn=_judge_case_fn,
+        _sleep=_sleep, cache=cache,
     )
     return detail["score"]
