@@ -20,13 +20,13 @@ logger = logging.getLogger(__name__)
 # Reloads all embeddings from SQLite at most once per _CACHE_TTL seconds.
 # Invariant: cache holds pre-parsed np.ndarray — avoids np.frombuffer on every query.
 _CACHE_TTL = 60.0
-_cache_rows: list[tuple[int, str, np.ndarray, str]] | None = None
+_cache_rows: list[tuple[int, str, np.ndarray, str, str]] | None = None
 _cache_loaded_at: float = 0.0
 _cache_lock = asyncio.Lock()
 
 
-async def _load_embeddings_cached() -> list[tuple[int, str, np.ndarray, str]]:
-    """Return cached (id, content, ndarray, company_id) rows; reload if stale."""
+async def _load_embeddings_cached() -> list[tuple[int, str, np.ndarray, str, str]]:
+    """Return cached (id, content, ndarray, company_id, source) rows; reload if stale."""
     global _cache_rows, _cache_loaded_at
     now = time.monotonic()
     if _cache_rows is not None and (now - _cache_loaded_at) < _CACHE_TTL:
@@ -39,14 +39,14 @@ async def _load_embeddings_cached() -> list[tuple[int, str, np.ndarray, str]]:
             return _cache_rows
 
         raw_rows = await list_all_knowledge_embeddings()
-        parsed: list[tuple[int, str, np.ndarray, str]] = []
-        for row_id, content, emb_bytes, item_company_id in raw_rows:
+        parsed: list[tuple[int, str, np.ndarray, str, str]] = []
+        for row_id, content, emb_bytes, item_company_id, item_source in raw_rows:
             try:
                 emb = bytes_to_embedding(emb_bytes)
             except Exception:
                 logger.warning("Skipping corrupted embedding row_id=%s", row_id, exc_info=True)
                 continue
-            parsed.append((row_id, content, emb, item_company_id))
+            parsed.append((row_id, content, emb, item_company_id, item_source or ""))
         _cache_rows = parsed
         _cache_loaded_at = now
         return _cache_rows
@@ -67,16 +67,39 @@ def invalidate_embeddings_cache() -> None:
 _matrix_rows: list | None = None
 _matrix: np.ndarray | None = None
 _matrix_norms: np.ndarray | None = None
+_matrix_dim: int | None = None
+_matrix_kept: list | None = None
 
 
-def _scoring_arrays(rows: list[tuple[int, str, np.ndarray, str]]) -> tuple[np.ndarray, np.ndarray]:
-    """Return (matrix, row_norms) for the given cached rows, rebuilt on reload."""
-    global _matrix_rows, _matrix, _matrix_norms
-    if _matrix_rows is not rows:
-        _matrix = np.vstack([r[2] for r in rows])
+def _scoring_arrays(
+    rows: list[tuple[int, str, np.ndarray, str, str]], dim: int
+) -> tuple[list, np.ndarray, np.ndarray]:
+    """(строки, матрица, нормы) — только по векторам размерности `dim`.
+
+    Вектор чужой размерности (запись от другой модели эмбеддингов) роняет
+    матричное умножение, а это ВЕСЬ RAG на всех тикетах, а не одна строка.
+    Сравниваем с размерностью ЗАПРОСА, а не с константой: у прода это 1024, а
+    синтетические векторы в тестах остаются работоспособными между собой.
+    """
+    global _matrix_rows, _matrix, _matrix_norms, _matrix_dim, _matrix_kept
+    if _matrix_rows is not rows or _matrix_dim != dim:
+        kept = [r for r in rows if r[2].shape[0] == dim]
+        skipped = len(rows) - len(kept)
+        if skipped:
+            logger.warning(
+                "Skipping %d knowledge item(s) whose embedding dimension != %d "
+                "(другая модель эмбеддингов) — переиндексировать через /aireindex",
+                skipped, dim,
+            )
+        _matrix_kept = kept
+        _matrix = (
+            np.vstack([r[2] for r in kept]) if kept
+            else np.zeros((0, dim), dtype=np.float32)
+        )
         _matrix_norms = np.linalg.norm(_matrix, axis=1)
         _matrix_rows = rows
-    return _matrix, _matrix_norms  # type: ignore[return-value]
+        _matrix_dim = dim
+    return _matrix_kept, _matrix, _matrix_norms  # type: ignore[return-value]
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -101,11 +124,16 @@ async def find_similar(
     limit: int = 3,
     query_text: str = "",
     company_id: str = "",
+    sources: set[str] | None = None,
+    exclude_sources: set[str] | None = None,
 ) -> list[tuple[KnowledgeItem, float]]:
     """Return top-N (item, cosine_score) tuples.
 
     When query_text provided: merges cosine + BM25 via RRF.
     When company_id provided: same-company items get an extra RRF boost.
+    When sources/exclude_sources given: ищем только в этих источниках. Нужно,
+    чтобы чанки внутренней БЗ и примеры закрытых тикетов не делили одни слоты —
+    статья и похожий тикет попадают в промпт как разные блоки.
     """
     rows = await _load_embeddings_cached()
     if not rows:
@@ -113,14 +141,33 @@ async def find_similar(
 
     # Cosine scoring: one matrix multiply over the cached embeddings, then
     # top limit*3 via argpartition instead of sorting the whole table.
-    matrix, row_norms = _scoring_arrays(rows)
     query32 = query_embedding.astype(np.float32, copy=False)
+    rows, matrix, row_norms = _scoring_arrays(rows, int(query32.shape[0]))
+    if not rows:
+        return []
     q_norm = float(np.linalg.norm(query32))
     if q_norm < 1e-8:
         scores = np.zeros(len(rows), dtype=np.float32)
     else:
         denom = row_norms * q_norm
         scores = np.where(denom < 1e-8, 0.0, (matrix @ query32) / np.maximum(denom, 1e-12))
+
+    allowed_ids: set[int] | None = None
+    if sources is not None or exclude_sources is not None:
+        mask = np.array(
+            [
+                (sources is None or r[4] in sources)
+                and (exclude_sources is None or r[4] not in exclude_sources)
+                for r in rows
+            ]
+        )
+        if not mask.any():
+            return []
+        allowed_ids = {rows[i][0] for i in np.flatnonzero(mask)}
+        # -1.0 ниже любого косинуса, поэтому отфильтрованные строки не попадут
+        # в пул даже когда его размер равен размеру таблицы.
+        scores = np.where(mask, scores, -1.0)
+        limit = min(limit, int(mask.sum()))
 
     pool_size = min(limit * 3, len(rows))
     if pool_size < len(rows):
@@ -136,9 +183,12 @@ async def find_similar(
     contents: dict[int, str] = {}
     cosine_top: dict[int, float] = {}
 
+    # Отсеянные источники помечены -1.0 и могли попасть в пул, если разрешённых
+    # строк меньше его размера — из результата их надо убрать.
     pool = [
         (float(scores[i]), rows[i][0], rows[i][1], rows[i][3])
         for i in top_idx
+        if scores[i] > -0.5
     ]
 
     for rank, (score, item_id, content, _) in enumerate(pool):
@@ -154,6 +204,8 @@ async def find_similar(
             # совпадения по ключевым словам (коды ошибок, модели касс).
             id_to_idx = {rows[i][0]: i for i in range(len(rows))}
             for rank, (item_id, content) in enumerate(bm25_rows):
+                if allowed_ids is not None and item_id not in allowed_ids:
+                    continue
                 rrf_scores[item_id] = rrf_scores.get(item_id, 0.0) + 1.0 / (k + rank + 1)
                 contents[item_id] = content
                 if item_id not in cosine_top:

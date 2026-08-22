@@ -210,7 +210,8 @@ async def get_rag_context(
     if embedding is None:
         return [], 0
     similar = await find_similar(
-        embedding, limit=limit, query_text=query, company_id=company_id
+        embedding, limit=limit, query_text=query, company_id=company_id,
+        exclude_sources={KB_SOURCE},
     )
     confident = [(item, score) for item, score in similar if score >= RAG_MIN_SCORE]
     if not confident:
@@ -219,3 +220,74 @@ async def get_rag_context(
     max_score = max(score for _, score in confident)
     confidence_pct = int(max_score * 100)
     return examples, confidence_pct
+
+
+# --- Канал внутренней БЗ (выгрузка Teamly) ---
+# Отдельный от примеров тикетов: у статей своя ниша в промпте («справочная
+# статья»), свой порог и свой слот, поэтому чанки БЗ не сжигают слоты, в
+# которых должны лежать похожие закрытые тикеты.
+KB_SOURCE = "teamly"
+
+# Порог и лексический якорь подобраны замером (scripts/_measure_kb_gate.py,
+# август 2026). Абсолютного порога мало: настоящие top-1 лежат в 0.839–0.882,
+# и в тот же диапазон попадают явно неверные попадания — внутренняя БЗ не
+# покрывает железо, она про регламенты и админку. Поэтому статья показывается
+# только если её ещё и находит BM25: хотя бы одно значимое слово тикета обязано
+# встречаться в чанке.
+KB_MIN_SCORE = 0.85
+KB_POOL = 10
+KB_MAX_CHARS = 2000
+
+
+def kb_channel_enabled() -> bool:
+    """Выключено по умолчанию: замер дал ~25% точности на выгрузке апреля 2026.
+
+    Причина не в пороге, а в покрытии: выгрузка — общая БЗ первой линии
+    (регламенты смен, админка, аналитика), а бот обслуживает отдел оборудования.
+    Статей про Атол/PAX/принтеры в ней нет, поэтому гейт либо молчит, либо
+    подставляет соседнюю тему. Включать, когда в source='teamly' появится
+    контент по железу: KB_TEAMLY_ENABLED=1.
+    """
+    import os  # noqa: PLC0415
+
+    return os.getenv("KB_TEAMLY_ENABLED", "").strip().lower() in {"1", "true", "yes"}
+
+
+async def get_kb_context(ticket_title: str, history_tail: str) -> tuple[str, str] | None:
+    """Вернуть (текст статьи, url) из внутренней БЗ или None, если не покрыто.
+
+    Молчать — нормальный режим: дамп покрывает меньшую часть потока тикетов, а
+    ложная статья хуже отсутствующей.
+    """
+    if not kb_channel_enabled():
+        return None
+
+    from .. import db as _db  # noqa: PLC0415
+
+    query = f"{ticket_title}\n{history_tail[-600:]}"
+    embedding = await embed_text(clean_for_embedding(query), task_type="query")
+    if embedding is None:
+        return None
+
+    candidates = await find_similar(embedding, limit=KB_POOL, sources={KB_SOURCE})
+    candidates = [(i, s) for i, s in candidates if s >= KB_MIN_SCORE]
+    if not candidates:
+        return None
+
+    try:
+        anchored = set(
+            await _db.fts_search_source_any_token(query, KB_SOURCE, limit=KB_POOL)
+        )
+    except Exception as exc:
+        logger.warning("KB lexical anchor lookup failed: %s", exc)
+        return None
+    if not anchored:
+        return None
+
+    for item, _score in candidates:
+        if item.id in anchored:
+            content = item.content
+            if len(content) > KB_MAX_CHARS:
+                content = content[:KB_MAX_CHARS] + "\n\n[...статья сокращена]"
+            return content, (item.url or "")
+    return None

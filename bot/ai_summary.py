@@ -786,6 +786,21 @@ async def generate_ticket_summary(
     except Exception as exc:
         logger.warning("Wiki context retrieval failed: %s", exc)
 
+    # Внутренняя БЗ (Teamly) — тот же слот промпта, что и wiki: одна справочная
+    # статья, а не пример ответа. Со ссылкой, чтобы оператор мог открыть источник.
+    if not wiki_ctx:
+        try:
+            from .knowledge.indexer import get_kb_context
+            kb = await get_kb_context(ticket_title, history)
+            if kb:
+                kb_text, kb_url = kb
+                wiki_ctx = f"{kb_text}\n\nИсточник: {kb_url}" if kb_url else kb_text
+                logger.info(
+                    "KB article for ticket %s: %s (%d chars)",
+                    ticket_id, kb_url or "no url", len(kb_text),
+                )
+        except Exception as exc:
+            logger.warning("KB context retrieval failed: %s", exc)
 
     format_instructions = await get_active_format_instructions()
 

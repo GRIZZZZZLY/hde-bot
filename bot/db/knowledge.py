@@ -93,11 +93,12 @@ async def list_knowledge_items_without_embedding() -> list[tuple[int, str]]:
             return await cur.fetchall()
 
 
-async def list_all_knowledge_embeddings() -> list[tuple[int, str, bytes, str]]:
-    """Return (id, content, embedding, company_id) for all indexed items."""
+async def list_all_knowledge_embeddings() -> list[tuple[int, str, bytes, str, str]]:
+    """Return (id, content, embedding, company_id, source) for all indexed items."""
     async with connect() as db:
         async with db.execute(
-            "SELECT id, content, embedding, COALESCE(company_id, '') FROM knowledge_items "
+            "SELECT id, content, embedding, COALESCE(company_id, ''), source "
+            "FROM knowledge_items "
             "WHERE embedding IS NOT NULL AND quality NOT IN ('bad', 'expired')"
         ) as cur:
             return await cur.fetchall()
@@ -216,6 +217,41 @@ async def update_knowledge_company(item_id: int, company_id: str, company_name: 
             (company_id or None, company_name or None, item_id),
         )
         await db.commit()
+
+
+_KB_TOKEN_RE = None
+
+
+async def fts_search_source_any_token(
+    query: str, source: str, limit: int = 10
+) -> list[int]:
+    """BM25-поиск внутри одного источника: OR по значимым токенам запроса.
+
+    Отличие от fts_search_knowledge: там запрос уходит в MATCH как есть, а в
+    FTS5 пробел — это неявный AND, поэтому на длинном запросе (титул + хвост
+    истории) совпадений почти не бывает. Здесь нужен именно лексический
+    «якорь» — хотя бы одно осмысленное слово тикета должно встречаться в чанке.
+    """
+    global _KB_TOKEN_RE
+    if _KB_TOKEN_RE is None:
+        import re as _re
+        _KB_TOKEN_RE = _re.compile(r"[\wа-яёА-ЯЁ]{4,}")
+    tokens = {t.lower() for t in _KB_TOKEN_RE.findall(query or "")}
+    if not tokens:
+        return []
+    expr = " OR ".join(f'"{t}"' for t in sorted(tokens))
+    async with connect() as db:
+        try:
+            async with db.execute(
+                "SELECT f.rowid FROM knowledge_fts f "
+                "JOIN knowledge_items k ON k.id = f.rowid "
+                "WHERE f.content MATCH ? AND k.source = ? "
+                "ORDER BY rank LIMIT ?",
+                (expr, source, limit),
+            ) as cur:
+                return [int(row[0]) for row in await cur.fetchall()]
+        except Exception:
+            return []
 
 
 async def fts_search_knowledge(query: str, limit: int = 10) -> list[tuple[int, str]]:

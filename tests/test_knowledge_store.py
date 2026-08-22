@@ -54,7 +54,7 @@ async def test_cache_hit_skips_db_within_ttl():
     from bot.knowledge import store as store_mod
 
     emb = np.ones(1024, dtype=np.float32)
-    raw = [(1, "content", embedding_to_bytes(emb), "comp1")]
+    raw = [(1, "content", embedding_to_bytes(emb), "comp1", "hde_closed")]
 
     # Reset cache state
     store_mod.invalidate_embeddings_cache()
@@ -76,7 +76,7 @@ async def test_invalidate_forces_reload():
     from bot.knowledge import store as store_mod
 
     emb = np.ones(1024, dtype=np.float32)
-    raw = [(1, "content", embedding_to_bytes(emb), "comp1")]
+    raw = [(1, "content", embedding_to_bytes(emb), "comp1", "hde_closed")]
 
     store_mod.invalidate_embeddings_cache()
 
@@ -151,7 +151,7 @@ async def test_cache_skips_corrupted_embeddings():
 
     good = embedding_to_bytes(np.ones(1024, dtype=np.float32))
     bad = b"\x00\x01"  # wrong length → frombuffer raises
-    raw = [(1, "good", good, ""), (2, "bad", bad, "")]
+    raw = [(1, "good", good, "", "hde_closed"), (2, "bad", bad, "", "hde_closed")]
 
     store_mod.invalidate_embeddings_cache()
 

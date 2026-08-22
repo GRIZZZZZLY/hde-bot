@@ -100,6 +100,7 @@ from .knowledge import (
     delete_knowledge_item_by_ticket,
     expire_stale_knowledge,
     fts_search_knowledge,
+    fts_search_source_any_token,
     get_ai_feedback_pending,
     get_knowledge_metrics,
     get_last_knowledge_item_date,
