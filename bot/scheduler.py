@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import zoneinfo
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -461,6 +462,102 @@ async def _maybe_backup_db(bot: Bot) -> None:
             logger.warning("DB backup alert not delivered: %s", send_exc)
 
 
+_JOB_TIMEOUT_SECONDS = 90
+_TIMERS_TIMEOUT_SECONDS = 120
+_REPORT_TIMEOUT_SECONDS = 600
+
+# Ссылки на фоновые таски держим до завершения: без этого сборщик мусора может
+# забрать таск на полпути.
+_background_tasks: set[asyncio.Task] = set()
+_report_task: Optional[asyncio.Task] = None
+
+
+async def _run_job(name: str, coro, *, timeout: float | None = None) -> bool:
+    """Джоб под таймаутом. Ни исключение, ни таймаут не роняют проход.
+
+    Без таймаута один зависший await (HDE API без ответа, Playwright, Telegram)
+    останавливает ВЕСЬ проход: pre-SLA-будильники стоят в той же очереди и
+    молчат. Watchdog от этого не спасает — он отдельный таск и продолжает
+    пинговать systemd, то есть процесс выглядит живым, пока таймеры не работают.
+
+    timeout=None → значение модуля читается ПРИ ВЫЗОВЕ: как дефолт аргумента оно
+    зафиксировалось бы при импорте и перестало настраиваться.
+    """
+    if timeout is None:
+        timeout = _JOB_TIMEOUT_SECONDS
+    started = time.monotonic()
+    try:
+        await asyncio.wait_for(coro, timeout=timeout)
+        return True
+    except asyncio.TimeoutError:
+        logger.error("Scheduler job %s timed out after %.0fs", name, timeout)
+    except Exception as exc:
+        logger.warning("Scheduler job %s failed: %s", name, exc)
+    finally:
+        elapsed = time.monotonic() - started
+        if elapsed > timeout / 2:
+            logger.info("Scheduler job %s took %.1fs", name, elapsed)
+    return False
+
+
+def _spawn_report(name: str, coro) -> bool:
+    """Отчёт уходит в ФОН и не задерживает проход.
+
+    Playwright открывает браузер и ходит по UI HDE — это минуты, а в том же
+    проходе стоят pre-SLA-будильники. Single-flight обязателен: два браузера на
+    один профиль конкурируют и падают оба, поэтому повторный запуск, пока
+    предыдущий жив, отбрасывается.
+    """
+    global _report_task
+    if _report_task is not None and not _report_task.done():
+        logger.info("Report job %s skipped: previous run still active", name)
+        coro.close()
+        return False
+    _report_task = asyncio.create_task(
+        _run_job(name, coro, timeout=_REPORT_TIMEOUT_SECONDS)
+    )
+    _background_tasks.add(_report_task)
+    _report_task.add_done_callback(_background_tasks.discard)
+    return True
+
+
+_INBOX_DEAD_ALERT_KEY = "inbox_dead_alerted"
+
+
+async def _maybe_alert_dead_inbox(bot: Bot) -> None:
+    """Алерт по событиям инбокса, застрявшим в 'dead'.
+
+    Строка в 'dead' — это webhook, который не обработался за все попытки: клиент
+    написал, а топик не появился, и SLA тикает молча. Это единственный сбой
+    инбокса, который не виден вообще никак, поэтому о нём сообщаем.
+
+    Алерт по РОСТУ счётчика, а не по факту непустого: иначе он повторялся бы
+    каждые 30 секунд. Число уже разосланных живёт в bot_settings, а не в памяти:
+    строки в 'dead' переживают рестарт, и in-memory guard кричал бы про старые
+    события при каждом подъёме процесса.
+    """
+    counts = await db.count_inbox_by_status()
+    dead = int(counts.get("dead", 0) or 0)
+    alerted = int(await db.get_setting(_INBOX_DEAD_ALERT_KEY, "0") or 0)
+    if dead < alerted:
+        # Очередь почистили — опускаем планку, иначе следующий сбой промолчит.
+        await db.set_setting(_INBOX_DEAD_ALERT_KEY, str(dead))
+        return
+    if dead <= alerted:
+        return
+    await db.set_setting(_INBOX_DEAD_ALERT_KEY, str(dead))
+    logger.error("Inbox: %d event(s) in 'dead' — webhooks were never processed", dead)
+    try:
+        await bot.send_message(
+            config.personal_chat_id,
+            f"🚨 Инбокс: {dead} событий в статусе dead — вебхуки не обработаны "
+            f"после всех попыток.\nТикеты могли не появиться в Telegram, "
+            f"SLA по ним идёт незаметно. Разбивка — в /status.",
+        )
+    except Exception as exc:
+        logger.warning("Inbox dead alert not delivered: %s", exc)
+
+
 async def process_scheduled_actions(bot: Bot) -> None:
     from .work_schedule import is_work_day, is_work_time, last_work_day, was_yesterday_work_day
 
@@ -468,15 +565,15 @@ async def process_scheduled_actions(bot: Bot) -> None:
     # Flush runs FIRST so the digest's unassigned-equipment count reflects the
     # post-reconcile state (matches the personal summary).
     if is_work_day():
-        await _maybe_flush_general(bot)
-        await _maybe_send_digest(bot)
-        await _maybe_send_daily_value_report(bot)
-        await _maybe_send_reconciliation_digest(bot)
+        await _run_job("flush_general", _maybe_flush_general(bot))
+        await _run_job("digest", _maybe_send_digest(bot))
+        await _run_job("value_report", _maybe_send_daily_value_report(bot))
+        await _run_job("reconcile_digest", _maybe_send_reconciliation_digest(bot))
 
     # Periodic HDE↔General reconciliation during work hours: catches direct-HDE
     # assignments when HDE doesn't fire a usable webhook (or sends one with
     # empty owner_name). Cheap: 1 list call + delta-only edits every ~7 min.
-    await _maybe_reconcile_general(bot)
+    await _run_job("reconcile_general", _maybe_reconcile_general(bot))
 
     # Report schedule:
     #   Mon–Thu 8:30 MSK  → reminder button for previous work day
@@ -487,12 +584,13 @@ async def process_scheduled_actions(bot: Bot) -> None:
     if is_work_day():
         weekday_msk = _now_msk().weekday()
         if weekday_msk in (0, 1, 2, 3):  # Mon–Thu
-            await _maybe_send_report_button(bot)
-            await _maybe_auto_run_report(bot)
+            await _run_job("report_button", _maybe_send_report_button(bot))
+            # Прогоны отчёта — в фон: Playwright занимает минуты (см. _spawn_report)
+            _spawn_report("report_autorun", _maybe_auto_run_report(bot))
         if weekday_msk == 3:             # Thu
-            await _maybe_thursday_evening_autorun(bot)
+            _spawn_report("report_thursday", _maybe_thursday_evening_autorun(bot))
         if weekday_msk == 6:             # Sun
-            await _maybe_weekly_summary(bot)
+            _spawn_report("weekly_summary", _maybe_weekly_summary(bot))
 
     # Hourly media cache GC — remove topic_media_cache rows older than 1h
     global _last_media_gc_hour
@@ -508,15 +606,25 @@ async def process_scheduled_actions(bot: Bot) -> None:
             logger.warning("Media cache GC failed: %s", exc)
 
     # Nightly dialogue_pairs increment (Phase 2A) — own flag, 7-day cutoff.
-    await _maybe_backfill_dialogue_pairs(bot)
+    # Ночные пачки ходят по HDE API с пейсингом и живут дольше обычного джоба.
+    await _run_job(
+        "dialogue_backfill", _maybe_backfill_dialogue_pairs(bot),
+        timeout=_REPORT_TIMEOUT_SECONDS,
+    )
 
     # Nightly answer reconciliation: сверка предложений бота с фактическими
     # ответами операторов (learning без кнопок). Результат — в judge-поля.
-    await _maybe_reconcile_answers(bot)
+    await _run_job(
+        "reconcile_answers", _maybe_reconcile_answers(bot),
+        timeout=_REPORT_TIMEOUT_SECONDS,
+    )
 
     # Суточный снапшот базы: схема не версионируется, откат релиза данные не
-    # откатывает.
-    await _maybe_backup_db(bot)
+    # откатывает. VACUUM INTO на 240 МБ — десятки секунд.
+    await _run_job("db_backup", _maybe_backup_db(bot), timeout=_REPORT_TIMEOUT_SECONDS)
+
+    # Инбокс: события, застрявшие в 'dead', — не доехавшие тикеты.
+    await _run_job("inbox_dead_alert", _maybe_alert_dead_inbox(bot), timeout=15)
 
     # Weekly knowledge expiry (Sunday 00:xx UTC)
     global _last_knowledge_expiry_date
@@ -534,10 +642,19 @@ async def process_scheduled_actions(bot: Bot) -> None:
     # Nightly prompt optimizer disabled: the hand-tuned _FORMAT_INSTRUCTIONS is
     # the source of truth. Manual runs still available via /aioptimize.
 
-    # Pre-SLA and pending deletions require both work day AND work hours
+    # Pre-SLA and pending deletions require both work day AND work hours.
+    # Вынесены в отдельный джоб под таймаутом: это самая чувствительная к
+    # задержке часть прохода, и повиснуть она не должна ни на HDE-сверке, ни на
+    # Telegram.
     if not is_work_time():
         return
+    await _run_job(
+        "due_timers", _process_due_timers(bot), timeout=_TIMERS_TIMEOUT_SECONDS
+    )
 
+
+async def _process_due_timers(bot: Bot) -> None:
+    """Pre-SLA будильники, обратный отсчёт, reassurance и отложенные удаления."""
     now_value = to_storage(utcnow())
 
     # One HDE check per (ticket, client-reply) per pass: the three loops below
