@@ -60,6 +60,19 @@ _IMAGE_MIME: dict[str, str] = {
 _MAX_IMAGES = 3          # max images per vision request
 _MAX_IMAGE_BYTES = 4 * 1024 * 1024  # 4 MB per image
 
+# --- Бюджет запроса под TPM ------------------------------------------------
+# Провайдер считает против лимита prompt + max_tokens, а лимит на прод-модели
+# 8000 TPM. До этих ограничений тикет с длинной историей и большими примерами из
+# базы получал 413 «Request too large» и оставался ВООБЩЕ без суммарки (50 таких
+# ошибок в прод-логе за сутки, плюс 123 отказа 429).
+#
+# Пределы выбраны по замерам: статика промпта (инструкции + few-shot + голос) уже
+# ~9.8k символов, один knowledge_item в базе доходит до 20k символов, а RAG даёт
+# до трёх примеров — без обрезки только они давали до 60k символов.
+_RAG_EXCERPT_LIMIT = 600      # столько же, сколько у агента (agent/context.py)
+_MAX_HISTORY_CHARS = 3000
+_MAX_PROMPT_CHARS = 16000     # ≈6k токенов; вместе с выводом влезает в 8000 TPM
+
 _EQUIPMENT_PATTERNS = [
     (r'\bатол\b|atol|\bфр\b', 'АТОЛ'),
     (r'\bэвотор\b|evotor', 'Эвотор'),
@@ -185,7 +198,7 @@ async def _call_groq_for_summary(system_text: str, history: str, ticket_id: str)
             {"role": "system", "content": system_text},
             {"role": "user", "content": f"Переписка:\n{history}"},
         ],
-        "max_tokens": 3000,
+        "max_tokens": config.groq_summary_max_tokens,
         "temperature": 0.3,
     }
     if config.groq_reasoning_effort:
@@ -235,7 +248,7 @@ async def _call_groq_vision_for_summary(
             {"role": "system", "content": system_text},
             {"role": "user", "content": content},
         ],
-        "max_tokens": 3000,
+        "max_tokens": config.groq_summary_max_tokens,
         "temperature": 0.3,
     }
     if config.groq_reasoning_effort:
@@ -504,6 +517,50 @@ def _build_history_text(posts: "list[HDEPost]", info: "HDETicketInfo") -> str:
     return "\n".join(lines)
 
 
+def _budget_history(posts: "list[HDEPost]", info: "HDETicketInfo") -> str:
+    """История под бюджет символов, целыми сообщениями.
+
+    Тот же приём, что у агента (`agent.context.build_history_budgeted`): первое
+    сообщение клиента плюс хвост целыми репликами. Резать посередине реплики
+    нельзя — модель достраивает обрубок и выдумывает.
+    """
+    from .agent.context import build_history_budgeted  # noqa: PLC0415 — цикл импорта
+
+    return build_history_budgeted(
+        posts, info, budget=_MAX_HISTORY_CHARS, _history_fn=_build_history_text
+    )
+
+
+def _fit_prompt(
+    system_text: str, history: str, assemble, ticket_id: str = ""
+) -> tuple[str, str]:
+    """Уложить запрос в бюджет: сначала без примеров из базы, потом обрезкой истории.
+
+    Порядок деградации не произвольный. Примеры RAG — самое объёмное и самое
+    заменимое: без них модель отвечает хуже, но отвечает. История — то, из чего
+    вообще делается диагноз, поэтому её режем последней и с головы, оставляя
+    свежие реплики. Полный отказ (413 и никакой суммарки) хуже обоих вариантов.
+    """
+    if len(system_text) + len(history) <= _MAX_PROMPT_CHARS:
+        return system_text, history
+
+    without_rag = assemble(None)
+    if len(without_rag) + len(history) <= _MAX_PROMPT_CHARS:
+        logger.info(
+            "Prompt budget for ticket %s: dropped RAG examples (%d → %d chars)",
+            ticket_id, len(system_text) + len(history), len(without_rag) + len(history),
+        )
+        return without_rag, history
+
+    room = max(_MAX_PROMPT_CHARS - len(without_rag), 500)
+    trimmed = history[-room:]
+    logger.warning(
+        "Prompt budget for ticket %s: history trimmed %d → %d chars after dropping RAG",
+        ticket_id, len(history), len(trimmed),
+    )
+    return without_rag, f"[...начало переписки пропущено...]\n{trimmed}"
+
+
 def _write_generation_log(entry: dict) -> None:
     os.makedirs("data", exist_ok=True)
     with open("data/ai_log.jsonl", "a", encoding="utf-8") as f:
@@ -688,7 +745,7 @@ async def generate_ticket_summary(
         logger.info("AI summary skipped: disabled (ai_summary_enabled=%s)", enabled)
         return None
 
-    history = _build_history_text(posts, info)
+    history = _budget_history(posts, info)
     if not history.strip():
         logger.info("AI summary skipped: empty history for ticket %s", ticket_id)
         return None
@@ -729,15 +786,24 @@ async def generate_ticket_summary(
     except Exception as exc:
         logger.warning("Wiki context retrieval failed: %s", exc)
 
+
     format_instructions = await get_active_format_instructions()
-    system_text = _build_system_prompt(
-        ticket_title,
-        rag_examples or None,
-        wiki_ctx,
-        equipment=equipment,
-        solution_steps=solution_steps,
-        format_instructions=format_instructions,
-    )
+
+    def _assemble(examples: list[str] | None) -> str:
+        return _build_system_prompt(
+            ticket_title,
+            examples,
+            wiki_ctx,
+            equipment=equipment,
+            solution_steps=solution_steps,
+            format_instructions=format_instructions,
+        )
+
+    # Примеры из базы обрезаются: один knowledge_item доходит до 20k символов, а
+    # их до трёх — без обрезки промпт не влезал в TPM (у агента тот же лимит).
+    capped_examples = [e[:_RAG_EXCERPT_LIMIT] for e in rag_examples] or None
+    system_text = _assemble(capped_examples)
+    system_text, history = _fit_prompt(system_text, history, _assemble, ticket_id)
 
     # Text-only Groq call first — fast
     raw_text: str | None = await _call_groq_for_summary(system_text, history, ticket_id)

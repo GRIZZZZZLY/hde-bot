@@ -73,6 +73,7 @@ class Config:
     groq_summary_model: str
     groq_reasoning_effort: str
     groq_vision_model: str
+    groq_summary_max_tokens: int
     groq_classify_fallback_model: str
     openrouter_model: str
     optimizer_judge_model: str
@@ -162,6 +163,11 @@ class Config:
             # Мультимодальная модель для картинок. Дефолт — модель суммарки:
             # сейчас она мультимодальна, но роль отдельная, поэтому и env свой.
             groq_vision_model=os.getenv("GROQ_VISION_MODEL", "").strip() or summary_model,
+            # max_tokens РЕЗЕРВИРУЕТСЯ против TPM: провайдер считает
+            # prompt + max_tokens, поэтому запас «на всякий случай» напрямую
+            # уменьшает число вызовов в минуту. Прод-замер: самый длинный ответ
+            # 612 символов (~250 токенов), так что 700 — трёхкратный запас.
+            groq_summary_max_tokens=int(os.getenv("GROQ_SUMMARY_MAX_TOKENS", "700") or 700),
             # Фолбэк классификаторов: живёт на ОТДЕЛЬНОЙ per-model квоте Groq,
             # поэтому переживает 429 основной модели.
             groq_classify_fallback_model=os.getenv(
