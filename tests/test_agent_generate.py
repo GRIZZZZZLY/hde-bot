@@ -193,7 +193,8 @@ async def test_draft_prompt_drops_reasoning_directive_but_keeps_style_rules():
     assert "<reasoning>" not in seen["format_instructions"]
     assert "императив" in seen["format_instructions"]     # правила стиля живы
     assert "Запретные фразы" in seen["format_instructions"]
-    assert seen["max_tokens"] >= 1200                     # JSON помещается целиком
+    # OTPM у Groq = 1000: потолок выше этого числа роняет весь вызов с 429
+    assert 0 < seen["max_tokens"] <= 1000
 
 
 @pytest.mark.asyncio

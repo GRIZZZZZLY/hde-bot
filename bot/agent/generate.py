@@ -58,9 +58,15 @@ async def generate_agent_draft(
         system += block
     # JSON-override ПОСЛЕДНИМ — после few-shot (прод-инцидент 2026-07-12)
     system += build_json_override()
+    # max_tokens ≤ 1000: у Groq на qwen3.6-27b отдельный потолок OTPM (output
+    # tokens per minute) = 1000, и запрос с бо́льшим max_tokens отклоняется
+    # целиком с 429 «Request too large … on output tokens per minute», даже
+    # когда ответ уместился бы в сотню токенов. Проверено на проде 2026-09-04:
+    # 1200 роняет вызов, 800 проходит. Место для JSON освобождает не потолок, а
+    # снятый блок <reasoning> выше.
     raw = await _call_fn(
         context["history"], system=system, model=config.agent_draft_model,
-        max_tokens=1200, temperature=0.3,
+        max_tokens=800, temperature=0.3,
         reasoning_effort=config.groq_reasoning_effort,
     )
     draft = parse_agent_draft(raw or "")
