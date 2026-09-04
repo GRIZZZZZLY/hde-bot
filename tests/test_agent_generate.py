@@ -158,3 +158,64 @@ async def test_parse_fail_logs_warning_with_raw_head(caplog):
         )
     assert draft is None
     assert any("draft parse failed" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_draft_prompt_drops_reasoning_directive_but_keeps_style_rules():
+    """Агентный путь отдаёт JSON, а формат-инструкции требуют блок <reasoning>.
+    qwen выполнял инструкцию, JSON обрывался на max_tokens и драфт молча падал
+    на legacy — 19 таких провалов в прод-логе за 2026-08-22..09-04."""
+    seen = {}
+
+    async def fake_call(prompt, *, system=None, model=None, max_tokens=None,
+                        temperature=None, reasoning_effort=""):
+        seen["system"] = system
+        seen["max_tokens"] = max_tokens
+        return '{"action":"ANSWER","suit":"s","client":"c","memo":"м","confidence":80}'
+
+    def fake_prompt(title, rag_examples=None, wiki_context=None, *, equipment=None,
+                    solution_steps=None, format_instructions=None):
+        seen["format_instructions"] = format_instructions
+        return f"SYSTEM\n{format_instructions}"
+
+    async def fake_format():
+        return (
+            "Перед ответом заполни блок рассуждения (скрыт от пользователя):\n"
+            "<reasoning>\n1. Что сломано?\n</reasoning>\n\n"
+            "Клиенту: <одно предложение, императив, максимум 20 слов>\n"
+            "Запретные фразы: «дайте знать».\n"
+        )
+
+    draft = await generate_agent_draft(
+        _CTX, "t", _call_fn=fake_call, _prompt_fn=fake_prompt, _format_fn=fake_format,
+    )
+    assert draft is not None
+    assert "<reasoning>" not in seen["format_instructions"]
+    assert "императив" in seen["format_instructions"]     # правила стиля живы
+    assert "Запретные фразы" in seen["format_instructions"]
+    assert seen["max_tokens"] >= 1200                     # JSON помещается целиком
+
+
+@pytest.mark.asyncio
+async def test_draft_survives_model_emitting_reasoning_block():
+    """Даже если модель всё равно напишет рассуждение, JSON из него достаётся."""
+    async def fake_call(prompt, *, system=None, model=None, max_tokens=None,
+                        temperature=None, reasoning_effort=""):
+        return (
+            "<reasoning>\nСломан {принтер} или {драйвер}\n</reasoning>\n"
+            '{"action":"ASK","suit":"s","client":"Какая модель кассы?",'
+            '"memo":"—","confidence":40}'
+        )
+
+    def fake_prompt(title, rag_examples=None, wiki_context=None, *, equipment=None,
+                    solution_steps=None, format_instructions=None):
+        return "SYSTEM"
+
+    async def fake_format():
+        return "FORMAT"
+
+    draft = await generate_agent_draft(
+        _CTX, "t", _call_fn=fake_call, _prompt_fn=fake_prompt, _format_fn=fake_format,
+    )
+    assert draft is not None and draft["action"] == "ASK"
+    assert draft["client"] == "Какая модель кассы?"

@@ -1,10 +1,16 @@
 """Self-check одним LLM-вызовом ПРОТИВ СОДЕРЖИМОГО источников (used_excerpt),
-а не их названий. Консервативный дефолт unsupported→ASK, никогда не падает."""
+а не их названий. Консервативный дефолт unsupported, никогда не падает.
+
+`checked` отличает «проверка прошла и вынесла unsupported» от «проверка вообще
+не отработала» (таймаут, битый JSON). Раньше оба случая выглядели одинаково, а
+пайплайн на них реагировал одинаково — подменял драфт. Теперь пометка оператору
+разная, и по трассировке видно, отвечал ли судья вообще."""
 from __future__ import annotations
 
 import json
 
-_DEFAULT = {"status": "unsupported", "fallback_action": "ASK", "fallback_client_text": ""}
+_DEFAULT = {"status": "unsupported", "fallback_action": "ASK",
+            "fallback_client_text": "", "checked": False}
 _STATUSES = ("supported", "partially_supported", "unsupported")
 
 
@@ -70,4 +76,5 @@ async def self_check(
         "status": obj["status"],
         "fallback_action": action,
         "fallback_client_text": str(obj.get("fallback_client_text", "")),
+        "checked": True,
     }

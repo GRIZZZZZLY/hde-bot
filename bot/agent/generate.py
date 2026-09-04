@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import logging
 
-from .actions import build_action_instruction, build_json_override, parse_agent_draft
+from .actions import (
+    build_action_instruction,
+    build_json_override,
+    parse_agent_draft,
+    strip_reasoning_directive,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +34,10 @@ async def generate_agent_draft(
         e["used_excerpt"] for e in context.get("evidence", [])
         if e["source_type"] == "knowledge_item"
     ] or None
-    format_instructions = await _format_fn()
+    # Блок <reasoning> из формат-инструкций несовместим с JSON-выводом: модель
+    # пишет рассуждение, оно съедает max_tokens, JSON обрывается и драфт
+    # молча уходит на legacy. Правила стиля из тех же инструкций остаются.
+    format_instructions = strip_reasoning_directive(await _format_fn())
     base_system = _prompt_fn(
         ticket_title,
         rag_examples=rag_examples,
@@ -52,10 +60,16 @@ async def generate_agent_draft(
     system += build_json_override()
     raw = await _call_fn(
         context["history"], system=system, model=config.agent_draft_model,
-        max_tokens=800, temperature=0.3,
+        max_tokens=1200, temperature=0.3,
         reasoning_effort=config.groq_reasoning_effort,
     )
     draft = parse_agent_draft(raw or "")
     if draft is None:
-        logger.warning("draft parse failed; raw head: %s", (raw or "")[:200])
+        # Две разные болезни под одним симптомом: пустой ответ — это отказ
+        # провайдера (429/413), текст без JSON — модель проигнорировала
+        # override. Раньше обе писались одной строкой и не разделялись в логе.
+        if not (raw or "").strip():
+            logger.warning("draft parse failed: пустой ответ модели (429/413?)")
+        else:
+            logger.warning("draft parse failed; raw head: %s", raw[:200])
     return draft

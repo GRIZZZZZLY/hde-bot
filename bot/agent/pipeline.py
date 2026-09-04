@@ -58,7 +58,7 @@ async def run_agent(
     if _posts_fn is None:
         _posts_fn = _default_posts_fn
 
-    from .actions import compose_memo, extract_client_text
+    from .actions import compose_memo, compose_selfcheck_warning, extract_client_text
 
     started = time.monotonic()
     posts = list(posts)
@@ -119,10 +119,20 @@ async def run_agent(
                 confidence = min(confidence, 50)
                 confidence_reason = "self-check: partially_supported, драфт сохранён"
             elif self_status != "supported":
-                action = check["fallback_action"]
-                client = check["fallback_client_text"]
-                confidence = 30
-                confidence_reason = f"fallback после self-check: {self_status}"
+                # Драфт тоже живёт. Подмена его на fallback_client_text была
+                # источником целого класса расхождений «эскалация вместо
+                # решения»: сверка 2026-09 показала три тикета подряд, где
+                # драфт совпадал с ответом оператора, а fallback предлагал
+                # ждать специалиста. Клиенту ничего не уходит без кнопки
+                # оператора — предупреждение в Памятке решает задачу без потери
+                # готового ответа.
+                base_memo = compose_selfcheck_warning(check, base_memo)
+                confidence = min(confidence, 40)
+                confidence_reason = (
+                    "self-check не отработал, драфт сохранён"
+                    if not check.get("checked", True)
+                    else f"self-check: {self_status}, драфт сохранён"
+                )
 
         # freshness: не появился ли новый пост, пока генерировали
         anchor = _anchor_post_id(posts)

@@ -54,4 +54,21 @@ async def test_self_check_conservative_default():
 
     r = await self_check("в", "о", [], "и", _call_fn=bad_call)
     assert r == {"status": "unsupported", "fallback_action": "ASK",
-                 "fallback_client_text": ""}
+                 "fallback_client_text": "", "checked": False}
+
+
+async def test_checked_flag_separates_verdict_from_failure():
+    """Пайплайн должен отличать «судья сказал unsupported» от «судья не
+    ответил»: пометки оператору у этих случаев разные."""
+    async def good_call(system, user, *, model=None, temperature=0.0, max_tokens=600):
+        return json.dumps({"status": "unsupported", "fallback_action": "ASK",
+                           "fallback_client_text": "уточните"})
+
+    async def dead_call(system, user, *, model=None, temperature=0.0, max_tokens=600):
+        raise TimeoutError("groq не ответил")
+
+    verdict = await self_check("в", "о", [], "и", _call_fn=good_call)
+    failure = await self_check("в", "о", [], "и", _call_fn=dead_call)
+    assert verdict["status"] == failure["status"] == "unsupported"
+    assert verdict["checked"] is True
+    assert failure["checked"] is False

@@ -141,17 +141,20 @@ async def test_partially_supported_keeps_draft_with_memo_warning():
     assert recorded["action_type"] == "ANSWER"
 
 
-async def test_unsupported_fallback_records_original_draft():
-    """unsupported — fallback как раньше, но исходный драфт уходит в трассу."""
+async def test_unsupported_keeps_draft_with_warning():
+    """unsupported больше НЕ подменяет драфт. Сверка 2026-09: в тикетах 197159,
+    199872, 197210 драфт совпадал с ответом оператора, а fallback self-check
+    предлагал ждать специалиста — расхождение создавал именно fallback."""
     recorded = {}
 
     async def draft(ctx, title, **k):
-        return {"action": "ANSWER", "suit": "s", "client": "полувыдумка",
+        return {"action": "ANSWER", "suit": "s", "client": "откройте RuDesktop",
                 "memo": "m", "confidence": 85, "confidence_reason": ""}
 
     async def sc(ct, gen, evidence, hist, **k):
-        return {"status": "unsupported", "fallback_action": "ASK",
-                "fallback_client_text": "уточните модель"}
+        return {"status": "unsupported", "fallback_action": "ESCALATE",
+                "fallback_client_text": "передадим профильному специалисту",
+                "checked": True}
 
     async def rec(**kw):
         recorded.update(kw)
@@ -163,10 +166,70 @@ async def test_unsupported_fallback_records_original_draft():
         _safety_pre=_PROCEED, _safety_post=_PROCEED,
         _record_fn=rec, _posts_fn=_fresh_posts_same,
     )
-    assert client == "уточните модель"
-    assert conf == 30
-    assert recorded["ai_answer"] == "уточните модель"
-    assert recorded["draft_answer"] == "полувыдумка"   # оригинал не потерян
+    assert client == "откройте RuDesktop"              # драфт жив
+    assert conf == 40                                  # но уверенность срезана
+    assert "проверь факты" in memo                     # оператор предупреждён
+    assert "передадим профильному специалисту" in memo  # мнение self-check не потеряно
+    assert recorded["action_type"] == "ANSWER"         # не подменено на ESCALATE
+    assert recorded["ai_answer"] == "откройте RuDesktop"
+    assert recorded["draft_answer"] == "откройте RuDesktop"
+
+
+async def test_selfcheck_failure_keeps_draft_but_says_it_did_not_run():
+    """Сбой self-check (таймаут, битый JSON) — тоже не повод терять драфт, но
+    памятка обязана отличаться: факты не проверял никто."""
+    recorded = {}
+
+    async def draft(ctx, title, **k):
+        return {"action": "ANSWER", "suit": "s", "client": "перезагрузите кассу",
+                "memo": "m", "confidence": 90, "confidence_reason": ""}
+
+    async def sc(ct, gen, evidence, hist, **k):
+        from bot.agent.selfcheck import _DEFAULT
+        return dict(_DEFAULT)                          # ровно то, что вернёт сбой
+
+    async def rec(**kw):
+        recorded.update(kw)
+        return 1
+
+    _, client, memo, conf = await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T3c",
+        _context_fn=_ctx, _draft_fn=draft, _selfcheck_fn=sc,
+        _safety_pre=_PROCEED, _safety_post=_PROCEED,
+        _record_fn=rec, _posts_fn=_fresh_posts_same,
+    )
+    assert client == "перезагрузите кассу"
+    assert conf == 40
+    assert "не отработал" in memo
+    assert "не отработал" in recorded["confidence_reason"]
+
+
+async def test_post_safety_still_overrides_draft_on_unsupported():
+    """Смягчение self-check не трогает жёсткий гейт: safety в КОДЕ по-прежнему
+    вычищает ответ независимо от мнения модели."""
+    async def draft(ctx, title, **k):
+        return {"action": "ANSWER", "suit": "s", "client": "сделаем возврат денег",
+                "memo": "m", "confidence": 90, "confidence_reason": ""}
+
+    async def sc(ct, gen, evidence, hist, **k):
+        return {"status": "supported", "fallback_action": "ASK",
+                "fallback_client_text": "", "checked": True}
+
+    recorded = {}
+
+    async def rec(**kw):
+        recorded.update(kw)
+        return 1
+
+    from bot.agent.safety import post_generation_safety_check
+    _, client, memo, conf = await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T3d",
+        _context_fn=_ctx, _draft_fn=draft, _selfcheck_fn=sc,
+        _safety_pre=_PROCEED, _safety_post=post_generation_safety_check,
+        _record_fn=rec, _posts_fn=_fresh_posts_same,
+    )
+    assert client == "" and conf == 0
+    assert recorded["action_type"] == "ESCALATE"
 
 
 async def test_superseded_triggers_one_regeneration():

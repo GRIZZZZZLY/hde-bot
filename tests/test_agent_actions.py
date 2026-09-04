@@ -85,8 +85,76 @@ def test_compose_memo_body_only():
     assert compose_memo("Атол 30Ф • драйверы clck.ru/x") == "Атол 30Ф • драйверы clck.ru/x"
 
 
-def test_action_instruction_forbids_remote_access_first():
+def test_action_instruction_makes_remote_access_concrete():
+    """Удалёнку больше не запрещаем (операторы так и работают) — требуем
+    конкретики: какая программа, ссылка на неё и что прислать в ответ."""
     from bot.agent.actions import build_action_instruction
-    text = build_action_instruction().lower()
-    assert "удалённый доступ" in text or "удаленный доступ" in text
-    assert "перв" in text                        # «не первым шагом»
+    text = build_action_instruction()
+    low = text.lower()
+    assert "удалённый доступ" in low or "удаленный доступ" in low
+    assert "rudesktop.ru/downloads" in low and "anydesk.com" in low
+    assert "номер рабочего места и пароль" in low   # что прислать для RuDesktop
+    assert "статья" in low                          # статья впереди удалёнки
+
+
+def test_action_instruction_bans_first_person_completed_actions():
+    """«Подключаюсь к вам» / «Удалённо подключился» — оператор ещё ничего не
+    сделал, а клиент ждёт несуществующего подключения (тикеты 194769, 195723)."""
+    from bot.agent.actions import build_action_instruction, build_json_override
+    combined = (build_action_instruction() + build_json_override()).lower()
+    assert "первое лицо" in combined or "первого лица" in combined
+    assert "подключаюсь" in combined and "подключился" in combined
+
+
+def test_strip_reasoning_directive_removes_block_and_leadin():
+    """Блок <reasoning> несовместим с JSON-выводом: модель его пишет, JSON не
+    влезает в max_tokens и драфт падает на legacy (19 случаев в прод-логе)."""
+    from bot.agent.actions import strip_reasoning_directive
+    instructions = (
+        "Опирайся на источники.\n\n"
+        "Перед ответом заполни блок рассуждения (скрыт от пользователя):\n"
+        "<reasoning>\n1. Что сломано?\n2. Какая модель?\n</reasoning>\n\n"
+        "Формат ответа — ровно три метки:\n"
+        "Суть: <одно предложение>\n"
+    )
+    out = strip_reasoning_directive(instructions)
+    assert "<reasoning>" not in out
+    assert "блок рассуждения" not in out
+    assert "Опирайся на источники." in out       # остальное не тронуто
+    assert "Суть: <одно предложение>" in out     # правила стиля остались
+
+
+def test_strip_reasoning_directive_is_noop_without_block():
+    from bot.agent.actions import strip_reasoning_directive
+    text = "Формат ответа — ровно три метки.\nСуть: <...>"
+    assert strip_reasoning_directive(text) == text
+
+
+def test_parse_agent_draft_ignores_braces_inside_reasoning():
+    """Жадный поиск JSON начинался с первой скобки в тексте — скобка внутри
+    рассуждения уводила парсер мимо настоящего ответа."""
+    from bot.agent.actions import parse_agent_draft
+    raw = (
+        "<reasoning>\nПрикинем {вариант A} и {вариант B}\n</reasoning>\n"
+        '{"action": "ANSWER", "suit": "с", "client": "к", "memo": "м", '
+        '"confidence": 70, "confidence_reason": "r"}'
+    )
+    draft = parse_agent_draft(raw)
+    assert draft is not None
+    assert draft["action"] == "ANSWER" and draft["client"] == "к"
+
+
+def test_compose_selfcheck_warning_separates_failure_from_verdict():
+    """«Проверка сказала unsupported» и «проверка не отработала» — разные
+    сообщения оператору: во втором случае факты вообще никто не смотрел."""
+    from bot.agent.actions import compose_selfcheck_warning
+    verdict = compose_selfcheck_warning(
+        {"checked": True, "fallback_client_text": "уточните модель"}, "Атол 30Ф"
+    )
+    assert "без опоры на источники" in verdict
+    assert "Запасной вариант: уточните модель" in verdict
+    assert "Атол 30Ф" in verdict                 # памятка модели не потеряна
+
+    broken = compose_selfcheck_warning({"checked": False, "fallback_client_text": ""}, "м")
+    assert "не отработал" in broken
+    assert "Запасной вариант" not in broken
