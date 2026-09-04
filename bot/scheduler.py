@@ -390,10 +390,15 @@ async def _maybe_backfill_dialogue_pairs(bot) -> None:
         return
     _last_dialogue_backfill_date = today
     try:
+        started = time.monotonic()
         stats = await run_dialogue_backfill()
         logger.info("Nightly dialogue backfill: %s", stats)
         from .agent.pair_quality import gate_pending_pairs
-        gate_stats = await gate_pending_pairs(limit=300)
+        # Дедлайн — остаток бюджета джоба за вычетом времени бэкфилла.
+        gate_stats = await gate_pending_pairs(
+            limit=300,
+            deadline_s=max(_PAIR_GATE_DEADLINE_SECONDS - (time.monotonic() - started), 0),
+        )
         logger.info("Nightly pair gating: %s", gate_stats)
     except Exception as exc:
         logger.warning("Nightly dialogue backfill failed: %s", exc)
@@ -465,6 +470,14 @@ async def _maybe_backup_db(bot: Bot) -> None:
 _JOB_TIMEOUT_SECONDS = 90
 _TIMERS_TIMEOUT_SECONDS = 120
 _REPORT_TIMEOUT_SECONDS = 600
+
+# Ночная пачка dialogue_pairs (01:xx MSK) идёт по HDE API с пейсингом, а потом
+# гейтит пары по одному LLM-вызову с паузой 6 с под TPM — в 600 с она не влезает
+# никогда и каждую ночь падала по таймауту. Свой лимит: пачка идёт в час, когда
+# нечего рассылать (рабочее окно 9–18), поэтому серийность прохода не мешает.
+# Гейт получает дедлайн НИЖЕ этого таймаута, чтобы выйти самому и записать stats.
+_NIGHTLY_BATCH_TIMEOUT_SECONDS = 1500
+_PAIR_GATE_DEADLINE_SECONDS = 1200
 
 # Ссылки на фоновые таски держим до завершения: без этого сборщик мусора может
 # забрать таск на полпути.
@@ -615,7 +628,7 @@ async def process_scheduled_actions(bot: Bot) -> None:
     # Ночные пачки ходят по HDE API с пейсингом и живут дольше обычного джоба.
     await _run_job(
         "dialogue_backfill", _maybe_backfill_dialogue_pairs(bot),
-        timeout=_REPORT_TIMEOUT_SECONDS,
+        timeout=_NIGHTLY_BATCH_TIMEOUT_SECONDS,
     )
 
     # Nightly answer reconciliation: сверка предложений бота с фактическими

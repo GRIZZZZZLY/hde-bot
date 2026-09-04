@@ -77,7 +77,9 @@ def find_operator_reply_after(posts, anchor_post_id, staff: set[str]) -> str | N
     return text or None
 
 
-def _build_judge_prompt(ai_answer: str, reference: str) -> tuple[str, str]:
+def _build_judge_prompt(
+    ai_answer: str, reference: str, client_text: str = ""
+) -> tuple[str, str]:
     system = (
         "Ты сверяешь черновик ассистента с тем, что реально написал оператор "
         "техподдержки кассового ПО тому же клиенту в том же тикете.\n"
@@ -85,30 +87,44 @@ def _build_judge_prompt(ai_answer: str, reference: str) -> tuple[str, str]:
         "и порядок слов могут отличаться.\n"
         "bot_escalated — оператор решил вопрос сам (подключился, дал инструкцию, "
         "назвал причину), а ассистент отправил ждать специалиста или звонка.\n"
-        "bot_wrong_fact — ассистент неверен по существу: не та модель или ПО, не тот "
-        "адресат (банк вместо нас или наоборот), неверный порядок действий, "
-        "несуществующая настройка.\n"
+        "bot_wrong_fact — ассистент неверен ПО ФАКТУ: не та модель или ПО, не тот "
+        "адресат (банк вместо нас или наоборот), несуществующая настройка, неверное "
+        "значение параметра, инструкция, которая физически не сработает.\n"
         "not_comparable — сравнивать нечего: реплики про разное, оператор продолжил "
         "свою ветку или ответил на другой вопрос.\n"
+        # Сводка 2026-09-03: судья звал bot_wrong_fact там, где бот добавил
+        # лишний шаг («печать X-отчёта») или спросил не то, что оператор. Это
+        # разница в объёме, а не ошибка факта, и она уводила пару в очередь
+        # кандидатов в базу знаний, где такой строке делать нечего.
+        "ВАЖНО: лишний или недостающий шаг сам по себе НЕ bot_wrong_fact. Если "
+        "основное действие совпадает — это same_action. Разный порядок слов, "
+        "объём и вежливость значения не имеют. Ставь bot_wrong_fact только когда "
+        "можешь назвать конкретный неверный факт.\n"
+        "Если ответ оператора — «да»/«нет»/короткое подтверждение без содержания, "
+        "это not_comparable: сверять не с чем.\n"
         'Верни СТРОГО JSON: {"category":"same_action|bot_escalated|bot_wrong_fact|'
         'not_comparable","reason":"кратко по-русски"}'
     )
+    # Без вопроса клиента судья сравнивал два ответа в вакууме и не мог
+    # отличить «бот ответил не на то» от «оператор перешёл к другой теме».
+    question = (client_text or "").strip()
     user = (
-        f"Черновик ассистента:\n{(ai_answer or '')[:1200]}\n\n"
-        f"Ответ оператора:\n{(reference or '')[:1200]}"
+        (f"Вопрос клиента:\n{question[:800]}\n\n" if question else "")
+        + f"Черновик ассистента:\n{(ai_answer or '')[:1200]}\n\n"
+        + f"Ответ оператора:\n{(reference or '')[:1200]}"
     )
     return system, user
 
 
 async def judge_divergence(
-    ai_answer: str, reference: str, *, _call_fn=None
+    ai_answer: str, reference: str, *, client_text: str = "", _call_fn=None
 ) -> tuple[str, str] | None:
     """Категория расхождения от LLM. None при сбое/мусорном JSON — пара не судится."""
     if _call_fn is None:
         from ..ai_summary import call_groq_json as _call_fn
     from ..config import config
 
-    system, user = _build_judge_prompt(ai_answer, reference)
+    system, user = _build_judge_prompt(ai_answer, reference, client_text)
     try:
         raw = await _call_fn(system, user, model=config.agent_selfcheck_model)
         obj = _json.loads(raw)
@@ -120,7 +136,8 @@ async def judge_divergence(
 
 
 async def reconcile_one(
-    *, ai_answer: str, posts, anchor_post_id, staff: set[str], _judge_fn=None
+    *, ai_answer: str, posts, anchor_post_id, staff: set[str],
+    client_text: str = "", _judge_fn=None
 ) -> dict | None:
     """Сверка одного предложения. None, если сравнивать не с чем (нет ответа
     оператора / реплика оператора ответом не является) или судья не ответил."""
@@ -129,7 +146,7 @@ async def reconcile_one(
     reference = find_operator_reply_after(posts, anchor_post_id, staff)
     if not reference:
         return None
-    verdict = await _judge_fn(ai_answer, reference)
+    verdict = await _judge_fn(ai_answer, reference, client_text=client_text)
     if verdict is None:
         return None
     category, reason = verdict
@@ -188,10 +205,11 @@ async def reconcile_recent(
             if i and pause_s:
                 await _sleep_fn(pause_s)
             ai_answer = sug.get("ai_answer") or ""
-            verdict = await _judge_fn(ai_answer, reference)
+            client_text = sug.get("client_text") or ""
+            verdict = await _judge_fn(ai_answer, reference, client_text=client_text)
             if verdict is None:
                 await _sleep_fn(retry_pause_s)
-                verdict = await _judge_fn(ai_answer, reference)
+                verdict = await _judge_fn(ai_answer, reference, client_text=client_text)
             if verdict is None:
                 stats["skipped"] += 1
                 continue

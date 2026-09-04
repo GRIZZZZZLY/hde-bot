@@ -50,7 +50,8 @@ async def test_gate_pending_pairs_batch_counts_and_isolation():
         _judge_fn=fake_judge, _list_fn=fake_list, _set_fn=fake_set,
         pause_s=0.0, retry_pause_s=0.0,
     )
-    assert stats == {"gated": 2, "accepted": 1, "rejected": 1, "outdated": 0, "skipped": 1}
+    assert stats == {"gated": 2, "accepted": 1, "rejected": 1, "outdated": 0,
+                     "skipped": 1, "left": 0}
     assert (3, "auto_accepted") not in updates       # skipped не записан
 
 
@@ -142,3 +143,53 @@ async def test_gate_paces_between_pairs():
     )
     assert stats["gated"] == 3
     assert sleeps.count(6.0) == 2            # паузы между парами, не после последней
+
+
+async def test_gate_stops_on_deadline_and_reports_leftovers():
+    """Без дедлайна ночная пачка гарантированно упиралась в таймаут джоба
+    (limit=300 × pause 6 c = 1800 c против 600 c) и падала с ERROR, потеряв
+    stats. Теперь цикл выходит сам и говорит, сколько пар осталось."""
+    from bot.agent.pair_quality import gate_pending_pairs
+
+    now = {"t": 0.0}
+
+    def clock():
+        return now["t"]
+
+    async def fake_list(limit, **kwargs):
+        return [{"pair_id": i, "context": "c", "operator_answer": "a"}
+                for i in range(1, 11)]
+
+    async def fake_judge(pair):
+        now["t"] += 10.0                      # каждая пара «стоит» 10 секунд
+        return ("auto_accepted", "ок")
+
+    async def fake_set(pair_id, status, reason):
+        return None
+
+    stats = await gate_pending_pairs(
+        _judge_fn=fake_judge, _list_fn=fake_list, _set_fn=fake_set,
+        _clock_fn=clock, pause_s=0.0, retry_pause_s=0.0, deadline_s=35.0,
+    )
+    assert stats["gated"] == 4                # 4 пары × 10 с, на 5-й дедлайн
+    assert stats["left"] == 6                 # остаток назван, а не потерян
+
+
+async def test_gate_without_deadline_processes_everything():
+    """Дедлайн опционален: вызов без него ведёт себя как раньше."""
+    from bot.agent.pair_quality import gate_pending_pairs
+
+    async def fake_list(limit, **kwargs):
+        return [{"pair_id": i, "context": "c", "operator_answer": "a"} for i in (1, 2)]
+
+    async def fake_judge(pair):
+        return ("auto_accepted", "ок")
+
+    async def fake_set(pair_id, status, reason):
+        return None
+
+    stats = await gate_pending_pairs(
+        _judge_fn=fake_judge, _list_fn=fake_list, _set_fn=fake_set,
+        pause_s=0.0, retry_pause_s=0.0,
+    )
+    assert stats["gated"] == 2 and stats["left"] == 0

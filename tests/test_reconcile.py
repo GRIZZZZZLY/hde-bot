@@ -487,3 +487,75 @@ def test_hde_ticket_url_without_configured_base(monkeypatch):
     from bot.formatter import hde_ticket_url
     monkeypatch.setattr(config_module.config, "hde_api_base_url", "", raising=False)
     assert hde_ticket_url("123") == ""
+
+
+async def test_judge_prompt_carries_client_question():
+    """Без вопроса клиента судья сравнивал два ответа в вакууме и не мог
+    отличить «бот ответил не на то» от «оператор ушёл в свою ветку»."""
+    from bot.agent.reconcile import judge_divergence
+    seen = {}
+
+    async def _call(system, user, *, model, **kwargs):
+        seen["user"] = user
+        seen["system"] = system
+        return json.dumps({"category": "same_action", "reason": "ок"})
+
+    await judge_divergence(
+        "Перезагрузите кассу", "Выполните перезагрузку",
+        client_text="Касса не печатает чеки после обновления", _call_fn=_call,
+    )
+    assert "Касса не печатает чеки после обновления" in seen["user"]
+    assert "Вопрос клиента" in seen["user"]
+
+
+async def test_judge_prompt_omits_empty_question_block():
+    from bot.agent.reconcile import judge_divergence
+    seen = {}
+
+    async def _call(system, user, *, model, **kwargs):
+        seen["user"] = user
+        return json.dumps({"category": "same_action", "reason": "ок"})
+
+    await judge_divergence("a", "b", _call_fn=_call)
+    assert "Вопрос клиента" not in seen["user"]
+
+
+async def test_judge_prompt_narrows_wrong_fact_to_real_facts():
+    """Сводка 2026-09-03 звала bot_wrong_fact на лишний шаг («печать
+    X-отчёта») — разница в объёме, а не ошибка факта. Такие пары уезжали в
+    очередь кандидатов в базу знаний, где им не место."""
+    from bot.agent.reconcile import _build_judge_prompt
+    system, _ = _build_judge_prompt("a", "b", "q")
+    assert "НЕ bot_wrong_fact" in system
+    assert "same_action" in system
+    assert "not_comparable" in system
+
+
+async def test_reconcile_recent_passes_client_text_to_judge():
+    from bot.agent.reconcile import reconcile_recent
+    seen = {}
+
+    async def _suggestions(hours):
+        return [{"id": 1, "ticket_id": "T1", "ai_answer": "ответ бота",
+                 "client_text": "терминал не отвечает", "context_until_post_id": 1,
+                 "title": "t", "history": "h"}]
+
+    async def _posts(ticket_id):
+        return [_post(2, "op", "Пропишите порт 8888 в настройках терминала")]
+
+    async def _judge(ai_answer, reference, **kwargs):
+        seen["client_text"] = kwargs.get("client_text")
+        return ("same_action", "ок")
+
+    async def _set(*a, **kw):
+        return None
+
+    async def _sleep(_):
+        return None
+
+    stats = await reconcile_recent(
+        _suggestions_fn=_suggestions, _posts_fn=_posts, _set_fn=_set,
+        _judge_fn=_judge, _sleep_fn=_sleep, _staff={"op"}, pause_s=0.0,
+    )
+    assert seen["client_text"] == "терминал не отвечает"
+    assert stats["same_action"] == 1

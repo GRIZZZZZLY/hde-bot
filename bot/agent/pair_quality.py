@@ -52,13 +52,21 @@ async def judge_pair_quality(pair: dict, *, _call_fn=None) -> tuple[str, str] | 
 
 async def gate_pending_pairs(
     limit: int = 50, *, _judge_fn=None, _list_fn=None, _set_fn=None,
-    _sleep_fn=None, pause_s: float = 6.0, retry_pause_s: float = 30.0,
+    _sleep_fn=None, _clock_fn=None, pause_s: float = 6.0, retry_pause_s: float = 30.0,
+    deadline_s: float | None = None,
 ) -> dict:
     """Батч-фильтр: размечает до limit непроверенных пар. Не падает на сбоях.
 
-    Пейсинг под Groq free-tier (TPM 12k, ~1k токенов/вызов): pause_s между
+    Пейсинг под Groq free-tier (TPM 8000, ~1k токенов/вызов): pause_s между
     парами; None-вердикт (rate-limit/мусорный JSON) → retry_pause_s и один
-    повтор, только потом skipped."""
+    повтор, только потом skipped.
+
+    `deadline_s` — мягкий предел по времени. Без него ночной джоб гарантированно
+    упирался в таймаут планировщика: limit=300 при pause_s=6 это минимум 1800 с
+    против 600 с таймаута, и каждую ночь пачка обрывалась на полуслове с ERROR,
+    а `stats` не доезжал до лога. Теперь цикл выходит сам и говорит, сколько
+    пар осталось.
+    """
     if _judge_fn is None:
         _judge_fn = judge_pair_quality
     if _list_fn is None:
@@ -68,11 +76,23 @@ async def gate_pending_pairs(
     if _sleep_fn is None:
         import asyncio
         _sleep_fn = asyncio.sleep
+    if _clock_fn is None:
+        import time
+        _clock_fn = time.monotonic
     from ..config import config
 
-    stats = {"gated": 0, "accepted": 0, "rejected": 0, "outdated": 0, "skipped": 0}
+    stats = {"gated": 0, "accepted": 0, "rejected": 0, "outdated": 0, "skipped": 0,
+             "left": 0}
     pairs = await _list_fn(limit, own_operator_id=str(config.hde_owner_id))
+    started = _clock_fn()
     for i, pair in enumerate(pairs):
+        if deadline_s is not None and _clock_fn() - started >= deadline_s:
+            stats["left"] = len(pairs) - i
+            logger.info(
+                "gate_pending_pairs: дедлайн %.0f с исчерпан, осталось %d пар",
+                deadline_s, stats["left"],
+            )
+            break
         if i and pause_s:
             await _sleep_fn(pause_s)
         verdict = await _judge_fn(pair)

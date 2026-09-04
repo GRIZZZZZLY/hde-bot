@@ -78,6 +78,7 @@ async def test_hung_job_does_not_block_the_rest_of_the_pass(monkeypatch):
     """Главный инвариант: повисший джоб не съедает проход целиком."""
     monkeypatch.setattr(scheduler, "_JOB_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(scheduler, "_REPORT_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(scheduler, "_NIGHTLY_BATCH_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(scheduler.config, "db_backup_dir", "")
     # не рабочий день и не рабочее время: остаётся короткий хвост прохода
     import bot.work_schedule as ws
