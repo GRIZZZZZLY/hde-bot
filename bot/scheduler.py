@@ -581,15 +581,21 @@ async def process_scheduled_actions(bot: Bot) -> None:
     #   Thu      19:00 MSK → auto-fill today's report (skip if already sent)
     #   Sun       8:30 MSK → weekly summary for previous work week
     # is_work_day() already returns False during vacation.
+    # Окно проверяется ЗДЕСЬ, а не только внутри джоба: _spawn_report держит
+    # один слот на все отчёты, и джоб, спавнящийся каждый проход, занимает его
+    # ещё до собственной проверки времени. Свежесозданный таск не done(), так
+    # что следующий _spawn_report в том же проходе отбрасывался всегда.
     if is_work_day():
-        weekday_msk = _now_msk().weekday()
+        now_msk = _now_msk()
+        weekday_msk = now_msk.weekday()
         if weekday_msk in (0, 1, 2, 3):  # Mon–Thu
             await _run_job("report_button", _maybe_send_report_button(bot))
             # Прогоны отчёта — в фон: Playwright занимает минуты (см. _spawn_report)
-            _spawn_report("report_autorun", _maybe_auto_run_report(bot))
-        if weekday_msk == 3:             # Thu
+            if _hm_matches(now_msk, *_REPORT_AUTORUN_HM):
+                _spawn_report("report_autorun", _maybe_auto_run_report(bot))
+        if weekday_msk == 3 and _hm_matches(now_msk, *_THU_EVENING_HM):
             _spawn_report("report_thursday", _maybe_thursday_evening_autorun(bot))
-        if weekday_msk == 6:             # Sun
+        if weekday_msk == 6 and _hm_matches(now_msk, *_WEEKLY_SUMMARY_HM):
             _spawn_report("weekly_summary", _maybe_weekly_summary(bot))
 
     # Hourly media cache GC — remove topic_media_cache rows older than 1h

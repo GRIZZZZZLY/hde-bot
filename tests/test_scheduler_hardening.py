@@ -5,6 +5,7 @@
 пинговать systemd, поэтому процесс выглядит здоровым, пока pre-SLA молчат.
 """
 import asyncio
+from datetime import datetime
 
 import pytest
 
@@ -149,6 +150,82 @@ async def test_report_allowed_again_after_previous_finished():
     await scheduler._report_task
     assert scheduler._spawn_report("second", quick()) is True
     await scheduler._report_task
+
+
+# --- расписание отчётов -----------------------------------------------------
+
+def _only_report_schedule(monkeypatch, hour: int, minute: int = 0) -> list:
+    """Проход, в котором работает только ветка расписания отчётов.
+
+    Время — четверг 03.09.2026, MSK. Возвращает список, куда джобы отчёта
+    пишут своё имя, когда до них реально дошла очередь.
+    """
+    import bot.work_schedule as ws
+    monkeypatch.setattr(ws, "is_work_day", lambda: True)
+    monkeypatch.setattr(ws, "is_work_time", lambda: False)
+    monkeypatch.setattr(scheduler.config, "db_backup_dir", "")
+    monkeypatch.setattr(
+        scheduler, "_now_msk",
+        lambda: datetime(2026, 9, 3, hour, minute, tzinfo=scheduler._MSK),
+    )
+
+    async def noop(_bot=None):
+        return None
+
+    for name in (
+        "_maybe_flush_general", "_maybe_send_digest",
+        "_maybe_send_daily_value_report", "_maybe_send_reconciliation_digest",
+        "_maybe_reconcile_general", "_maybe_send_report_button",
+        "_maybe_backfill_dialogue_pairs", "_maybe_reconcile_answers",
+        "_maybe_backup_db", "_maybe_alert_dead_inbox",
+    ):
+        monkeypatch.setattr(scheduler, name, noop)
+
+    ran: list[str] = []
+
+    async def _autorun(_bot):
+        ran.append("autorun")
+
+    async def _thursday(_bot):
+        ran.append("thursday")
+
+    monkeypatch.setattr(scheduler, "_maybe_auto_run_report", _autorun)
+    monkeypatch.setattr(scheduler, "_maybe_thursday_evening_autorun", _thursday)
+    return ran
+
+
+async def _run_pass() -> None:
+    await asyncio.wait_for(scheduler.process_scheduled_actions(_FakeBot()), timeout=5)
+    if scheduler._report_task is not None:
+        await scheduler._report_task
+
+
+@pytest.mark.asyncio
+async def test_thursday_evening_autofill_gets_the_report_slot(monkeypatch):
+    """19:00 в четверг — заливка за сегодня, а не отброс single-flight.
+
+    Утренний джоб спавнился каждый проход и забирал единственный слот; таск
+    создан, но ещё не выполнялся, поэтому done() у него False и четверговый
+    джоб отбрасывался ВСЕГДА. Гейт по времени должен стоять до спавна.
+    """
+    ran = _only_report_schedule(monkeypatch, 19, 0)
+    await _run_pass()
+    assert ran == ["thursday"]
+
+
+@pytest.mark.asyncio
+async def test_morning_autorun_still_gets_the_slot_at_nine(monkeypatch):
+    ran = _only_report_schedule(monkeypatch, 9, 0)
+    await _run_pass()
+    assert ran == ["autorun"]
+
+
+@pytest.mark.asyncio
+async def test_no_report_job_spawned_outside_its_window(monkeypatch):
+    """Вне окна отчёт не должен занимать слот: проход идёт каждые 30 с."""
+    ran = _only_report_schedule(monkeypatch, 15, 0)
+    await _run_pass()
+    assert ran == []
 
 
 # --- алерт на dead-инбокс ---------------------------------------------------
