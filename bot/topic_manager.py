@@ -725,7 +725,12 @@ async def _handle_staff_reply_locked(bot: Bot, payload: dict, ticket_id: str) ->
     if should_clear:
         await _try_delete_pre_sla_message(bot, record)
     pre_sla_clear = (
-        {"pre_sla_notify_at": None, "pre_sla_sent_at": None, "pre_sla_message_id": None}
+        {
+            "pre_sla_notify_at": None,
+            "pre_sla_sent_at": None,
+            "pre_sla_message_id": None,
+            "reassurance_sent_at": None,
+        }
         if should_clear else {}
     )
     await db.update_topic(
@@ -805,8 +810,71 @@ async def _handle_ticket_closed_locked(bot: Bot, payload: dict, ticket_id: str) 
         )
 
 
+# Тип группы HDE-пользователя ('staff'/'client') по user_id. Кэш на процесс:
+# состав команды меняется редко, а у HDE 300 req/min на ОБЩЕМ аккаунте и
+# 20-минутный бан, поэтому про каждого автора спрашиваем один раз.
+_STAFF_GROUP_CACHE: dict[str, str] = {}
+
+
+def _post_text_matches_reassurance(text: str) -> bool:
+    """Пост, который бот отправил сам (автоответ перед SLA).
+
+    Бот постит через HDE-аккаунт оператора (прод: тот же user_id, что и
+    HDE_OWNER_ID), поэтому по автору свой автоответ от ответа человека не
+    отличить — отличаем по тексту. Иначе автоответ гасит собственный счётчик,
+    и тикет выглядит отвеченным, хотя человек не отвечал.
+    """
+    import re
+    expected = " ".join(config.reassurance_text.split())
+    if not expected:
+        return False
+    plain = " ".join(re.sub(r"<[^>]+>", " ", text or "").split())
+    return plain == expected
+
+
+def _parse_hde_post_dt(date_created: str) -> Optional[datetime]:
+    """HDE отдаёт время поста как 'HH:MM:SS DD.MM.YYYY' в MSK."""
+    from datetime import timezone
+    try:
+        _msk = timezone(timedelta(hours=3))
+        return (
+            datetime.strptime(date_created, "%H:%M:%S %d.%m.%Y")
+            .replace(tzinfo=_msk)
+            .astimezone(timezone.utc)
+        )
+    except (ValueError, AttributeError):
+        return None
+
+
+async def _is_staff_author(client, user_id: int, static_staff: set[str]) -> bool:
+    """Сотрудник ли автор поста. Статический список — без запросов; незнакомого
+    автора добираем через GET /users/{id} → group.type и кэшируем результат.
+
+    Ошибку резолва не кэшируем: иначе разовый сбой навсегда пометил бы
+    сотрудника как не-сотрудника.
+    """
+    uid = str(user_id)
+    if uid in static_staff:
+        return True
+    group_type = _STAFF_GROUP_CACHE.get(uid)
+    if group_type is None:
+        try:
+            group_type = await client.get_user_group_type(uid)
+        except Exception as exc:
+            logger.warning("HDE group lookup failed for user %s: %s", uid, exc)
+            return False
+        if group_type is None:
+            return False
+        _STAFF_GROUP_CACHE[uid] = group_type
+    return group_type == "staff"
+
+
 async def _hde_staff_replied_since(ticket_id: str, since_storage: Optional[str]) -> bool:
-    """Return True if operator posted in HDE after last client reply.
+    """Return True if any support staff posted in HDE after last client reply.
+
+    Not just the timer's owner: a colleague answering the client must stop the
+    pre-SLA countdown and the reassurance auto-reply too (prod ticket 200484 —
+    a colleague replied and 9 s later the bot told the client "I'm on it").
 
     Fails open (returns False) on any error so pre-SLA is never silently swallowed.
     Skips check when presla_hde_verify=False or hde_owner_id not configured.
@@ -816,10 +884,7 @@ async def _hde_staff_replied_since(ticket_id: str, since_storage: Optional[str])
     owner_id_str = config.hde_owner_id.strip()
     if not owner_id_str:
         return False
-    try:
-        owner_id = int(owner_id_str)
-    except ValueError:
-        return False
+    static_staff = {owner_id_str, *(uid for uid in config.agent_staff_user_ids if uid)}
 
     since_dt = parse_datetime(since_storage)
 
@@ -829,19 +894,15 @@ async def _hde_staff_replied_since(ticket_id: str, since_storage: Optional[str])
         posts = await client.get_ticket_posts(ticket_id, limit=5)
         # get_ticket_posts returns oldest-first; iterate newest-first
         for post in reversed(posts):
-            if post.user_id != owner_id:
+            if _post_text_matches_reassurance(post.text):
                 continue
-            if since_dt is None:
-                return True
-            try:
-                from datetime import timezone, timedelta
-                _msk = timezone(timedelta(hours=3))
-                post_dt = datetime.strptime(
-                    post.date_created, "%H:%M:%S %d.%m.%Y"
-                ).replace(tzinfo=_msk).astimezone(timezone.utc)
-            except (ValueError, AttributeError):
-                continue
-            if post_dt > since_dt:
+            # Время проверяем ДО автора: резолв автора может стоить запроса,
+            # а старый пост отбрасывается бесплатно.
+            if since_dt is not None:
+                post_dt = _parse_hde_post_dt(post.date_created)
+                if post_dt is None or post_dt <= since_dt:
+                    continue
+            if await _is_staff_author(client, post.user_id, static_staff):
                 return True
         return False
     except Exception as exc:

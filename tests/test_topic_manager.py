@@ -459,6 +459,168 @@ async def test_staff_reply_legacy_clear_when_verify_disabled(initialized_db, mon
     verify.assert_not_awaited()              # no HDE API call
 
 
+def _msk_stamp(dt):
+    """HDE post date_created format ("HH:MM:SS DD.MM.YYYY", MSK)."""
+    from datetime import timezone as _tz
+    return (dt + timedelta(hours=3)).replace(tzinfo=None).strftime("%H:%M:%S %d.%m.%Y")
+
+
+def _hde_post(user_id, text, dt, post_id=1):
+    from bot.hde_api import HDEPost
+    return HDEPost(
+        post_id=post_id,
+        user_id=user_id,
+        text=text,
+        date_created=_msk_stamp(dt),
+    )
+
+
+@pytest.mark.asyncio
+async def test_staff_replied_counts_colleague_from_static_list(monkeypatch):
+    """Любой сотрудник поддержки, а не только HDE_OWNER_ID, считается ответом.
+    Прод, тикет 200484: коллега 46292 ответил клиенту в 14:31:01, а через 9
+    секунд бот прислал клиенту «занимаюсь вашим вопросом» — проверка видела
+    только оператора 98 и считала тикет неотвеченным."""
+    monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
+    monkeypatch.setattr(topic_manager.config, "hde_owner_id", "98")
+    monkeypatch.setattr(topic_manager.config, "agent_staff_user_ids", ("98", "46292"))
+    topic_manager._STAFF_GROUP_CACHE.clear()
+
+    since = utcnow() - timedelta(minutes=18)
+    client = MagicMock()
+    client.get_ticket_posts = AsyncMock(
+        return_value=[_hde_post(46292, "<p>Чем ещё помочь?</p>", utcnow())]
+    )
+    client.get_user_group_type = AsyncMock()
+
+    with patch("bot.hde_api.HDEApiClient", return_value=client):
+        replied = await topic_manager._hde_staff_replied_since("TKT-1", to_storage(since))
+
+    assert replied is True
+    client.get_user_group_type.assert_not_awaited()  # список покрыл — API не нужен
+
+
+@pytest.mark.asyncio
+async def test_staff_replied_resolves_unknown_author_via_api(monkeypatch):
+    """Автора, которого нет в статическом списке, добираем через
+    GET /users/{id} → group.type. Результат кэшируется: второй проход по тому
+    же id не идёт в API (у HDE 300 req/min и общий бан на 20 минут)."""
+    monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
+    monkeypatch.setattr(topic_manager.config, "hde_owner_id", "98")
+    monkeypatch.setattr(topic_manager.config, "agent_staff_user_ids", ("98",))
+    topic_manager._STAFF_GROUP_CACHE.clear()
+
+    since = utcnow() - timedelta(minutes=5)
+    posts = [_hde_post(51281, "<p>Обращение принято</p>", utcnow())]
+    client = MagicMock()
+    client.get_ticket_posts = AsyncMock(return_value=posts)
+    client.get_user_group_type = AsyncMock(return_value="staff")
+
+    with patch("bot.hde_api.HDEApiClient", return_value=client):
+        first = await topic_manager._hde_staff_replied_since("TKT-1", to_storage(since))
+        second = await topic_manager._hde_staff_replied_since("TKT-1", to_storage(since))
+
+    assert first is True and second is True
+    assert client.get_user_group_type.await_count == 1  # второй раз из кэша
+
+
+@pytest.mark.asyncio
+async def test_staff_replied_ignores_client_author(monkeypatch):
+    """Пост клиента ответом сотрудника не считается. group.type у клиента на
+    проде — 'user' (замер 2026-09-04 на uid 37756), у сотрудника 'staff'."""
+    monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
+    monkeypatch.setattr(topic_manager.config, "hde_owner_id", "98")
+    monkeypatch.setattr(topic_manager.config, "agent_staff_user_ids", ("98",))
+    topic_manager._STAFF_GROUP_CACHE.clear()
+
+    since = utcnow() - timedelta(minutes=5)
+    client = MagicMock()
+    client.get_ticket_posts = AsyncMock(
+        return_value=[_hde_post(37756, "приняли", utcnow())]
+    )
+    client.get_user_group_type = AsyncMock(return_value="user")
+
+    with patch("bot.hde_api.HDEApiClient", return_value=client):
+        replied = await topic_manager._hde_staff_replied_since("TKT-1", to_storage(since))
+
+    assert replied is False
+
+
+@pytest.mark.asyncio
+async def test_staff_replied_ignores_own_autoreply(monkeypatch):
+    """Бот постит автоответ через HDE-аккаунт оператора (прод: uid 98 ==
+    HDE_OWNER_ID), поэтому свой же автоответ проходил как «оператор ответил»
+    и гасил счётчик, хотя человек не отвечал. Пост с текстом
+    REASSURANCE_TEXT не считается ответом."""
+    monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
+    monkeypatch.setattr(topic_manager.config, "hde_owner_id", "98")
+    monkeypatch.setattr(topic_manager.config, "agent_staff_user_ids", ("98",))
+    monkeypatch.setattr(
+        topic_manager.config, "reassurance_text",
+        "Я про вас не забыл, занимаюсь вашим вопросом",
+    )
+    topic_manager._STAFF_GROUP_CACHE.clear()
+
+    since = utcnow() - timedelta(minutes=18)
+    client = MagicMock()
+    client.get_ticket_posts = AsyncMock(return_value=[
+        _hde_post(98, "Я про вас не забыл, занимаюсь вашим вопросом", utcnow()),
+    ])
+    client.get_user_group_type = AsyncMock()
+
+    with patch("bot.hde_api.HDEApiClient", return_value=client):
+        replied = await topic_manager._hde_staff_replied_since("TKT-1", to_storage(since))
+
+    assert replied is False
+
+
+@pytest.mark.asyncio
+async def test_schedule_pre_sla_resets_reassurance_flag(initialized_db):
+    """Перевзвод таймера обнуляет reassurance_sent_at: иначе автоответ по
+    тикету физически возможен только один раз за его жизнь."""
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Broken printer", priority="high", status="open",
+        owner_id="me", owner_name="Me",
+        hde_link="https://hde.example.com/tickets/1",
+    )
+    await db_module.update_topic("TKT-1", reassurance_sent_at=to_storage(utcnow()))
+
+    reply_at = to_storage(utcnow())
+    await topic_manager._schedule_pre_sla("TKT-1", make_payload(), reply_at)
+
+    rec = await db_module.get_topic("TKT-1")
+    assert rec.pre_sla_notify_at is not None
+    assert rec.reassurance_sent_at is None
+
+
+@pytest.mark.asyncio
+async def test_staff_reply_clear_resets_reassurance_flag(initialized_db, monkeypatch):
+    """Очистка таймера по ответу сотрудника снимает и флаг автоответа."""
+    notify = to_storage(utcnow() + timedelta(minutes=10))
+    lcr = to_storage(utcnow() - timedelta(minutes=1))
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Broken printer", priority="high", status="open",
+        owner_id="me", owner_name="Me",
+        hde_link="https://hde.example.com/tickets/1",
+        pre_sla_notify_at=notify, last_client_reply_at=lcr,
+    )
+    await db_module.update_topic("TKT-1", reassurance_sent_at=to_storage(utcnow()))
+    monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
+    monkeypatch.setattr(topic_manager.config, "hde_owner_id", "98")
+    monkeypatch.setattr(
+        topic_manager, "_hde_staff_replied_since", AsyncMock(return_value=True)
+    )
+    bot = make_bot()
+
+    await handle_staff_reply(bot, make_payload(last_post_date=to_storage(utcnow())))
+
+    rec = await db_module.get_topic("TKT-1")
+    assert rec.pre_sla_notify_at is None
+    assert rec.reassurance_sent_at is None
+
+
 @pytest.mark.asyncio
 async def test_ticket_closed_serialized_on_ticket_lock(initialized_db):
     """Regression: handle_ticket_closed must serialize on the shared

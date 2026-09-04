@@ -69,6 +69,9 @@ async def _schedule_pre_sla(ticket_id: str, payload: dict, last_client_reply_at:
         last_client_reply_at=last_client_reply_at,
         pre_sla_notify_at=notify_at,
         pre_sla_sent_at=None,
+        # Флаг автоответа — на цикл ожидания, а не на тикет: без сброса второе
+        # неотвеченное сообщение в том же тикете автоответа уже не получало.
+        reassurance_sent_at=None,
     )
 
 
