@@ -1,4 +1,4 @@
-"""Report commands: /report and report:* callbacks."""
+"""Report commands: /report, /weekly and report:* callbacks."""
 import logging
 from datetime import date, timedelta
 
@@ -66,6 +66,50 @@ async def cmd_report(message: Message, command: CommandObject) -> None:
         await wait_msg.delete()
     except Exception as exc:
         logger.debug("report: wait message cleanup failed: %s", exc)
+    await message.answer(result, parse_mode="HTML")
+
+
+@router.message(Command("weekly"))
+async def cmd_weekly(message: Message, command: CommandObject) -> None:
+    """
+    /weekly            — сводка за прошлую рабочую неделю
+    /weekly 2026-09-06 — сводка на конкретное воскресенье (YYYY-MM-DD)
+
+    Нужна, когда воскресная авторассылка упала: планировщик помечает день
+    отправленным до попытки и сам не повторяет.
+    """
+    from ..reporting.runner import is_report_configured, run_weekly_summary
+
+    if not is_report_configured():
+        await message.answer(
+            "⚠️ Отчёт не настроен.\n\n"
+            "Добавьте в .env:\n"
+            "<code>GOOGLE_SERVICE_ACCOUNT_FILE=secrets/google_service_account.json\n"
+            "GOOGLE_SPREADSHEET_ID=...</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    today: date | None = None
+    if command.args:
+        try:
+            today = date.fromisoformat(command.args.strip())
+        except ValueError:
+            await message.answer(
+                "⚠️ Неверный формат даты. Используйте: <code>/weekly YYYY-MM-DD</code>",
+                parse_mode="HTML",
+            )
+            return
+
+    wait_msg = await message.answer("⏳ Считаю недельную сводку...")
+    try:
+        result = await run_weekly_summary(today)
+    except Exception as exc:
+        result = f"❌ <b>Ошибка:</b>\n<code>{exc}</code>"
+    try:
+        await wait_msg.delete()
+    except Exception as exc:
+        logger.debug("weekly: wait message cleanup failed: %s", exc)
     await message.answer(result, parse_mode="HTML")
 
 

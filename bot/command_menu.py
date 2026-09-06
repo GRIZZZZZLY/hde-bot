@@ -23,6 +23,7 @@ DM_COMMANDS: list[BotCommand] = [
     BotCommand(command="vacation", description="Режим тишины (напр. /vacation 3d)"),
     BotCommand(command="workon",   description="Снять режим тишины"),
     BotCommand(command="report",   description="Отчёт в Google Sheets (за вчера)"),
+    BotCommand(command="weekly",   description="Сводка за прошлую рабочую неделю"),
     BotCommand(command="digest",   description="Вызвать утреннюю сводку"),
     BotCommand(command="aisummary", description="Вкл/выкл AI саммари тикета"),
 ]
@@ -114,7 +115,8 @@ ARGS_HELP_TEXT = (
     "/vacation 3d — режим тишины на N дней\n"
     "/vacation 2026-05-30 — тишина до даты\n\n"
     "<b>Отчёты</b>\n"
-    "/report 2026-05-18 — отчёт за конкретную дату\n\n"
+    "/report 2026-05-18 — отчёт за конкретную дату\n"
+    "/weekly 2026-09-06 — недельная сводка на конкретное воскресенье\n\n"
     "<b>AI</b>\n"
     "/aisummary on | /aisummary off — вкл/выкл AI-саммари\n"
     "/aiknowledge — статистика базы знаний\n"

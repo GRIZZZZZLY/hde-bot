@@ -10,6 +10,7 @@ Expected setup:
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
@@ -37,6 +38,35 @@ _COL_TICKETS = 3
 _COL_SLA_VIOL = 4
 _COL_AVG_TIME = 10
 
+_RETRY_ATTEMPTS = 4
+_RETRY_BASE_DELAY = 1.0  # seconds; doubles per attempt -> ~7s total
+
+
+def _retry_5xx(fn, *args, **kwargs):
+    """Call *fn*, retrying transient Google 5xx answers with exponential backoff.
+
+    Sheets occasionally replies 503 "The service is currently unavailable" for a
+    few seconds; a single unretried call turns that into a lost report. Client
+    errors (403/404/429) mean the call itself is wrong — those propagate at once.
+    """
+    for attempt in range(_RETRY_ATTEMPTS):
+        try:
+            return fn(*args, **kwargs)
+        except gspread.exceptions.APIError as exc:
+            code = getattr(exc, "code", 0)
+            if code < 500 or attempt == _RETRY_ATTEMPTS - 1:
+                raise
+            delay = _RETRY_BASE_DELAY * (2 ** attempt)
+            logger.warning(
+                "Sheets %s failed with %s, retrying in %.0fs (%s/%s)",
+                getattr(fn, "__name__", fn),
+                code,
+                delay,
+                attempt + 1,
+                _RETRY_ATTEMPTS,
+            )
+            time.sleep(delay)
+
 
 def append_operator_row(
     credentials_file: str,
@@ -48,8 +78,8 @@ def append_operator_row(
 ) -> None:
     """Append one report row to the configured worksheet."""
     gc = gspread.service_account(filename=credentials_file)
-    spreadsheet = gc.open_by_key(spreadsheet_id)
-    worksheet = spreadsheet.worksheet(worksheet_name)
+    spreadsheet = _retry_5xx(gc.open_by_key, spreadsheet_id)
+    worksheet = _retry_5xx(spreadsheet.worksheet, worksheet_name)
 
     row: list[str] = [""] * _TOTAL_COLS
     row[_COL_NAME] = sheet_name_in_a
@@ -61,10 +91,13 @@ def append_operator_row(
     # Write at the row after the last non-empty cell in column A.
     # Using append_row() leaves Sheets to auto-detect the "table" and misplaces
     # the row into shifted columns when the sheet has mixed layouts elsewhere.
-    next_row = len(worksheet.col_values(1)) + 1
+    next_row = len(_retry_5xx(worksheet.col_values, 1)) + 1
     start = rowcol_to_a1(next_row, 1)
     end = rowcol_to_a1(next_row, _TOTAL_COLS)
-    worksheet.update(
+    # Retrying the update is safe: it writes a fixed range, so a repeat of a
+    # call that already landed rewrites the same cells instead of appending.
+    _retry_5xx(
+        worksheet.update,
         range_name=f"{start}:{end}",
         values=[row],
         value_input_option="USER_ENTERED",
@@ -93,9 +126,9 @@ def read_weekly_tickets(
     """Sum tickets from column D for operator rows whose date falls into
     [start_date, end_date] (inclusive)."""
     gc = gspread.service_account(filename=credentials_file)
-    spreadsheet = gc.open_by_key(spreadsheet_id)
-    worksheet = spreadsheet.worksheet(worksheet_name)
-    vals = worksheet.get_all_values()
+    spreadsheet = _retry_5xx(gc.open_by_key, spreadsheet_id)
+    worksheet = _retry_5xx(spreadsheet.worksheet, worksheet_name)
+    vals = _retry_5xx(worksheet.get_all_values)
 
     total = 0
     days: set[date] = set()
