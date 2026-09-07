@@ -39,6 +39,7 @@ from .inbox import (
 )
 from .topics import (
     _count_topics,
+    append_call_notes,
     append_photo_descriptions,
     clear_pre_sla,
     count_active_topics,
@@ -93,6 +94,7 @@ from .misc import (
     set_setting,
 )
 from .knowledge import (
+    archive_unused_auto_rules,
     count_items_without_embedding,
     count_knowledge_by_source,
     dedup_knowledge_items,
@@ -109,6 +111,7 @@ from .knowledge import (
     list_knowledge_content_hashes,
     list_knowledge_items_without_embedding,
     mark_knowledge_items_analyzed,
+    retire_knowledge_item,
     save_ai_feedback_pending,
     save_knowledge_item,
     update_knowledge_company,
@@ -139,7 +142,10 @@ from .optimizer_store import (
 )
 from .kb_candidates import (
     get_kb_candidate,
+    get_kb_candidate_stats,
+    list_conflict_kb_candidates,
     list_pending_kb_candidates,
+    resolve_kb_conflict,
     save_kb_candidate,
     set_kb_candidate_status,
 )
@@ -152,9 +158,11 @@ from .suggestion_store import (
     get_reconciliation_digest,
     get_suggestion,
     get_unjudged_suggestions,
+    list_stale_drafts,
     record_suggestion,
     record_suggestion_event,
     set_judge_result,
+    ticket_draft_refreshed,
 )
 from .dialogue_store import (
     count_dialogue_pairs,

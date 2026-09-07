@@ -66,6 +66,7 @@ class Config:
     agent_auto_first_suggestion_enabled: bool
     agent_dynamic_fewshot_enabled: bool
     agent_call_fixation_enabled: bool
+    agent_draft_refresh_enabled: bool
     agent_draft_model: str
     agent_selfcheck_model: str
     agent_staff_user_ids: tuple[str, ...]
@@ -147,6 +148,12 @@ class Config:
             ),
             agent_call_fixation_enabled=_parse_bool(
                 os.getenv("AGENT_CALL_FIXATION_ENABLED"), default=False
+            ),
+            # Пересборка черновика по новому комментарию коллеги. Своя ручка, а
+            # не общий agent_enabled: пересборка тратит токены Groq, и на
+            # free-tier TPM это заметно (см. bot/agent/draft_refresh.py).
+            agent_draft_refresh_enabled=_parse_bool(
+                os.getenv("AGENT_DRAFT_REFRESH_ENABLED"), default=False
             ),
             agent_draft_model=os.getenv(
                 "AGENT_DRAFT_MODEL", "qwen/qwen3.6-27b"

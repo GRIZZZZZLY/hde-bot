@@ -322,7 +322,7 @@ async def test_reconcile_recent_maps_categories_to_labels():
     )
     assert stats == {
         "same_action": 1, "bot_escalated": 1, "bot_wrong_fact": 1,
-        "not_comparable": 1, "skipped": 2, "errors": 0,
+        "context_gap": 0, "not_comparable": 1, "skipped": 2, "errors": 0,
     }
     assert [(sid, label) for sid, label, _, _ in saved] == [
         (1, "accepted"), (2, "corrected"), (3, "corrected"),

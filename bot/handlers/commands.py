@@ -522,4 +522,8 @@ from .optimizer_commands import (  # noqa: E402,F401
     cb_rollback_apply,
 )
 from .report_commands import cmd_report, cmd_weekly, cb_report_cancel, cb_report_yesterday  # noqa: E402,F401
-from .media_commands import handle_topic_call_recording, cache_topic_media  # noqa: E402,F401
+from .media_commands import (  # noqa: E402,F401
+    cache_topic_media,
+    handle_topic_call_recording,
+    handle_topic_voice_note,
+)

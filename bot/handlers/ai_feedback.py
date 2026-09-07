@@ -76,19 +76,37 @@ def kb_candidate_kb(candidate_id: int) -> InlineKeyboardMarkup:
     ]])
 
 
+def kb_conflict_kb(candidate_id: int) -> InlineKeyboardMarkup:
+    """Выбор стороны в противоречии: новое правило против уже лежащего в базе.
+
+    Не «добавить / мимо»: «мимо» здесь означало бы оставить в базе строку,
+    которую оператор своим ответом только что опроверг."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Новое верно",
+                             callback_data=f"kbc:new:{candidate_id}"),
+        InlineKeyboardButton(text="↩️ Старое верно",
+                             callback_data=f"kbc:old:{candidate_id}"),
+    ]])
+
+
 @router.callback_query(F.data.startswith("kbc:"))
 async def cb_kb_candidate(callback: CallbackQuery) -> None:
-    from ..agent.kb_candidates import apply_kb_candidate
+    from ..agent.kb_candidates import apply_kb_candidate, resolve_kb_conflict_decision
 
     _, action, raw_id = callback.data.split(":", 2)
-    row = await apply_kb_candidate(int(raw_id), add=(action == "add"))
+    if action in ("new", "old"):
+        row = await resolve_kb_conflict_decision(int(raw_id), keep_new=(action == "new"))
+        answer = (
+            "✅ Новое правило в базе, старое снято" if action == "new"
+            else "Оставили как было"
+        )
+    else:
+        row = await apply_kb_candidate(int(raw_id), add=(action == "add"))
+        answer = "✅ Добавлено в базу знаний" if action == "add" else "Пропущено"
     if row is None:
         await callback.answer("Уже обработано", show_alert=False)
     else:
-        await callback.answer(
-            "✅ Добавлено в базу знаний" if action == "add" else "Пропущено",
-            show_alert=False,
-        )
+        await callback.answer(answer, show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception as exc:

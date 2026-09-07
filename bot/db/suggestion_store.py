@@ -169,13 +169,58 @@ async def get_evaluation_samples(days: int = 90, *, limit: int = 500) -> list[di
     return [dict(r) for r in rows]
 
 
+async def list_stale_drafts(hours: int = 6, limit: int = 3) -> list[dict]:
+    """Черновики, которые могли устареть: свежие, ещё не отправленные, первичные.
+
+    Отправленный черновик пересобирать поздно — оператор уже ответил клиенту.
+    Черновик по кнопке оператор запросил сам и получил на актуальных постах.
+    Лимит стоит в SQL, а не в фильтре после: один разговорчивый день иначе
+    выбирает суточную квоту токенов Groq за один проход.
+    """
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT id, ticket_id, topic_id, context_until_post_id, trigger_source, "
+            "       title, ai_answer "
+            "FROM ai_suggestions "
+            "WHERE trigger_source='first' AND delivery_status='not_sent' "
+            "  AND context_until_post_id IS NOT NULL "
+            "  AND created_at >= datetime('now', ?) "
+            "ORDER BY id DESC LIMIT ?",
+            (f"-{int(hours)} hours", int(limit)),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def ticket_draft_refreshed(ticket_id: str) -> bool:
+    """Была ли по тикету пересборка черновика (trigger_source='comment').
+
+    Одна на тикет: у комментариев предела нет, а у TPM есть, и типовой случай
+    «первая линия дописала контекст» закрывается первым же пересчётом.
+    """
+    async with connect() as db:
+        async with db.execute(
+            "SELECT 1 FROM ai_suggestions WHERE ticket_id=? AND trigger_source='comment' "
+            "LIMIT 1",
+            (str(ticket_id),),
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
 async def set_judge_result(
-    suggestion_id: int, *, reference_answer: str, label: str, detail: str = "",
+    suggestion_id: int, *, reference_answer: str, label: str | None, detail: str = "",
     category: str | None = None,
 ) -> None:
     """Вердикт сверки: эталон = фактический ответ оператора; label канонический
     (accepted/corrected), category — что именно разошлось (см. agent.reconcile).
-    Пересчитывает effective_label."""
+    Пересчитывает effective_label.
+
+    label=None — вердикт есть, метки качества нет (context_gap: боту не хватило
+    канала контекста, а не качества). Категория и эталон при этом пишутся, чтобы
+    сводка видела вердикт, а judged_at — чтобы пара не пересуживалась каждую
+    ночь. В датасет офлайн-оценки такая строка не попадает: EVAL_SAMPLES_SQL
+    фильтрует по COALESCE(human_label, judge_label)."""
     async with connect() as db:
         await db.execute(
             "UPDATE ai_suggestions SET judge_reference_answer=?, judge_label=?, "
@@ -307,9 +352,12 @@ async def get_reconciliation_digest(
     window = f"-{int(hours)} hours"
     async with connect() as db:
         db.row_factory = aiosqlite.Row
+        # Считаем вердикты, а не метки: у context_gap метки нет по замыслу, и по
+        # judge_label он выпадал бы из счётчика — сводка выглядела бы так, будто
+        # ночная сверка не отработала.
         async with db.execute(
             "SELECT COUNT(*) AS n FROM ai_suggestions "
-            "WHERE judged_at >= datetime('now', ?) AND judge_label IS NOT NULL",
+            "WHERE judged_at >= datetime('now', ?) AND judge_category IS NOT NULL",
             (window,),
         ) as cur:
             judged = int((await cur.fetchone())["n"])
@@ -332,6 +380,7 @@ async def get_reconciliation_digest(
 
         escalated = await _by_category("bot_escalated")
         wrong_fact = await _by_category("bot_wrong_fact")
+        context_gap = await _by_category("context_gap")
         async with db.execute(
             "SELECT date(judged_at) AS day, COUNT(*) AS judged, "
             "SUM(judge_label='corrected') AS diverged FROM ai_suggestions "
@@ -349,5 +398,6 @@ async def get_reconciliation_digest(
         "counts": counts,
         "escalated": escalated,
         "wrong_fact": wrong_fact,
+        "context_gap": context_gap,
         "trend": trend,
     }

@@ -436,6 +436,42 @@ async def _maybe_reconcile_answers(bot) -> None:
         logger.info("Nightly answer reconciliation: %s", stats)
     except Exception as exc:
         logger.warning("Nightly answer reconciliation failed: %s", exc)
+    # Разбор очереди кандидатов идёт СРАЗУ после сверки, тем же проходом: к
+    # утренней сводке очередь должна быть уже разобрана, иначе владелец опять
+    # получит десяток решений по фактам, а не одну строку с итогами.
+    try:
+        from .agent.kb_distill import process_pending_candidates
+        kb_stats = await process_pending_candidates()
+        if any(kb_stats.values()):
+            logger.info("Nightly KB candidate distillation: %s", kb_stats)
+    except Exception as exc:
+        logger.warning("Nightly KB candidate distillation failed: %s", exc)
+    try:
+        archived = await db.archive_unused_auto_rules(days=60)
+        if archived:
+            logger.info("Archived %d unused auto-rules", archived)
+    except Exception as exc:
+        logger.warning("Auto-rule archival failed: %s", exc)
+
+
+async def _maybe_refresh_stale_drafts(bot: Bot) -> None:
+    """Пересборка черновиков, устаревших из-за комментария коллеги.
+
+    Только в рабочее время: черновик нужен оператору сейчас, а не ночью, и
+    ночные пачки уже занимают квоту Groq. Свой флаг — расход токенов заметен на
+    free-tier (см. bot/agent/draft_refresh.py)."""
+    if not config.agent_draft_refresh_enabled:
+        return
+    from .work_schedule import is_work_time
+    if not is_work_time():
+        return
+    from .agent.draft_refresh import refresh_stale_drafts
+    try:
+        stats = await refresh_stale_drafts(bot)
+        if stats.get("refreshed") or stats.get("errors"):
+            logger.info("Draft refresh: %s", stats)
+    except Exception as exc:
+        logger.warning("Draft refresh pass failed: %s", exc)
 
 
 async def _maybe_backup_db(bot: Bot) -> None:
@@ -635,6 +671,13 @@ async def process_scheduled_actions(bot: Bot) -> None:
     # ответами операторов (learning без кнопок). Результат — в judge-поля.
     await _run_job(
         "reconcile_answers", _maybe_reconcile_answers(bot),
+        timeout=_REPORT_TIMEOUT_SECONDS,
+    )
+
+    # Пересборка черновиков, устаревших из-за комментария коллеги. Дневной джоб:
+    # обновлённый черновик нужен оператору в смену, а не в 02:00.
+    await _run_job(
+        "draft_refresh", _maybe_refresh_stale_drafts(bot),
         timeout=_REPORT_TIMEOUT_SECONDS,
     )
 

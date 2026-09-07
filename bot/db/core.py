@@ -99,6 +99,11 @@ TICKET_TOPIC_COLUMNS = {
     "env_option_id": "TEXT",
     "priority_option_id": "TEXT",
     "type_option_id": "TEXT",
+    # Выжимки звонков и голосовых заметок по ЭТОМУ тикету. Отдельно от
+    # knowledge_items с source='transcription': там они лежат в общем retrieval
+    # и всплывают в чужих обращениях, а здесь это контекст одного тикета —
+    # черновик и ночная сверка читают их только для него.
+    "call_notes": "TEXT DEFAULT ''",
 }
 
 UPDATABLE_FIELDS = {
@@ -127,6 +132,7 @@ UPDATABLE_FIELDS = {
     "env_option_id",
     "priority_option_id",
     "type_option_id",
+    "call_notes",
 }
 
 
@@ -162,6 +168,8 @@ class TicketTopic:
     # цифры = выставленный id (priority_id/type_id — top-level поля HDE)
     priority_option_id: Optional[str] = None
     type_option_id: Optional[str] = None
+    # Выжимки звонков/голосовых заметок по этому тикету (см. TOPIC_COLUMNS)
+    call_notes: str = ""
     # Telegram message_id последнего сообщения с кнопкой «💡 Предложить ответ»
     suggest_button_msg_id: Optional[int] = None
 
@@ -582,6 +590,18 @@ async def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_kb_candidates_status "
             "ON kb_candidates(status)"
         )
+        # Ревью-по-исключению (2026-09-07): кандидат проходит через выжимку в
+        # обобщаемое правило, и человеку показывается только противоречие с уже
+        # накопленным. rule_json хранит выжимку, чтобы решение по конфликту не
+        # требовало повторного вызова модели; conflict_item_id — с каким
+        # knowledge_items.id спор; kind отличает старые сырые кандидаты ('raw')
+        # от новых ('rule').
+        for _col, _type in [
+            ("kind", "TEXT NOT NULL DEFAULT 'raw'"),
+            ("rule_json", "TEXT"),
+            ("conflict_item_id", "INTEGER"),
+        ]:
+            await _add_column_if_missing(db, "kb_candidates", _col, _type)
         await db.execute(
             "CREATE INDEX IF NOT EXISTS idx_ai_suggestions_topic ON ai_suggestions(topic_id)"
         )
@@ -810,6 +830,7 @@ def _row_to_topic(row: aiosqlite.Row) -> TicketTopic:
         env_option_id=row["env_option_id"] if "env_option_id" in row.keys() else None,
         priority_option_id=row["priority_option_id"] if "priority_option_id" in row.keys() else None,
         type_option_id=row["type_option_id"] if "type_option_id" in row.keys() else None,
+        call_notes=row["call_notes"] if "call_notes" in row.keys() else "",
     )
 
 

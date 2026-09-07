@@ -260,6 +260,66 @@ def _divergence_block(title: str, rows: list) -> list[str]:
     return lines
 
 
+# Канал, которого боту не хватило, судья пишет в judge_detail как
+# «missing=<канал>» — отдельной колонки под это не завели: значение читает
+# только сводка, и мигрировать таблицу ради подписи не стоит.
+_MISSING_LABELS = {
+    "screenshot": "скриншот",
+    "comment": "комментарий коллеги",
+    "call": "звонок",
+    "client_msg": "сообщение клиента после черновика",
+    "other": "другое",
+}
+
+
+def _missing_channel(detail: str) -> str:
+    for token in (detail or "").split():
+        if token.startswith("missing="):
+            return token[len("missing="):]
+    return "other"
+
+
+def _context_gap_block(rows: list) -> list[str]:
+    """Тикеты, где оператор знал больше бота. Кнопок нет намеренно: решать тут
+    нечего, задача — на канал контекста, а не на факт в базе знаний."""
+    lines = ["", "<b>🙈 Бот не мог знать</b>"]
+    for row in rows:
+        detail = row.get("judge_detail", "") or ""
+        channel = _MISSING_LABELS.get(_missing_channel(detail), "другое")
+        reason = escape(_judge_reason(detail).split(" ", 1)[-1][:140])
+        lines.append(
+            f"{_ticket_ref(row.get('ticket_id', ''))} — не хватило: "
+            f"{escape(channel)} · {reason}"
+        )
+        lines.append(f"   опер: {escape((row.get('judge_reference_answer') or '').strip())[:180]}")
+    return lines
+
+
+def format_kb_outcome_line(stats: dict) -> Optional[str]:
+    """Одна строка об итогах разбора очереди кандидатов в базу знаний.
+
+    Раньше утро выглядело как десять сообщений с кнопками «в базу / мимо» — и
+    очередь росла быстрее, чем разбиралась (19 pending при 2 решённых). Теперь
+    разбор автоматический, а человеку остаются только противоречия, и они
+    названы отдельной строкой, чтобы не потеряться в счётчиках.
+    """
+    added = int(stats.get("auto_added", 0) or 0)
+    duplicate = int(stats.get("duplicate", 0) or 0)
+    skipped = int(stats.get("not_generalizable", 0) or 0)
+    conflict = int(stats.get("conflict", 0) or 0)
+    if not (added or duplicate or skipped or conflict):
+        return None
+    parts = [f"📚 <b>База знаний:</b> +{added} правил"]
+    if duplicate:
+        parts.append(f"дублей {duplicate}")
+    if skipped:
+        parts.append(f"не обобщается {skipped}")
+    line = " · ".join(parts)
+    if conflict:
+        line += f"\n⚠️ Противоречий: <b>{conflict}</b> — нужно решение"
+    return line
+
+
 def format_reconciliation_digest(data: dict) -> Optional[str]:
     """Утренняя сводка ночной сверки «бот ↔ оператор».
 
@@ -273,19 +333,25 @@ def format_reconciliation_digest(data: dict) -> Optional[str]:
     counts = data.get("counts") or {}
     escalated = data.get("escalated") or []
     wrong_fact = data.get("wrong_fact") or []
+    context_gap = data.get("context_gap") or []
     lines = ["🧭 <b>Сверка ответов за сутки</b>"]
-    if not escalated and not wrong_fact:
+    if not escalated and not wrong_fact and not context_gap:
         lines.append(f"Сверено: <b>{judged}</b> — расхождений нет.")
     else:
-        lines.append(
+        counters = [
             f"Сверено: <b>{judged}</b> · совпало {counts.get('same_action', 0)} · "
             f"эскалация вместо решения {counts.get('bot_escalated', 0)} · "
             f"неверный факт {counts.get('bot_wrong_fact', 0)}"
-        )
+        ]
+        if counts.get("context_gap"):
+            counters.append(f"не мог знать {counts['context_gap']}")
+        lines.append(" · ".join(counters))
         if wrong_fact:
             lines += _divergence_block("❌ Неверно по существу", wrong_fact)
         if escalated:
             lines += _divergence_block("🔁 Оператор решил сам", escalated)
+        if context_gap:
+            lines += _context_gap_block(context_gap)
     trend = data.get("trend") or []
     if len(trend) > 1:
         cells = " · ".join(

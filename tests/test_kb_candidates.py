@@ -138,33 +138,55 @@ async def test_reconcile_queues_candidate_only_for_wrong_fact():
     assert queued[0]["reason"] == "банк не нужен"
 
 
-async def test_digest_sends_one_message_per_pending_candidate():
-    from bot.digest import send_kb_candidates
+async def test_digest_sends_one_message_per_conflict():
+    """С 2026-09-07 сообщение с кнопками получает только противоречие: очередь
+    pending разбирается автоматически (bot/agent/kb_distill.py), и десять
+    решений по фактам каждое утро больше не приходят."""
+    import json
+    from bot.digest import send_kb_conflicts
     bot = SimpleNamespace(send_message=AsyncMock())
     candidates = [
         {"id": 7, "ticket_id": "188203", "title": "терминал",
          "ai_answer": "только банк", "reference_answer": "настроил сам",
-         "reason": "банк не нужен"},
+         "reason": "адресат другой",
+         "rule_json": json.dumps({"symptom": "s", "rule": "настройку делает банк",
+                                  "action": "a"}, ensure_ascii=False),
+         "conflict_item_id": 5},
     ]
 
     async def list_fn(limit=10):
         return candidates
 
-    await send_kb_candidates(bot, _list_fn=list_fn)
+    await send_kb_conflicts(bot, _list_fn=list_fn)
     bot.send_message.assert_awaited_once()
     kwargs = bot.send_message.await_args.kwargs
     assert "188203" in kwargs["text"]
-    assert "настроил сам" in kwargs["text"]
+    assert "настройку делает банк" in kwargs["text"]
     buttons = kwargs["reply_markup"].inline_keyboard[0]
-    assert [b.callback_data for b in buttons] == ["kbc:add:7", "kbc:skip:7"]
+    assert [b.callback_data for b in buttons] == ["kbc:new:7", "kbc:old:7"]
 
 
-async def test_digest_silent_without_candidates():
-    from bot.digest import send_kb_candidates
+async def test_digest_silent_without_conflicts():
+    from bot.digest import send_kb_conflicts
     bot = SimpleNamespace(send_message=AsyncMock())
 
     async def list_fn(limit=10):
         return []
 
-    await send_kb_candidates(bot, _list_fn=list_fn)
+    await send_kb_conflicts(bot, _list_fn=list_fn)
     bot.send_message.assert_not_awaited()
+
+
+async def test_conflict_message_survives_broken_rule_json():
+    """Битый rule_json не должен глотать сообщение: противоречие всё равно
+    нужно показать, пусть и без текста нового правила."""
+    from bot.digest import send_kb_conflicts
+    bot = SimpleNamespace(send_message=AsyncMock())
+
+    async def list_fn(limit=10):
+        return [{"id": 8, "ticket_id": "190000", "reference_answer": "ответ",
+                 "reason": "спор", "rule_json": "{не json", "conflict_item_id": 5}]
+
+    await send_kb_conflicts(bot, _list_fn=list_fn)
+    bot.send_message.assert_awaited_once()
+    assert "190000" in bot.send_message.await_args.kwargs["text"]

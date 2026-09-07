@@ -14,6 +14,33 @@ from .actions import (
 logger = logging.getLogger(__name__)
 
 
+def build_ticket_context_block(context: dict) -> str:
+    """Блок «что известно об этом тикете»: поля, вложения, звонок.
+
+    Формулировка про вложения намеренно осторожная. Описание даёт Vision, а не
+    глаз: «на скриншоте видно» превратило бы пересказ модели в наблюдение, и
+    ошибка распознавания уехала бы клиенту как факт. Пустой блок при пустом
+    контексте — промпт не должен пухнуть на типовом тикете.
+    """
+    parts = []
+    facts = (context.get("ticket_facts") or "").strip()
+    if facts:
+        parts.append(f"Известно о тикете:\n{facts}")
+    attachments = (context.get("attachments") or "").strip()
+    if attachments:
+        parts.append(
+            "Описание вложений клиента (получено автоматически, может быть "
+            f"неточным — ссылайся как «по описанию»):\n{attachments}"
+        )
+    call_notes = (context.get("call_notes") or "").strip()
+    if call_notes:
+        parts.append(
+            "Что выяснили в звонке по этому тикету (это уже известно клиенту, "
+            f"не переспрашивай):\n{call_notes}"
+        )
+    return "\n\n" + "\n\n".join(parts) if parts else ""
+
+
 async def generate_agent_draft(
     context: dict,
     ticket_title: str,
@@ -47,6 +74,7 @@ async def generate_agent_draft(
         format_instructions=format_instructions,
     )
     system = base_system + build_action_instruction()
+    system += build_ticket_context_block(context)
     pair_examples = [
         d["used_excerpt"] for d in context.get("demos", [])
         if d.get("source_type") == "dialogue_pair"

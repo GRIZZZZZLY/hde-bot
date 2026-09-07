@@ -2,9 +2,15 @@
 сообщения) и evidence-retrieval со score/id/фрагментами для self-check и трассировки."""
 from __future__ import annotations
 
+import logging
+
 from .actions import extract_client_text
 
+logger = logging.getLogger(__name__)
+
 _EXCERPT_LIMIT = 600
+_ATTACHMENT_LIMIT = 900
+_CALL_NOTES_LIMIT = 900
 
 
 def _excerpt_with_url(item) -> str:
@@ -13,6 +19,60 @@ def _excerpt_with_url(item) -> str:
     excerpt = (item.content or "")[:_EXCERPT_LIMIT]
     url = getattr(item, "url", None)
     return f"Статья: {url}\n{excerpt}" if url else excerpt
+
+
+def build_ticket_facts(topic) -> str:
+    """Строка «что мы про этот тикет уже знаем» из полей, которые бот сам заполнил.
+
+    Только имена, не id: «14» модель не расшифрует. Пустое значение окружения —
+    это «классифицировали и не определили», и в промпте оно вреднее молчания:
+    модель прочитает «не определено» как факт о клиенте.
+    """
+    if topic is None:
+        return ""
+    from ..ticket_fields import OKRUZHENIE_OPTIONS
+
+    facts: list[str] = []
+    company = (getattr(topic, "company_name", "") or "").strip()
+    if company:
+        facts.append(f"Компания клиента: {company}")
+    env_id = getattr(topic, "env_option_id", None)
+    if env_id and str(env_id) in OKRUZHENIE_OPTIONS:
+        facts.append(f"Окружение: {OKRUZHENIE_OPTIONS[str(env_id)]}")
+    return "\n".join(facts)
+
+
+async def load_ticket_side_context(ticket_id: str, *, _topic_fn=None) -> dict:
+    """Описания вложений, заметки после звонка и поля тикета — из ticket_topics.
+
+    Всё это бот собирает сам (Vision по вложениям, Deepgram по звонку,
+    автозаполнение полей), но до черновика ничего из этого не доезжало: читали
+    только автозаполнение и индексатор базы знаний. Отсюда «уточните, какая
+    ошибка на экране» под присланным скриншотом.
+
+    Промах по топику (удалён, старый тикет, сбой базы) — пустой контекст, а не
+    падение: черновик без описания вложения хуже, чем с ним, но лучше, чем ничего.
+    """
+    if not ticket_id:
+        return {"attachments": "", "call_notes": "", "ticket_facts": ""}
+    if _topic_fn is None:
+        from ..db import get_topic as _topic_fn
+    try:
+        topic = await _topic_fn(str(ticket_id))
+    except Exception as exc:
+        logger.debug("agent context: topic lookup failed for %s: %s", ticket_id, exc)
+        return {"attachments": "", "call_notes": "", "ticket_facts": ""}
+    if topic is None:
+        return {"attachments": "", "call_notes": "", "ticket_facts": ""}
+    return {
+        "attachments": (
+            getattr(topic, "photo_descriptions", "") or ""
+        ).strip()[:_ATTACHMENT_LIMIT],
+        "call_notes": (
+            getattr(topic, "call_notes", "") or ""
+        ).strip()[:_CALL_NOTES_LIMIT],
+        "ticket_facts": build_ticket_facts(topic),
+    }
 
 
 def build_history_budgeted(posts, info, *, budget: int = 3000, _history_fn=None) -> str:
@@ -55,6 +115,7 @@ async def build_agent_context(
     _wiki_fn=None,
     _pattern_fn=None,
     _pairs_fn=None,
+    _topic_fn=None,
 ) -> dict:
     if _embed_fn is None:
         from ..knowledge.indexer import embed_text as _embed_fn
@@ -72,6 +133,7 @@ async def build_agent_context(
     client_text = extract_client_text(posts, getattr(info, "client_id", ""))
     equipment = _equipment_fn(ticket_title, history)
     retrieval_query = f"{ticket_title}\n{client_text}"[:600]
+    side = await load_ticket_side_context(ticket_id, _topic_fn=_topic_fn)
 
     evidence: list[dict] = []   # grounding-eligible: history + knowledge sources
     demos: list[dict] = []      # few-shot примеры (dialogue_pair): стиль, НЕ grounding
@@ -142,6 +204,20 @@ async def build_agent_context(
         except Exception:
             pass  # few-shot не должен ронять генерацию
 
+    # Отметка «этой статьёй пользовались». Без неё архивация автоправил (см.
+    # db.archive_unused_auto_rules) сносила бы и те, что исправно работают:
+    # last_used_at до этой правки писал только legacy-путь суммарки.
+    used_ids = [
+        e["source_id"] for e in evidence
+        if e["source_type"] == "knowledge_item" and e.get("source_id")
+    ]
+    if used_ids:
+        try:
+            from ..db import update_knowledge_last_used
+            await update_knowledge_last_used(used_ids)
+        except Exception as exc:
+            logger.debug("agent context: last_used_at not updated: %s", exc)
+
     grounds = []
     for e in evidence:
         if e["source_type"] == "knowledge_item":
@@ -164,4 +240,9 @@ async def build_agent_context(
         "solution_steps": solution_steps,
         "grounds": grounds,
         "confidence": confidence,
+        # Факты о тикете, а не источники: в evidence им не место — self-check
+        # стал бы требовать опоры на пересказ картинки от Vision.
+        "attachments": side["attachments"],
+        "call_notes": side["call_notes"],
+        "ticket_facts": side["ticket_facts"],
     }

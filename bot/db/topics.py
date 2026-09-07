@@ -168,6 +168,32 @@ async def get_common_env_for_company(
     return row[0] if row else None
 
 
+async def append_call_notes(ticket_id: str, notes: list[str]) -> None:
+    """Дописать выжимку звонка или голосовой заметки к контексту ЭТОГО тикета.
+
+    Отдельно от knowledge_items с source='transcription': там запись живёт в
+    общем retrieval и может всплыть в чужом обращении как факт, а здесь она
+    привязана к тикету — её читают черновик и ночная сверка только для него.
+    Неизвестный тикет и пустой список — no-op.
+    """
+    if not notes:
+        return
+    addition = "\n".join(n.strip() for n in notes if n and n.strip())
+    if not addition:
+        return
+    async with connect() as db:
+        await db.execute(
+            """
+            UPDATE ticket_topics
+            SET call_notes = TRIM(COALESCE(call_notes, '') || CHAR(10) || ?, CHAR(10)),
+                updated_at = datetime('now')
+            WHERE ticket_id = ?
+            """,
+            (addition, ticket_id),
+        )
+        await db.commit()
+
+
 async def append_photo_descriptions(ticket_id: str, descriptions: list[str]) -> None:
     """Append Vision-generated photo descriptions to the topic (newline-joined).
 

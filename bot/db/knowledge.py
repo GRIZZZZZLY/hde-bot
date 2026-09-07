@@ -97,9 +97,13 @@ async def list_all_knowledge_embeddings() -> list[tuple[int, str, bytes, str, st
     """Return (id, content, embedding, company_id, source) for all indexed items."""
     async with connect() as db:
         async with db.execute(
+            # 'archived' — автоправило, которое N дней не всплывало в retrieval
+            # (archive_unused_auto_rules). Строка остаётся для разбора, но из
+            # поиска уходит: иначе архивация ничего бы не давала.
             "SELECT id, content, embedding, COALESCE(company_id, ''), source "
             "FROM knowledge_items "
-            "WHERE embedding IS NOT NULL AND quality NOT IN ('bad', 'expired')"
+            "WHERE embedding IS NOT NULL "
+            "  AND quality NOT IN ('bad', 'expired', 'archived')"
         ) as cur:
             return await cur.fetchall()
 
@@ -409,6 +413,46 @@ async def expire_stale_knowledge(expiry_days: int = 180) -> int:
             SET quality = 'expired'
             WHERE source = 'hde_closed'
               AND quality = 'good'
+              AND created_at < ?
+              AND (last_used_at IS NULL OR last_used_at < ?)
+            """,
+            (cutoff, cutoff),
+        )
+        await db.commit()
+        return cur.rowcount
+
+
+async def retire_knowledge_item(item_id: int) -> bool:
+    """Снять одну статью с поиска, не удаляя её.
+
+    Нужно, когда оператор решил противоречие в пользу нового правила: старое
+    больше не должно попадать в промпт, но должно остаться читаемым — по нему
+    видно, что именно модель выдумала.
+    """
+    async with connect() as db:
+        cur = await db.execute(
+            "UPDATE knowledge_items SET quality='archived' WHERE id=?", (int(item_id),)
+        )
+        await db.commit()
+        return bool(cur.rowcount)
+
+
+async def archive_unused_auto_rules(days: int = 60) -> int:
+    """Убрать из поиска автоправила, которые столько дней не всплывали.
+
+    Автоправило пишет модель, и его ценность подтверждается только тем, что
+    retrieval его находит. Не найденное за два месяца — шум, который засоряет
+    слоты промпта. Не удаляем: строка нужна, чтобы понять, что модель выдумала,
+    и вернуть правило вручную, если оно всё же верное.
+    """
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    async with connect() as db:
+        cur = await db.execute(
+            """
+            UPDATE knowledge_items
+            SET quality = 'archived'
+            WHERE source = 'auto_rule'
+              AND quality = 'auto_rule'
               AND created_at < ?
               AND (last_used_at IS NULL OR last_used_at < ?)
             """,

@@ -428,6 +428,30 @@ def prompt_version_tag() -> str:
     return "legacy"
 
 
+_routing_cache: tuple[float, list] | None = None
+
+
+def _load_routing_rules() -> list:
+    """Карта ответственности с кешем по mtime файла.
+
+    Читается на каждом черновике, поэтому файл не парсится заново без нужды;
+    правка карты подхватывается без перезапуска бота.
+    """
+    global _routing_cache
+    from .agent.routing_map import DEFAULT_PATH, load_routing_map
+
+    try:
+        mtime = DEFAULT_PATH.stat().st_mtime
+    except OSError:
+        _routing_cache = None
+        return []
+    if _routing_cache is not None and _routing_cache[0] == mtime:
+        return _routing_cache[1]
+    rules = load_routing_map()
+    _routing_cache = (mtime, rules)
+    return rules
+
+
 def _build_system_prompt(
     ticket_title: str,
     rag_examples: list[str] | None = None,
@@ -461,6 +485,18 @@ def _build_system_prompt(
             f"{wiki_context}\n\n"
             "---\n\n"
         )
+    # Карта ответственности идёт ДО примеров намеренно: few-shot сильнее
+    # инструкции (правило, которому противоречат образцы, модель нарушит), и
+    # правило уровня политики, зажатое после примеров, проигрывает им.
+    # Отсутствие карты — рабочий режим: блок пустой, промпт как был.
+    try:
+        from .agent.routing_map import format_routing_block  # noqa: PLC0415
+        routing_block = format_routing_block(_load_routing_rules())
+    except Exception as exc:
+        logger.warning("routing map block skipped: %s", exc)
+        routing_block = ""
+    if routing_block:
+        base += f"{routing_block}\n\n---\n\n"
     if _FEW_SHOT_EXAMPLES:
         shots = []
         for ex in _FEW_SHOT_EXAMPLES:

@@ -153,28 +153,122 @@ async def summarize_transcript(
         return None
 
 
+_NOTE_SYSTEM = (
+    "Ты помощник инженера техподдержки POS-оборудования. Оператор наговорил "
+    "заметку после телефонного разговора с клиентом. Выжми из неё факты, "
+    "которые понадобятся при ответе клиенту: модель оборудования и ПО, банк или "
+    "ОФД, код ошибки, что уже проверили, что клиенту обещали. Пиши одним "
+    "абзацем, только факты из заметки, без вступлений и без выдумок. Если "
+    "фактов нет — верни пустую строку."
+)
+
+
+async def _transcribe(audio_data: bytes, mime_type: str) -> str | None:
+    async with shared_session() as session:
+        return await transcribe_audio(audio_data, mime_type, session)
+
+
+async def _distill(transcript: str, ticket_title: str = "") -> str | None:
+    async with shared_session() as session:
+        return await summarize_transcript(transcript, ticket_title, session)
+
+
+async def _distill_note(transcript: str, ticket_title: str = "") -> str | None:
+    """Выжимка голосовой заметки оператора — другой промпт, чем у записи звонка.
+
+    У записи звонка формат «Проблема/Решение» для базы знаний. Заметка нужна для
+    контекста черновика: важны факты, которые оператор уже узнал, чтобы бот их
+    не переспрашивал.
+    """
+    from .ai_summary import call_groq_text
+
+    return await call_groq_text(
+        f"Тикет: {ticket_title}\n\nЗаметка оператора:\n{transcript[:6000]}",
+        system=_NOTE_SYSTEM, model=config.groq_summary_model,
+        max_tokens=400, temperature=0.2,
+        reasoning_effort=config.groq_reasoning_effort or None,
+    )
+
+
 async def process_call_recording(
     audio_data: bytes,
     mime_type: str,
     *,
     ticket_id: str,
     ticket_title: str,
+    _transcribe_fn=None,
+    _distill_fn=None,
+    _index_fn=None,
 ) -> int | None:
-    """Transcribe -> summarize -> index. Returns knowledge item id or None."""
-    async with shared_session() as session:
-        transcript = await transcribe_audio(audio_data, mime_type, session)
-        if not transcript:
-            return None
-        logger.info(
-            "Call transcribed for ticket %s (%d chars): %r...",
-            ticket_id, len(transcript), transcript[:80],
-        )
-        summary = await summarize_transcript(transcript, ticket_title, session)
-        if not summary:
-            return None
-    return await index_knowledge_item(
+    """Transcribe -> summarize -> index. Returns knowledge item id or None.
+
+    Выжимка дополнительно ложится в call_notes своего тикета: канал базы знаний
+    остаётся как был, но теперь запись звонка виден и черновику по этому тикету,
+    и ночной сверке — раньше она знала о звонке только если тот случайно всплыл
+    через retrieval.
+    """
+    transcribe = _transcribe_fn or _transcribe
+    distill = _distill_fn or _distill
+    index = _index_fn or index_knowledge_item
+
+    transcript = await transcribe(audio_data, mime_type)
+    if not transcript:
+        return None
+    logger.info(
+        "Call transcribed for ticket %s (%d chars): %r...",
+        ticket_id, len(transcript), transcript[:80],
+    )
+    summary = await distill(transcript, ticket_title)
+    if not summary:
+        return None
+    await _store_call_notes(ticket_id, summary)
+    return await index(
         "transcription",
         summary,
         ticket_id=ticket_id,
         title=ticket_title,
     )
+
+
+async def process_call_note(
+    audio_data: bytes,
+    mime_type: str,
+    *,
+    ticket_id: str,
+    ticket_title: str = "",
+    _transcribe_fn=None,
+    _distill_fn=None,
+    _index_fn=None,
+) -> str | None:
+    """Голосовая заметка оператора после звонка → контекст ЭТОГО тикета.
+
+    В общую базу знаний не идёт намеренно: заметка про конкретного клиента,
+    сказанная своими словами, во чужом обращении читается как факт о нём.
+    Возвращает записанную выжимку или None (флаг выключен, транскрипция или
+    выжимка не удались).
+    """
+    if not config.agent_call_fixation_enabled:
+        return None
+    transcribe = _transcribe_fn or _transcribe
+    distill = _distill_fn or _distill_note
+
+    transcript = await transcribe(audio_data, mime_type)
+    if not transcript:
+        return None
+    note = await distill(transcript, ticket_title)
+    note = (note or "").strip()
+    if not note:
+        return None
+    await _store_call_notes(ticket_id, note)
+    logger.info("Call note stored for ticket %s (%d chars)", ticket_id, len(note))
+    return note
+
+
+async def _store_call_notes(ticket_id: str, note: str) -> None:
+    """Промах записи не должен ронять транскрипцию: текст уже получен и полезен."""
+    from . import db
+
+    try:
+        await db.append_call_notes(str(ticket_id), [note])
+    except Exception as exc:
+        logger.warning("call_notes append failed for ticket %s: %s", ticket_id, exc)
