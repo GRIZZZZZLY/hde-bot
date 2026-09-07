@@ -1,7 +1,15 @@
 """Сборка карты ответственности из истории: симптом → кто отвечает → что сказать.
 
   python scripts/build_routing_map.py --db data/hde_bot_vps.db
-         [--out data/routing_map.json] [--limit 200] [--dry-run]
+         [--out data/routing_map.json] [--limit 200] [--pause 4] [--dry-run]
+
+ВНИМАНИЕ про --out: путь по умолчанию (data/routing_map.json) бот читает сразу,
+кешируя по mtime. Прогон на проде должен писать КУДА-ТО ЕЩЁ (например
+artifacts/), иначе невычитанная карта немедленно попадёт в каждый промпт.
+
+--pause держит прогон под TPM Groq. На free-tier лимит 8000 токенов в минуту, и
+один кандидат стоит ~750, то есть пауза 4 с (15 вызовов/мин) его превышает и
+отбирает квоту у бота в смену. 8 с безопасно рядом с работающим ботом.
 
 Читает копию прод-базы ТОЛЬКО на чтение и в боевую базу ничего не пишет: карта
 должна пройти через глаза человека, потому что она попадает в каждый промпт и
@@ -141,6 +149,8 @@ async def main() -> None:
     parser.add_argument("--out", default="data/routing_map.json")
     parser.add_argument("--limit", type=int, default=200,
                         help="сколько строк брать из каждого источника")
+    parser.add_argument("--pause", type=float, default=8.0,
+                        help="пауза между вызовами модели, секунды (TPM Groq)")
     parser.add_argument("--dry-run", action="store_true",
                         help="только показать кандидатов, не звать модель")
     args = parser.parse_args()
@@ -156,7 +166,7 @@ async def main() -> None:
     if not rows:
         return
 
-    raw_rules = await distill(rows)
+    raw_rules = await distill(rows, pause_s=args.pause)
     rules = dedup_rules(parse_routing_map(raw_rules))
     print(f"Правил после дедупа: {len(rules)}")
 
