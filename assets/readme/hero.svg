@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" role="img"
+     aria-label="HDE_bot — тикет приходит в HelpDeskEddy, в Telegram открывается топик с готовым черновиком ответа; отправляет человек">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#111A24"/>
+      <stop offset="1" stop-color="#0C1219"/>
+    </linearGradient>
+    <style>
+      .f  { font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+      .m  { font-family: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace; }
+      .eyebrow { font-size: 21px; font-weight: 600; letter-spacing: 2.4px; fill: #5FA8C4; }
+      .title   { font-size: 76px; font-weight: 700; letter-spacing: -1px; fill: #E9F1F7; }
+      .lead    { font-size: 23px; font-weight: 400; fill: #9BAEBE; }
+      .chip    { font-size: 20px; font-weight: 500; fill: #8FA3B3; }
+      .card-t  { font-size: 22px; font-weight: 600; fill: #D7E3EC; }
+      .card-s  { font-size: 19px; font-weight: 400; fill: #7B8D9C; }
+    </style>
+  </defs>
+
+  <rect x="1" y="1" width="1198" height="398" rx="18" fill="url(#bg)" stroke="#1E2B38"/>
+
+  <!-- thread rail: the forum-topic motif -->
+  <path d="M56 92 V 330" stroke="#233241" stroke-width="2"/>
+  <circle cx="56" cy="112" r="7" fill="#2AA0C8"/>
+  <circle cx="56" cy="200" r="7" fill="#2F6F8A"/>
+  <circle cx="56" cy="288" r="7" fill="#2A3D4B"/>
+
+  <g class="f">
+    <text x="96" y="118" class="eyebrow">HELPDESKEDDY  ·  TELEGRAM  ·  2-Я ЛИНИЯ</text>
+    <text x="94" y="196" class="title">HDE_bot</text>
+    <text x="96" y="246" class="lead">Тикет приходит в HDE — в Telegram топик</text>
+    <text x="96" y="278" class="lead">с готовым черновиком. Отправляет человек.</text>
+  </g>
+
+  <!-- capability chips -->
+  <g class="f">
+    <rect x="96"  y="316" width="196" height="40" rx="20" fill="#16222D" stroke="#243343"/>
+    <text x="116" y="342" class="chip">durable inbox</text>
+    <rect x="304" y="316" width="228" height="40" rx="20" fill="#16222D" stroke="#243343"/>
+    <text x="324" y="342" class="chip">safety-гейт в коде</text>
+    <rect x="544" y="316" width="100" height="40" rx="20" fill="#16222D" stroke="#243343"/>
+    <text x="564" y="342" class="chip">RAG</text>
+  </g>
+
+  <!-- the three suggestion messages the operator actually sees -->
+  <g>
+    <rect x="688" y="74" width="448" height="80" rx="12" fill="#16222D" stroke="#27394A"/>
+    <circle cx="716" cy="104" r="8" fill="#2AA0C8"/>
+    <text x="738" y="110" class="f card-t">Суть (78%)</text>
+    <text x="716" y="136" class="f card-s">АТОЛ 30Ф — нет связи с ОФД</text>
+
+    <rect x="688" y="166" width="448" height="80" rx="12" fill="#16222D" stroke="#27394A"/>
+    <circle cx="716" cy="196" r="8" fill="#4CAF7D"/>
+    <text x="738" y="202" class="f card-t">Ответ клиенту</text>
+    <text x="716" y="228" class="f card-s">черновик · кнопка «отправить в HDE»</text>
+
+    <rect x="688" y="258" width="448" height="80" rx="12" fill="#16222D" stroke="#27394A"/>
+    <circle cx="716" cy="288" r="8" fill="#F2B01E"/>
+    <text x="738" y="294" class="f card-t">Памятка</text>
+    <text x="716" y="320" class="f card-s">шаги проверки для оператора</text>
+  </g>
+</svg>
