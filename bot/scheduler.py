@@ -78,6 +78,8 @@ def mark_report_done_today() -> None:
 
 async def _maybe_send_digest(bot: Bot) -> None:
     global _last_digest_date
+    if not config.morning_digest_enabled:
+        return
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     if now.hour != config.digest_send_hour_utc:
@@ -93,6 +95,8 @@ async def _maybe_send_daily_value_report(bot: Bot) -> None:
     """Ежедневный отчёт пользы AI-подсказок (ревизия 3 roadmap) — тем же утром,
     что и дайджест. Пустой день (0 подсказок) — не отправляется."""
     global _last_value_report_date
+    if not config.personal_digests_enabled:
+        return
     now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     if now.hour != config.digest_send_hour_utc:
@@ -407,6 +411,8 @@ async def _maybe_backfill_dialogue_pairs(bot) -> None:
 async def _maybe_send_reconciliation_digest(bot: Bot) -> None:
     """Утренняя сводка ночной сверки в личный чат (раз в сутки, в час дайджеста)."""
     global _last_reconcile_digest_date
+    if not config.personal_digests_enabled:
+        return
     if not config.agent_dialogue_mining_enabled:
         return
     now = datetime.now(timezone.utc)
@@ -421,8 +427,11 @@ async def _maybe_send_reconciliation_digest(bot: Bot) -> None:
 async def _maybe_reconcile_answers(bot) -> None:
     """Ночная сверка (02:00 MSK) предложений бота с фактическими ответами
     операторов. Раз в сутки; вердикты ложатся в judge-поля ai_suggestions,
-    утренняя сводка их показывает. Свой флаг — agent_dialogue_mining_enabled."""
+    утренняя сводка их показывает. Флаги — nightly_reconcile_enabled (тихий
+    режим) и agent_dialogue_mining_enabled."""
     global _last_reconcile_date
+    if not config.nightly_reconcile_enabled:
+        return
     if not config.agent_dialogue_mining_enabled:
         return
     now = _now_msk()

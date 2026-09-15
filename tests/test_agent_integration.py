@@ -44,6 +44,7 @@ async def test_generate_with_retry_agent_branch_and_fallback(monkeypatch):
     import bot.topic_manager as tm
     monkeypatch.setattr(config_module.config, "agent_enabled", True)
     monkeypatch.setattr(config_module.config, "agent_auto_first_suggestion_enabled", True)
+    monkeypatch.setattr(config_module.config, "ai_suggestion_auto_enabled", True)
     posts = [SimpleNamespace(user_id=1, text="q", post_id=1)]
     info = SimpleNamespace(client_id=1)
 
@@ -77,6 +78,7 @@ async def test_agent_enabled_but_auto_first_disabled_uses_legacy(monkeypatch):
     import bot.topic_manager as tm
     monkeypatch.setattr(config_module.config, "agent_enabled", True)
     monkeypatch.setattr(config_module.config, "agent_auto_first_suggestion_enabled", False)
+    monkeypatch.setattr(config_module.config, "ai_suggestion_auto_enabled", True)
     with patch("bot.topic_manager.run_agent", new=AsyncMock()) as agent, patch(
         "bot.topic_manager.generate_ticket_summary",
         new=AsyncMock(return_value=("с", "к", "п", 50)),

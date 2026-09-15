@@ -229,41 +229,44 @@ async def _post_ticket_history(
     )
 
     # Post history while generation runs in background
-    messages = _tm.format_ticket_history(all_posts, info)
-    for text in messages:
-        try:
-            await bot.send_message(
-                chat_id=_tm.config.group_chat_id,
-                message_thread_id=topic_id,
-                text=text,
-                parse_mode="HTML",
-                disable_web_page_preview=True,
-                disable_notification=True,
-            )
-        except TelegramAPIError as exc:
-            logger.warning("Failed to post history message to topic %d: %s", topic_id, exc)
-            break
+    if _tm.config.ticket_history_post_enabled:
+        messages = _tm.format_ticket_history(all_posts, info)
+        for text in messages:
+            try:
+                await bot.send_message(
+                    chat_id=_tm.config.group_chat_id,
+                    message_thread_id=topic_id,
+                    text=text,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                    disable_notification=True,
+                )
+            except TelegramAPIError as exc:
+                logger.warning("Failed to post history message to topic %d: %s", topic_id, exc)
+                break
 
     # Await generation result (was running during history posting)
     result = await gen_task
     if result is None:
+        # Подсказки нет (выключена или LLM не ответила) — это НЕ повод пропускать
+        # автозаполнение полей: приоритет и тип тикета от текста подсказки не
+        # зависят, а раньше они молча не заполнялись при любом сбое генерации.
         logger.info("AI summary not generated for ticket %s", ticket_id)
-        return
-
-    suit_line, client_line, memo_line, confidence_pct = result
-    await post_suggestion_messages(
-        bot,
-        topic_id=topic_id,
-        ticket_id=ticket_id,
-        suit_line=suit_line,
-        client_line=client_line,
-        memo_line=memo_line,
-        confidence_pct=confidence_pct,
-        all_posts=all_posts,
-        info=info,
-        ticket_title=ticket_title,
-        anchor=anchor,
-    )
+    else:
+        suit_line, client_line, memo_line, confidence_pct = result
+        await post_suggestion_messages(
+            bot,
+            topic_id=topic_id,
+            ticket_id=ticket_id,
+            suit_line=suit_line,
+            client_line=client_line,
+            memo_line=memo_line,
+            confidence_pct=confidence_pct,
+            all_posts=all_posts,
+            info=info,
+            ticket_title=ticket_title,
+            anchor=anchor,
+        )
 
     try:
         from .ticket_fields import apply_ticket_fields

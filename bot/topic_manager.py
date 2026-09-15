@@ -220,6 +220,11 @@ async def _generate_summary_with_retry(
     trigger_source: str = "first",
 ):
     """Call generate_ticket_summary up to *attempts* times with *pause* seconds between tries."""
+    # Автоподсказка (Суть/Ответ/Памятка) выключена — выходим ДО генерации, а не
+    # перед отправкой: иначе тратится вызов LLM на текст, который никто не увидит.
+    # Кнопка 💡 приходит с trigger_source="button" и флагом не гасится.
+    if trigger_source == "first" and not config.ai_suggestion_auto_enabled:
+        return None
     agent_allowed = config.agent_enabled and (
         config.agent_auto_first_suggestion_enabled or trigger_source != "first"
     )

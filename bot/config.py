@@ -50,6 +50,11 @@ class Config:
     public_reply_ticket_allowlist: tuple[str, ...]
     digest_send_hour_utc: int
     digest_night_start_hour_utc: int
+    morning_digest_enabled: bool
+    ticket_history_post_enabled: bool
+    ai_suggestion_auto_enabled: bool
+    personal_digests_enabled: bool
+    nightly_reconcile_enabled: bool
     general_topic_id: int | None
     unassigned_department: str
     work_days: tuple[int, ...]
@@ -122,6 +127,24 @@ class Config:
             public_reply_ticket_allowlist=_parse_csv(os.getenv("HDE_PUBLIC_REPLY_TICKET_ALLOWLIST")),
             digest_send_hour_utc=int(os.getenv("DIGEST_SEND_HOUR_UTC", "5")),
             digest_night_start_hour_utc=int(os.getenv("DIGEST_NIGHT_START_HOUR_UTC", "15")),
+            # Тихий режим по умолчанию: оператору нужны новые ответы клиента, а
+            # не пересказ того, что он и так видит в HDE. Каждый флаг включается
+            # обратно в .env без правки кода.
+            morning_digest_enabled=_parse_bool(
+                os.getenv("MORNING_DIGEST_ENABLED"), default=False
+            ),
+            ticket_history_post_enabled=_parse_bool(
+                os.getenv("TICKET_HISTORY_POST_ENABLED"), default=False
+            ),
+            ai_suggestion_auto_enabled=_parse_bool(
+                os.getenv("AI_SUGGESTION_AUTO_ENABLED"), default=False
+            ),
+            personal_digests_enabled=_parse_bool(
+                os.getenv("PERSONAL_DIGESTS_ENABLED"), default=False
+            ),
+            nightly_reconcile_enabled=_parse_bool(
+                os.getenv("NIGHTLY_RECONCILE_ENABLED"), default=False
+            ),
             general_topic_id=_parse_optional_int(os.getenv("GENERAL_TOPIC_ID")),
             unassigned_department=os.getenv("UNASSIGNED_DEPARTMENT", "").strip(),
             work_days=tuple(
