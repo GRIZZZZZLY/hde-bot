@@ -1,4 +1,5 @@
 """Промпт v2: бюджет, порядок блоков, сигналы (spec 2026-09-27 §4)."""
+import re
 from bot.agent import voice
 
 
@@ -36,11 +37,11 @@ def test_voice_comes_before_ticket_data_and_format_is_last():
 
 def test_signals_are_rendered_only_when_set():
     calm = voice.build_prompt({"stress": False, "first_staff_reply": False}, "T")
-    assert "Сигнал: стресс" not in calm
-    assert "Первый ответ: нет" in calm
+    assert not re.search(r"^Сигнал: стресс$", calm, re.M)
+    assert re.search(r"^Первый ответ: нет$", calm, re.M)
     tense = voice.build_prompt({"stress": True, "first_staff_reply": True}, "T")
-    assert "Сигнал: стресс" in tense
-    assert "Первый ответ: да" in tense
+    assert re.search(r"^Сигнал: стресс$", tense, re.M)
+    assert re.search(r"^Первый ответ: да$", tense, re.M)
 
 
 def test_sources_are_labelled_with_the_ids_lint_expects():
