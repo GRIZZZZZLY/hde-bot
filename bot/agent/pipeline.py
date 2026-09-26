@@ -58,6 +58,7 @@ async def run_agent(
     if _posts_fn is None:
         _posts_fn = _default_posts_fn
 
+    from ..config import config
     from .actions import compose_memo, compose_selfcheck_warning, extract_client_text
 
     started = time.monotonic()
@@ -91,6 +92,7 @@ async def run_agent(
     confidence = 0
     confidence_reason = ""
     self_status = "n/a"
+    self_check_json: str | None = None
     for attempt in range(2):
         context = await _context_fn(posts, info, ticket_title, company_id, ticket_id=ticket_id)
         draft = await _draft_fn(context, ticket_title)
@@ -107,6 +109,29 @@ async def run_agent(
             action, client, confidence = "ESCALATE", "", 0
             base_memo = (f"⚠️ Эскалация ({post_check.category}): предложенный ответ "
                          f"небезопасен. " + base_memo)
+        elif config.agent_voice_v2_enabled:
+            from .lint import check_draft
+            sources_text = "\n".join(e.get("used_excerpt", "") for e in context["evidence"])
+            lint = check_draft(
+                client, base_memo,
+                history=context["history"],
+                sources_text=sources_text,
+                facts="\n".join([context.get("ticket_facts", ""),
+                                 context.get("attachments", ""),
+                                 context.get("call_notes", "")]),
+                first_staff_reply=context.get("first_staff_reply", False),
+                grounds=context.get("grounds", []),
+                source_ids=draft.get("source_ids", []),
+            )
+            client = lint.client
+            base_memo = lint.memo
+            if lint.warning_line():
+                base_memo = f"{lint.warning_line()}\n{base_memo}".strip()
+            self_status = "lint"
+            self_check_json = json.dumps(
+                {"lint": lint.as_dict(), "analysis": draft.get("analysis", "")},
+                ensure_ascii=False,
+            )
         elif action == "ANSWER":
             check = await _selfcheck_fn(
                 context["client_text"], client, context["evidence"], context["history"]
@@ -159,6 +184,7 @@ async def run_agent(
         action=action, self_status=self_status, evidence=trace_refs,
         retrieval_query=context["retrieval_query"], confidence=confidence,
         confidence_reason=confidence_reason, started=started,
+        self_check_json=self_check_json,
     )
     return suit, client, memo, confidence
 
@@ -167,6 +193,7 @@ async def _record_nonfatal(
     record_fn, *, anchor, info, ticket_id, topic_id, trigger_source, ticket_title,
     history, client_text, client, suit, memo, action, self_status, evidence,
     retrieval_query, confidence, confidence_reason, started, draft_client="",
+    self_check_json: str | None = None,
 ) -> None:
     try:
         from ..ai_summary import prompt_version_tag
@@ -187,7 +214,7 @@ async def _record_nonfatal(
             draft_answer=draft_client,
             model=config.agent_draft_model,
             action_type=action,
-            self_check=json.dumps({"status": self_status}, ensure_ascii=False),
+            self_check=self_check_json or json.dumps({"status": self_status}, ensure_ascii=False),
             retrieved_refs=json.dumps(evidence, ensure_ascii=False),
             confidence=confidence,
             confidence_reason=confidence_reason,

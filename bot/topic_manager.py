@@ -239,6 +239,11 @@ async def _generate_summary_with_retry(
                 return result
         except Exception as exc:
             logger.warning("run_agent failed, falling back to summary: %s", exc)
+    if agent_allowed and config.agent_voice_v2_enabled:
+        # v2: старый путь даёт худшие черновики (разбор 2026-09-27, §3.7) —
+        # лучше без черновика, чем с «инженер свяжется с 9 утра». Кнопка 🔄 есть.
+        logger.warning("agent v2 produced no draft for ticket %s (%s)", ticket_id, trigger_source)
+        return None
     for attempt in range(1, attempts + 1):
         result = await generate_ticket_summary(
             posts, info,

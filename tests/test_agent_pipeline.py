@@ -418,3 +418,40 @@ async def test_returns_none_on_draft_failure_and_record_failure_nonfatal():
         _record_fn=boom_rec, _posts_fn=_fresh_posts_same,
     )
     assert result is not None
+
+
+async def test_v2_skips_selfcheck_and_applies_lint(monkeypatch):
+    import json
+    from bot.config import config
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+    recorded = {}
+
+    async def ctx(*a, **k):
+        d = _ctx_dict()
+        d.update({"demos": [], "stress": False, "first_staff_reply": False,
+                  "attachments": "", "call_notes": "", "ticket_facts": ""})
+        return d
+
+    async def draft(c, title, **k):
+        return {"action": "ANSWER", "suit": "s",
+                "client": "Добрый день! Инженер свяжется с вами. Всегда рад помочь!",
+                "memo": "RuDesktop • пароль tudiuk", "confidence": 70,
+                "confidence_reason": "", "analysis": "порт", "source_ids": ["KB#12"]}
+
+    async def selfcheck(*a, **k):
+        raise AssertionError("self-check must not run on v2")
+
+    async def record(**kw):
+        recorded.update(kw)
+
+    suit, client, memo, conf = await run_agent(
+        _POSTS, _INFO, ticket_title="T", ticket_id="1",
+        _context_fn=ctx, _draft_fn=draft, _selfcheck_fn=selfcheck,
+        _safety_pre=_PROCEED, _safety_post=_PROCEED, _record_fn=record,
+        _posts_fn=_fresh_posts_same,
+    )
+    assert client == "Инженер свяжется с вами."
+    assert memo.startswith("⚠️ Проверь: обещание")
+    assert "tudiuk" not in memo
+    sc = json.loads(recorded["self_check"])
+    assert sc["analysis"] == "порт" and "password" in sc["lint"]["fixed"]

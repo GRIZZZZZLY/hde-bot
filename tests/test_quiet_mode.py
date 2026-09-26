@@ -113,3 +113,20 @@ async def test_nightly_reconcile_off(monkeypatch):
     with patch("bot.agent.reconcile.reconcile_recent", new_callable=AsyncMock) as rec:
         await scheduler._maybe_reconcile_answers(_bot())
     rec.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_v2_never_falls_back_to_legacy_summary(monkeypatch):
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+    monkeypatch.setattr(config, "agent_enabled", True)
+    monkeypatch.setattr(config, "agent_auto_first_suggestion_enabled", True)
+    monkeypatch.setattr(config, "ai_suggestion_auto_enabled", True)
+    with patch("bot.topic_manager.run_agent", new_callable=AsyncMock) as agent, patch(
+        "bot.topic_manager.generate_ticket_summary", new_callable=AsyncMock
+    ) as legacy:
+        agent.return_value = None
+        result = await topic_manager._generate_summary_with_retry(
+            [], SimpleNamespace(client_id=1), ticket_id="T", trigger_source="reply",
+        )
+    assert result is None
+    legacy.assert_not_awaited()
