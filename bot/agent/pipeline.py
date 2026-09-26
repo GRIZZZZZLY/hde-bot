@@ -103,6 +103,7 @@ async def run_agent(
         draft_client = client
         confidence, confidence_reason = draft["confidence"], draft["confidence_reason"]
         self_status = "n/a"
+        self_check_json = None
 
         post_check = _safety_post(client)
         if post_check.action == "ESCALATE":
@@ -121,7 +122,7 @@ async def run_agent(
                                  context.get("call_notes", "")]),
                 first_staff_reply=context.get("first_staff_reply", False),
                 grounds=context.get("grounds", []),
-                source_ids=draft.get("source_ids", []),
+                source_ids=draft.get("source_ids", []) if client else [],
             )
             client = lint.client
             base_memo = lint.memo

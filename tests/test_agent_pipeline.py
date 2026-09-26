@@ -455,3 +455,73 @@ async def test_v2_skips_selfcheck_and_applies_lint(monkeypatch):
     assert "tudiuk" not in memo
     sc = json.loads(recorded["self_check"])
     assert sc["analysis"] == "порт" and "password" in sc["lint"]["fixed"]
+
+
+async def test_v2_freshness_regeneration_does_not_keep_stale_lint_json(monkeypatch):
+    """Fix round 1, finding 1: self_check_json must reset every attempt, so a
+    post-safety ESCALATE on attempt 2 doesn't record attempt 1's lint JSON."""
+    import json
+    from bot.config import config
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+
+    fresh_versions = [
+        [SimpleNamespace(user_id=1, text="касса не печатает", post_id=5),
+         SimpleNamespace(user_id=1, text="уже перезагрузил", post_id=6)],
+    ]
+
+    async def moving_posts(ticket_id):
+        return fresh_versions[0]
+
+    calls = {"draft": 0}
+
+    async def draft(ctx, title, **k):
+        calls["draft"] += 1
+        return {"action": "ANSWER", "suit": "s", "client": f"ответ{calls['draft']}",
+                "memo": "m", "confidence": 80, "confidence_reason": "",
+                "analysis": "a", "source_ids": []}
+
+    def safety_post(text):
+        if text == "ответ2":
+            return PolicyDecision("ESCALATE", "cat", "x")
+        return PolicyDecision("PROCEED", None, None)
+
+    recorded = {}
+
+    async def rec(**kw):
+        recorded.update(kw)
+        return 1
+
+    await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T20",
+        _context_fn=_ctx, _draft_fn=draft, _selfcheck_fn=None,
+        _safety_pre=_PROCEED, _safety_post=safety_post,
+        _record_fn=rec, _posts_fn=moving_posts,
+    )
+    assert calls["draft"] == 2                          # one regeneration happened
+    assert recorded["action_type"] == "ESCALATE"         # attempt 2 overridden by post-safety
+    assert recorded["self_check"] == json.dumps({"status": "n/a"}, ensure_ascii=False)
+    assert "lint" not in recorded["self_check"]
+
+
+async def test_v2_empty_client_skips_unknown_source_check(monkeypatch):
+    """Fix round 1, finding 2: an empty client (NO_ACTION) must not trigger the
+    unknown-source hard warning even when draft.source_ids isn't in grounds."""
+    from bot.config import config
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+
+    async def draft(ctx, title, **k):
+        return {"action": "NO_ACTION", "suit": "спасибо", "client": "",
+                "memo": "ответ не нужен", "confidence": 95, "confidence_reason": "",
+                "analysis": "", "source_ids": ["KB#999"]}
+
+    async def rec(**kw):
+        return 1
+
+    _, client, memo, _ = await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T21",
+        _context_fn=_ctx, _draft_fn=draft, _selfcheck_fn=None,
+        _safety_pre=_PROCEED, _safety_post=_PROCEED,
+        _record_fn=rec, _posts_fn=_fresh_posts_same,
+    )
+    assert client == ""
+    assert "⚠️" not in memo
