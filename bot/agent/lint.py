@@ -13,7 +13,8 @@ from .operator_text import CLOSER_RE
 from .voice import ALLOWED_URLS
 
 _PASSWORD_RE = re.compile(
-    r"(парол\w*|password|pwd)(\s*[:\-–—]?\s*)(?!(?:и|от|для)\b)([A-Za-z0-9!@#$%^&*._\-]{4,})",
+    r"(парол\w*|password|pwd)((?:\s+[а-яёa-z]+){0,3}\s*[:\-–—]\s*|\s+)"
+    r"(?!(?:и|от|для)\b)([A-Za-z0-9!@#$%^&*._\-]{4,})",
     re.I,
 )
 _GREETING_RE = re.compile(
@@ -21,7 +22,8 @@ _GREETING_RE = re.compile(
 )
 _PROMISE_RE = re.compile(
     r"\b(инженер|специалист|разработчик|мастер|техник)\w*"
-    r"(?:\W+\w+){0,3}?\W+(?:свяж|позвон|перезвон|подключ|приед|провер|ответ)\w*",
+    r"(?:[^\w.!?]+\w+){0,3}?[^\w.!?]+"
+    r"(?:свяж|позвон|перезвон|подключ|приед|провер|ответ)(?!\w*ите\b)\w*",
     re.I,
 )
 _DEADLINE_RE = re.compile(
@@ -30,8 +32,8 @@ _DEADLINE_RE = re.compile(
     re.I,
 )
 _PAST_SELF_RE = re.compile(
-    r"\b(?:подключил(?:ся|ась)?|настроил(?:а)?|проверил(?:а)?|обновил(?:а)?|"
-    r"исправил(?:а)?|перезагрузил(?:а)?)\b",
+    r"(?:^|[.!?]\s*|\bя\s+(?:\w+\s+){0,2})"
+    r"(подключил(?:ся|ась)?|настроил(?:а)?|проверил(?:а)?|обновил(?:а)?|исправил(?:а)?|перезагрузил(?:а)?)\b",
     re.I,
 )
 _URL_RE = re.compile(r"https?://[^\s)»\"']+")
@@ -131,7 +133,8 @@ def check_draft(
         res.hard.append(f"обещание за других («{m.group(0)}») — в истории его нет")
 
     d = _DEADLINE_RE.search(text)
-    if d and d.group(0).lower() not in (history or "").lower():
+    grounding = "\n".join([history or "", sources_text or "", facts or ""]).lower()
+    if d and d.group(0).lower() not in grounding:
         res.hard.append(f"срок «{d.group(0)}» — в истории его нет")
 
     anchor = _unknown_anchor(text, "\n".join([history or "", sources_text or "", facts or ""]))
@@ -140,7 +143,7 @@ def check_draft(
 
     p = _PAST_SELF_RE.search(text)
     if p:
-        res.hard.append(f"прошедшее время о несделанном («{p.group(0)}»)")
+        res.hard.append(f"прошедшее время о несделанном («{p.group(1)}»)")
 
     # модель иногда пишет метку в скобках, как в промпте: «[KB#12]»
     known = set(grounds or [])

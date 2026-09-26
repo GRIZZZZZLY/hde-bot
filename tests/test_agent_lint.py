@@ -89,3 +89,25 @@ def test_clean_draft_passes():
     r = _lint("Понимаю, смену надо закрыть сейчас. Переключите кабель кассы в другой "
               "USB-разъём и перезагрузите кассу. Подскажите, получилось?")
     assert not r.hard and not r.fixed and r.warning_line() == ""
+
+
+def test_password_after_descriptive_words_is_masked():
+    for memo in ["Пароль от личного кабинета: qwerty123", "Пароль личного кабинета: qwerty123", "Пароль для входа: qwerty123"]:
+        r = _lint("Проверьте кабель.", memo=memo)
+        assert "qwerty123" not in r.memo, memo
+
+
+def test_third_person_past_tense_is_not_flagged():
+    assert not _lint("Судя по сообщению, кассу перезагрузил ваш коллега вчера.").hard
+    assert any("прошедшее" in h for h in _lint("Настроил принтер, проверьте печать.").hard)
+
+
+def test_promise_does_not_cross_sentences_or_match_imperatives():
+    assert not _lint("Специалист сейчас недоступен. Перезвоните позже сами.").hard
+    assert not _lint("Специалист недоступен, перезвоните позже.").hard
+
+
+def test_hours_from_sources_are_not_flagged():
+    r = _lint("Мы работаем с 9 часов до 18 часов.", sources_text="График: с 9 часов до 18 часов")
+    assert not any("срок" in h for h in r.hard)
+    assert any("срок" in h for h in _lint("Мы работаем с 9 часов до 18 часов.").hard)
