@@ -96,6 +96,26 @@ def format_client_reply(
     )
 
 
+def format_draft_block(
+    client: str, memo: str, suit: str | None = None, *, separator: bool = True
+) -> str:
+    """Черновик одним блоком (spec 2026-09-27 §6).
+
+    Текст клиенту — в <code>: в Telegram он копируется нажатием. Пустая памятка
+    («—») не показывается. Всё экранируется: текст модели может содержать < и &.
+    """
+    lines = []
+    if suit:
+        lines.append(f"🧠 {_escape(suit)}")
+    if client:
+        lines.append(f"💡 <code>{_escape(client)}</code>")
+    memo = (memo or "").strip()
+    if memo and memo != "—":
+        lines.append(f"📝 {_escape(memo)}")
+    body = "\n".join(lines)
+    return f"\n────────\n{body}" if separator else body
+
+
 def format_staff_reply(user_name: str, link: str) -> str:
     actor = _escape(user_name) if user_name else "Сотрудник"
     return (

@@ -45,6 +45,15 @@ def suggest_button_kb() -> InlineKeyboardMarkup:
     ]])
 
 
+def draft_kb() -> InlineKeyboardMarkup:
+    """Клавиатура черновика v2: отправить, исправить, другой вариант."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="📤 Ответить клиенту", callback_data="ai:send_post"),
+        InlineKeyboardButton(text="✏️ Исправить", callback_data="ai:edit"),
+        InlineKeyboardButton(text="🔄 Другой вариант", callback_data="ai:suggest"),
+    ]])
+
+
 def suit_feedback_kb() -> InlineKeyboardMarkup:
     """Keyboard for the Суть message."""
     return InlineKeyboardMarkup(inline_keyboard=[[

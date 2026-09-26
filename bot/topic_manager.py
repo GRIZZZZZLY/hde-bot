@@ -576,6 +576,7 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
     # Keep the 💡 button only under the latest client reply: strip it off the
     # previous one before posting the new message.
     await _strip_prev_suggest_button(bot, record.suggest_button_msg_id)
+    sent = None
     try:
         sent = await _send_topic_message(bot, record.topic_id, reply_text, reply_markup=suggest_button_kb())
         await db.update_topic(ticket_id, suggest_button_msg_id=sent.message_id)
@@ -595,6 +596,18 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
                 logger.error("Failed to resend client reply to recreated topic %d: %s", record.topic_id, exc2)
         else:
             logger.error("Failed to send client reply to topic %d: %s", record.topic_id, exc)
+
+    if (
+        sent is not None
+        and config.agent_voice_v2_enabled
+        and config.agent_reply_drafts_enabled
+    ):
+        from .topic_history import append_draft_to_reply
+        asyncio.create_task(append_draft_to_reply(
+            bot, ticket_id=record.ticket_id, topic_id=record.topic_id,
+            message_id=sent.message_id, reply_html=reply_text,
+            ticket_title=record.ticket_name or "",
+        ))
 
     try:
         await _send_client_attachments(bot, record.topic_id, payload)
