@@ -128,11 +128,19 @@ async def build_agent_context(
     if _pattern_fn is None:
         from ..db import find_solution_pattern as _pattern_fn
     from ..knowledge.indexer import RAG_MIN_SCORE
+    from ..config import config
 
     history = build_history_budgeted(posts, info, _history_fn=_history_fn)
     client_text = extract_client_text(posts, getattr(info, "client_id", ""))
     equipment = _equipment_fn(ticket_title, history)
-    retrieval_query = f"{ticket_title}\n{client_text}"[:600]
+    v2 = config.agent_voice_v2_enabled
+    if v2:
+        from . import context_v2 as cv2
+        messages = cv2.client_messages(posts, getattr(info, "client_id", ""))
+        history = cv2.strip_history_macros(history)
+        retrieval_query = cv2.build_retrieval_query(ticket_title, messages)
+    else:
+        retrieval_query = f"{ticket_title}\n{client_text}"[:600]
     side = await load_ticket_side_context(ticket_id, _topic_fn=_topic_fn)
 
     evidence: list[dict] = []   # grounding-eligible: history + knowledge sources
@@ -141,20 +149,27 @@ async def build_agent_context(
     embedding = await _embed_fn(retrieval_query, task_type="query")
     if embedding is not None:
         results = await _similar_fn(
-            embedding, limit=3, query_text=retrieval_query, company_id=company_id
+            embedding, limit=2 if v2 else 3, query_text=retrieval_query, company_id=company_id
         )
         rank = 0
         for item, score in results:
             if score < RAG_MIN_SCORE:
                 continue
             rank += 1
+            excerpt = (
+                cv2.best_chunk(item.content or "", retrieval_query)
+                if v2 else _excerpt_with_url(item)
+            )
+            if v2:
+                url = getattr(item, "url", None)
+                excerpt = f"Статья: {url}\n{excerpt}" if url else excerpt
             evidence.append({
                 "source_type": "knowledge_item",
                 "source_id": item.id,
                 "rank": rank,
                 "score": round(float(score), 4),
                 "title": getattr(item, "title", None),
-                "used_excerpt": _excerpt_with_url(item),
+                "used_excerpt": excerpt,
             })
             confidence = max(confidence, int(round(float(score) * 100)))
 
@@ -174,13 +189,12 @@ async def build_agent_context(
             "title": equipment or "", "used_excerpt": solution_steps[:_EXCERPT_LIMIT],
         })
 
-    from ..config import config
     if config.agent_dynamic_fewshot_enabled and embedding is not None:
         if _pairs_fn is None:
             from .pair_retrieval import find_similar_pairs as _pairs_fn
         try:
             pair_hits = await _pairs_fn(
-                embedding, limit=3,
+                embedding, limit=2 if v2 else 3,
                 exclude_ticket_ids={str(ticket_id)} if ticket_id else frozenset(),
                 own_operator_id=str(config.hde_owner_id),
             )
@@ -189,6 +203,10 @@ async def build_agent_context(
                     ln for ln in hit["context"].splitlines() if ln.startswith("Клиент:")
                 ]
                 last_client = client_lines[-1][len("Клиент:"):].strip() if client_lines else ""
+                answer = (
+                    cv2.clean_demo_answer(hit["operator_answer"])[:300]
+                    if v2 else hit["operator_answer"][:400]
+                )
                 # I3: пары идут в demos (few-shot), не в evidence (grounding)
                 demos.append({
                     "source_type": "dialogue_pair",
@@ -198,7 +216,7 @@ async def build_agent_context(
                     "title": f"тикет {hit['ticket_id']}",
                     "used_excerpt": (
                         f"Вопрос: {last_client}\n"
-                        f"Ответ оператора: {hit['operator_answer'][:400]}"
+                        f"Ответ оператора: {answer}"
                     ),
                 })
         except Exception:
@@ -239,6 +257,10 @@ async def build_agent_context(
         "wiki": wiki,
         "solution_steps": solution_steps,
         "grounds": grounds,
+        "stress": cv2.detect_stress(messages) if v2 else False,
+        "first_staff_reply": (
+            cv2.is_first_staff_reply(posts, getattr(info, "client_id", "")) if v2 else False
+        ),
         "confidence": confidence,
         # Факты о тикете, а не источники: в evidence им не место — self-check
         # стал бы требовать опоры на пересказ картинки от Vision.
