@@ -137,6 +137,8 @@ def parse_agent_draft(raw: str) -> dict | None:
         conf = int(obj.get("confidence", 50))
     except (TypeError, ValueError):
         conf = 50
+    raw_ids = obj.get("source_ids")
+    source_ids = [s for s in raw_ids if isinstance(s, str)] if isinstance(raw_ids, list) else []
     return {
         "action": obj["action"],
         "suit": obj.get("suit", "").strip(),
@@ -144,6 +146,8 @@ def parse_agent_draft(raw: str) -> dict | None:
         "memo": obj.get("memo", "").strip(),
         "confidence": max(0, min(100, conf)),
         "confidence_reason": str(obj.get("confidence_reason", "")).strip(),
+        "analysis": str(obj.get("analysis", "")).strip(),
+        "source_ids": source_ids,
     }
 
 

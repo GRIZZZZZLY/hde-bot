@@ -144,6 +144,28 @@ def test_parse_agent_draft_ignores_braces_inside_reasoning():
     assert draft["action"] == "ANSWER" and draft["client"] == "к"
 
 
+def test_parse_draft_reads_analysis_and_source_ids():
+    from bot.agent.actions import parse_agent_draft
+    raw = ('{"analysis": "порт занят", "action": "ANSWER", "suit": "s", "client": "c", '
+           '"memo": "m", "source_ids": ["KB#1", 5, "пара#2"], "confidence": 80}')
+    d = parse_agent_draft(raw)
+    assert d["analysis"] == "порт занят"
+    assert d["source_ids"] == ["KB#1", "пара#2"]        # не-строки отброшены
+
+
+def test_parse_draft_old_format_still_works():
+    from bot.agent.actions import parse_agent_draft
+    d = parse_agent_draft('{"action": "ASK", "suit": "", "client": "Какая модель?", "memo": "—"}')
+    assert d["analysis"] == "" and d["source_ids"] == []
+
+
+def test_prompt_version_tag_voice_v2(monkeypatch):
+    import bot.ai_summary as ai
+    from bot.config import config
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+    assert ai.prompt_version_tag() == "voice-v2"
+
+
 def test_compose_selfcheck_warning_separates_failure_from_verdict():
     """«Проверка сказала unsupported» и «проверка не отработала» — разные
     сообщения оператору: во втором случае факты вообще никто не смотрел."""

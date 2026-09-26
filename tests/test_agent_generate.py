@@ -198,6 +198,33 @@ async def test_draft_prompt_drops_reasoning_directive_but_keeps_style_rules():
 
 
 @pytest.mark.asyncio
+async def test_v2_uses_voice_prompt_small_budget_and_retries_once(monkeypatch):
+    from bot.agent.generate import generate_agent_draft
+    from bot.config import config
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+    calls, sleeps = [], []
+
+    async def fake_call(history, *, system, model, max_tokens, temperature, reasoning_effort):
+        calls.append({"system": system, "max_tokens": max_tokens})
+        if len(calls) == 1:
+            return None                                    # 429 у провайдера
+        return ('{"analysis": "a", "action": "ANSWER", "suit": "s", '
+                '"client": "Перезагрузите роутер.", "memo": "—", "source_ids": []}')
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+
+    ctx = {"history": "Клиент: не печатает", "evidence": [], "demos": [],
+           "stress": False, "first_staff_reply": False}
+    draft = await generate_agent_draft(ctx, "Т", _call_fn=fake_call, _sleep_fn=fake_sleep)
+    assert draft["client"] == "Перезагрузите роутер."
+    assert len(calls) == 2 and sleeps == [20]
+    assert calls[0]["max_tokens"] == 600
+    assert "ГОЛОС ОТВЕТА КЛИЕНТУ" in calls[0]["system"]
+    assert "≤20 слов" not in calls[0]["system"]
+
+
+@pytest.mark.asyncio
 async def test_draft_survives_model_emitting_reasoning_block():
     """Даже если модель всё равно напишет рассуждение, JSON из него достаётся."""
     async def fake_call(prompt, *, system=None, model=None, max_tokens=None,

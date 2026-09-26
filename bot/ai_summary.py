@@ -423,6 +423,8 @@ async def get_active_format_instructions() -> str:
 def prompt_version_tag() -> str:
     """Метка версии промпта для трассировки ai_suggestions.
     Согласована между run_agent и register_feedback_pending (общий idempotency_key)."""
+    if config.agent_voice_v2_enabled:
+        return "voice-v2"
     if _active_prompt_loaded and _active_format_instructions is not None:
         return "db-active"
     return "legacy"

@@ -13,6 +13,8 @@ from .actions import (
 
 logger = logging.getLogger(__name__)
 
+_V2_RETRY_S = 20
+
 
 def build_ticket_context_block(context: dict) -> str:
     """Блок «что известно об этом тикете»: поля, вложения, звонок.
@@ -48,6 +50,7 @@ async def generate_agent_draft(
     _call_fn=None,
     _prompt_fn=None,
     _format_fn=None,
+    _sleep_fn=None,
 ) -> dict | None:
     if _call_fn is None:
         from ..ai_summary import call_groq_text as _call_fn
@@ -56,6 +59,29 @@ async def generate_agent_draft(
     if _format_fn is None:
         from ..ai_summary import get_active_format_instructions as _format_fn
     from ..config import config
+
+    if config.agent_voice_v2_enabled:
+        from .voice import build_prompt
+        if _sleep_fn is None:
+            import asyncio
+            _sleep_fn = asyncio.sleep
+        system = build_prompt(context, ticket_title)
+        raw = None
+        for attempt in range(2):
+            raw = await _call_fn(
+                context["history"], system=system, model=config.agent_draft_model,
+                max_tokens=600, temperature=0.3,
+                reasoning_effort=config.groq_reasoning_effort,
+            )
+            if (raw or "").strip() or attempt == 1:
+                break
+            # ponytail: фиксированная пауза вместо x-ratelimit-reset-tokens —
+            # call_groq_text не отдаёт заголовки; хватает, пока TPM-окно 60 с.
+            await _sleep_fn(_V2_RETRY_S)
+        draft = parse_agent_draft(raw or "")
+        if draft is None:
+            logger.warning("draft v2 parse failed; raw head: %s", (raw or "")[:200])
+        return draft
 
     rag_examples = [
         e["used_excerpt"] for e in context.get("evidence", [])
