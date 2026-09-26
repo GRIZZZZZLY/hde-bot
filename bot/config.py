@@ -55,6 +55,9 @@ class Config:
     ai_suggestion_auto_enabled: bool
     personal_digests_enabled: bool
     nightly_reconcile_enabled: bool
+    agent_voice_v2_enabled: bool
+    agent_reply_drafts_enabled: bool
+    reconcile_kb_distill_enabled: bool
     general_topic_id: int | None
     unassigned_department: str
     work_days: tuple[int, ...]
@@ -144,6 +147,20 @@ class Config:
             ),
             nightly_reconcile_enabled=_parse_bool(
                 os.getenv("NIGHTLY_RECONCILE_ENABLED"), default=False
+            ),
+            # Агент черновиков v2 (spec 2026-09-27): короткий промпт по регламенту,
+            # проверки кодом вместо self-check, одно сообщение-черновик.
+            agent_voice_v2_enabled=_parse_bool(
+                os.getenv("AGENT_VOICE_V2_ENABLED"), default=False
+            ),
+            # Черновик на каждый новый ответ клиента (дописывается в его сообщение).
+            agent_reply_drafts_enabled=_parse_bool(
+                os.getenv("AGENT_REPLY_DRAFTS_ENABLED"), default=False
+            ),
+            # Пополнение базы знаний после ночной сверки. Отдельно от самой сверки:
+            # замер включён, а база сама не пополняется (решение тихого режима).
+            reconcile_kb_distill_enabled=_parse_bool(
+                os.getenv("RECONCILE_KB_DISTILL_ENABLED"), default=False
             ),
             general_topic_id=_parse_optional_int(os.getenv("GENERAL_TOPIC_ID")),
             unassigned_department=os.getenv("UNASSIGNED_DEPARTMENT", "").strip(),
