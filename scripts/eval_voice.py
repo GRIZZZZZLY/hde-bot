@@ -47,12 +47,15 @@ def pattern_flags(text: str) -> dict[str, bool]:
 def summarize(rows: list[dict]) -> dict:
     out = {}
     for side in ("old", "new"):
-        texts = [(r.get(side) or {}).get("client", "") for r in rows]
-        n = max(len(texts), 1)
-        flags = [pattern_flags(t) for t in texts]
+        # сбой генерации — не «чистый черновик»: из долей его убираем, считаем отдельно
+        scored = [r.get(side) or {} for r in rows if not (r.get(side) or {}).get("failed")]
+        n = max(len(scored), 1)
+        flags = [pattern_flags(s.get("client", "")) for s in scored]
         out[side] = {k: round(sum(f[k] for f in flags) / n, 3) for k in flags[0]} if flags else {}
-        hard = [len(((r.get(side) or {}).get("lint") or {}).get("hard", [])) for r in rows]
+        hard = [len((s.get("lint") or {}).get("hard", [])) for s in scored]
         out[side]["hard_lint_share"] = round(sum(1 for h in hard if h) / n, 3)
+        out[side]["failed"] = len(rows) - len(scored)
+        out[side]["n"] = len(scored)
     return out
 
 
@@ -125,19 +128,35 @@ async def _one(case: dict, v2: bool) -> dict:
     posts = [HDEPost(**p) for p in case["posts"]]
     info = HDETicketInfo(**case["info"])
     ctx = await build_agent_context(posts, info, case["title"], ticket_id=case["ticket_id"])
-    draft = await generate_agent_draft(ctx, case["title"]) or {}
-    lint = check_draft(
-        draft.get("client", ""), draft.get("memo", ""), history=ctx["history"],
-        sources_text="\n".join(e.get("used_excerpt", "") for e in ctx["evidence"]),
+    draft = await generate_agent_draft(ctx, case["title"])
+    if draft is None:
+        return {"failed": True, "client": "", "memo": "", "analysis": "", "action": None,
+                "lint": {"fixed": [], "hard": [], "soft": []}}
+    client = draft.get("client", "")
+    lint = check_draft(                       # те же входы, что в pipeline.run_agent
+        client, draft.get("memo", ""), history=ctx["history"],
+        sources_text="\n".join(
+            e.get("used_excerpt", "") for e in ctx["evidence"] + ctx.get("demos", [])),
+        facts="\n".join([ctx.get("ticket_facts", ""), ctx.get("attachments", ""),
+                         ctx.get("call_notes", "")]),
         first_staff_reply=ctx.get("first_staff_reply", False),
-        grounds=ctx.get("grounds", []), source_ids=draft.get("source_ids", []),
+        grounds=ctx.get("grounds", []),
+        source_ids=draft.get("source_ids", []) if client else [],
     )
     return {"action": draft.get("action"), "client": draft.get("client", ""),
             "memo": draft.get("memo", ""), "analysis": draft.get("analysis", ""),
             "lint": lint.as_dict()}
 
 
+async def _noop(*_a, **_k) -> None:
+    return None
+
+
 async def run() -> None:
+    import bot.db as _db
+    # build_agent_context отмечает last_used_at у статей — прогон проверки не
+    # должен продлевать им жизнь в прод-БД (архивация автоправил смотрит на него)
+    _db.update_knowledge_last_used = _noop
     cases = json.loads(SET_PATH.read_text(encoding="utf-8"))["cases"]
     rows = []
     for i, case in enumerate(cases):

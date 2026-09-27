@@ -28,6 +28,73 @@ def test_summarize_rates():
     assert s["old"]["wait"] == 0.5 and s["new"]["check_back"] == 0.5
 
 
+def test_summarize_excludes_failed_generations():
+    """Final review F6: сбой генерации — не «чистый черновик» в статистике."""
+    fail = {"failed": True, "client": "", "lint": {"hard": []}}
+    rows = [{"old": {"client": "Скачайте AnyDesk"}, "new": fail},
+            {"old": fail, "new": {"client": "Смените порт."}},
+            {"old": {"client": "Перезагрузите роутер."}, "new": {"client": "Скачайте AnyDesk"}}]
+    s = ev.summarize(rows)
+    assert s["old"]["failed"] == 1 and s["old"]["n"] == 2
+    assert s["new"]["failed"] == 1 and s["new"]["n"] == 2
+    assert s["old"]["remote"] == 0.5 and s["new"]["remote"] == 0.5
+
+
+async def test_one_marks_failed_draft_and_mirrors_pipeline_lint(monkeypatch):
+    """Final review F6: None от модели → failed; lint видит demos и факты, как пайплайн."""
+    import bot.agent.context as ctx_mod
+    import bot.agent.generate as gen_mod
+    import bot.agent.lint as lint_mod
+    from bot.config import config
+
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", config.agent_voice_v2_enabled)
+    ctx = {"history": "Клиент: q", "evidence": [], "grounds": [], "first_staff_reply": False,
+           "demos": [{"used_excerpt": "Ответ оператора: https://posiflora.teamly.ru/abc"}],
+           "ticket_facts": "Окружение: Атол", "attachments": "", "call_notes": ""}
+    monkeypatch.setattr(ctx_mod, "build_agent_context", AsyncMock(return_value=ctx))
+    case = {"posts": [], "info": {"client_id": 1, "client_name": "c", "owner_id": 2,
+                                  "owner_name": "o"}, "title": "t", "ticket_id": "1"}
+
+    monkeypatch.setattr(gen_mod, "generate_agent_draft", AsyncMock(return_value=None))
+    failed = await ev._one(case, True)
+    assert failed["failed"] is True and failed["client"] == "" and failed["action"] is None
+
+    seen = {}
+    real = lint_mod.check_draft
+
+    def spy(client, memo, **kw):
+        seen.update(kw)
+        return real(client, memo, **kw)
+
+    monkeypatch.setattr(lint_mod, "check_draft", spy)
+    monkeypatch.setattr(gen_mod, "generate_agent_draft", AsyncMock(return_value={
+        "action": "ANSWER", "client": "См. https://posiflora.teamly.ru/abc", "memo": "m",
+        "analysis": "", "source_ids": []}))
+    row = await ev._one(case, True)
+    assert not row.get("failed") and row["lint"]["hard"] == []
+    assert "Атол" in seen["facts"]
+
+    monkeypatch.setattr(gen_mod, "generate_agent_draft", AsyncMock(return_value={
+        "action": "ESCALATE", "client": "", "memo": "m", "source_ids": ["KB#99"]}))
+    await ev._one(case, True)
+    assert seen["source_ids"] == []
+
+
+async def test_run_does_not_touch_knowledge_last_used(monkeypatch, tmp_path):
+    """Final review F6: прогон офлайн-проверки не пишет last_used_at в прод-БД."""
+    import bot.db as db_mod
+
+    set_path = tmp_path / "set.json"
+    set_path.write_text(json.dumps({"cases": []}), encoding="utf-8")
+    monkeypatch.setattr(ev, "SET_PATH", set_path)
+    monkeypatch.setattr(ev, "RUN_PATH", tmp_path / "run.json")
+    real = AsyncMock()
+    monkeypatch.setattr(db_mod, "update_knowledge_last_used", real)
+    await ev.run()
+    await db_mod.update_knowledge_last_used([1, 2])
+    real.assert_not_awaited()
+
+
 def test_ab_pairs_are_blind_and_reproducible():
     rows = [{"case_id": i, "old": {"client": f"o{i}"}, "new": {"client": f"n{i}"}} for i in range(6)]
     pairs, key = ev.make_ab_pairs(rows, seed=1)
