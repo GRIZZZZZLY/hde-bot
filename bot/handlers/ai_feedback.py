@@ -147,6 +147,9 @@ async def register_feedback_pending(
     expires_at = (
         datetime.now(timezone.utc) + timedelta(hours=_TTL_HOURS)
     ).isoformat()
+    # новый черновик отменяет незаконченный ✏️ к прошлому: иначе следующее
+    # сообщение оператора ушло бы в базу как исправление уже другого черновика
+    _awaiting_correction.discard(topic_id)
     await save_ai_feedback_pending(
         topic_id, ticket_id, history, title, expires_at, answer_text, ai_full_text
     )

@@ -549,6 +549,32 @@ async def test_v2_no_action_drops_model_memo(monkeypatch):
     assert client == "" and memo == ""
 
 
+async def test_v2_no_action_gets_no_stale_warning_either(monkeypatch):
+    """Residual R24: пока шёл черновик на «здравствуйте», клиент дописал вопрос —
+    NO_ACTION всё равно ничего не дописывает, даже строку о новом сообщении."""
+    from bot.config import config
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+
+    async def draft(ctx, title, **k):
+        return {"action": "NO_ACTION", "suit": "приветствие", "client": "",
+                "memo": "", "confidence": 95, "confidence_reason": "",
+                "analysis": "", "source_ids": []}
+
+    async def rec(**kw):
+        return 1
+
+    async def newer_posts(ticket_id):
+        return _POSTS + [SimpleNamespace(user_id=1, text="касса не печатает чек", post_id=9)]
+
+    _, client, memo, _ = await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T24", trigger_source="reply",
+        _context_fn=_ctx, _draft_fn=draft, _selfcheck_fn=None,
+        _safety_pre=_PROCEED, _safety_post=_PROCEED,
+        _record_fn=rec, _posts_fn=newer_posts,
+    )
+    assert client == "" and memo == ""
+
+
 async def test_v2_citing_a_link_from_a_past_answer_is_not_flagged(monkeypatch):
     """Final review F3: ссылка из прошлого ответа оператора (demos) — не выдумка."""
     from bot.config import config

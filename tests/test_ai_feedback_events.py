@@ -124,6 +124,22 @@ async def test_v2_correction_is_captured_only_after_edit_button(monkeypatch):
         assert await fb._HasPendingCorrection()(message) is True   # флаг выключен — как раньше
 
 
+async def test_new_pending_draft_cancels_an_unanswered_edit_request(monkeypatch):
+    """Residual R26: ✏️ нажали и ничего не написали, пришёл новый черновик —
+    следующее сообщение оператора не должно уйти в базу как исправление."""
+    from unittest.mock import patch
+
+    import bot.handlers.ai_feedback as fb
+
+    monkeypatch.setattr(fb, "_awaiting_correction", {79})
+    with (
+        patch("bot.handlers.ai_feedback.save_ai_feedback_pending", new=AsyncMock()),
+        patch("bot.handlers.ai_feedback.record_suggestion", new=AsyncMock(return_value=1)),
+    ):
+        await fb.register_feedback_pending(79, "T79", "h", "t", answer_text="новый черновик")
+    assert 79 not in fb._awaiting_correction
+
+
 async def test_register_feedback_pending_records_suggestion():
     await db_module.init_db()
     await register_feedback_pending(

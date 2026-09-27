@@ -768,6 +768,10 @@ async def _handle_staff_reply_locked(bot: Bot, payload: dict, ticket_id: str) ->
         }
         if should_clear else {}
     )
+    if should_clear and config.agent_voice_v2_enabled:
+        # обнуляем и id: черновик, который ещё генерируется, иначе сочтёт своё
+        # сообщение последним и вернёт 📤 на уже отвеченный вопрос
+        pre_sla_clear["suggest_button_msg_id"] = None
     await db.update_topic(
         ticket_id,
         unique_id=_display_id(payload),

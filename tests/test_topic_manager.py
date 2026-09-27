@@ -974,6 +974,10 @@ async def test_staff_reply_strips_stale_draft_button_on_v2(initialized_db, monke
         assert strip.await_args.args[1] == 555
     else:
         strip.assert_not_awaited()
+    # Residual R25: id тоже обнуляется — иначе черновик, который ещё генерируется,
+    # сочтёт своё сообщение последним и вернёт 📤 на уже отвеченный вопрос.
+    record = await db_module.get_topic("TKT-1")
+    assert record.suggest_button_msg_id == (None if v2 else 555)
 
 
 @pytest.mark.asyncio

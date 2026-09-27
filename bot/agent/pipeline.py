@@ -180,6 +180,10 @@ async def run_agent(
             break
         posts = fresh_posts  # superseded → одна перегенерация на свежих постах
 
+    # v2 NO_ACTION ничего не дописывает (spec §6) — и строку о новом сообщении тоже:
+    # у нового сообщения клиента будет свой черновик.
+    if config.agent_voice_v2_enabled and action == "NO_ACTION":
+        stale_warning = False
     memo = compose_memo(base_memo, stale_warning=stale_warning)
     # трассировка сохраняет провенанс обоих контейнеров; self-check видел только evidence
     trace_refs = context["evidence"] + context.get("demos", [])
