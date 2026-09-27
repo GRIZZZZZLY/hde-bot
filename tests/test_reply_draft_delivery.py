@@ -35,6 +35,11 @@ async def _run(monkeypatch, *, latest_msg_id, reply_html="👤 <b>Клиент</
     bot.edit_message_text = AsyncMock()
     bot.edit_message_reply_markup = AsyncMock()
     bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=4242))
+    # Attach to the parent so bot.mock_calls records cross-mock call ORDER —
+    # needed to prove the old 📤 is stripped before the new message is sent,
+    # not just that both happened.
+    bot.attach_mock(bot.edit_message_reply_markup, "edit_message_reply_markup")
+    bot.attach_mock(bot.send_message, "send_message")
     with (
         patch("bot.hde_api.HDEApiClient", return_value=_hde_client()),
         patch("bot.topic_manager._generate_summary_with_retry", new=AsyncMock(return_value=result)),
@@ -71,6 +76,9 @@ async def test_overflow_goes_to_separate_silent_message(monkeypatch):
     Fix round 1, finding 1: the 📤 button moves to this new message, so the
     old one (on the client-reply message, still the latest here) is stripped
     and the topic's suggest_button_msg_id now points at the new message.
+
+    Fix round 2 (R11): the strip must happen BEFORE the send, or both
+    messages briefly carry a live 📤 that can send the same draft twice.
     """
     ok, bot, reg, db = await _run(monkeypatch, latest_msg_id=77, reply_html="x" * 4090)
     bot.edit_message_text.assert_not_awaited()
@@ -79,6 +87,10 @@ async def test_overflow_goes_to_separate_silent_message(monkeypatch):
     assert any(
         c.kwargs.get("suggest_button_msg_id") == 4242
         for c in db.update_topic.await_args_list
+    )
+    names = [c[0] for c in bot.mock_calls]
+    assert names.index("edit_message_reply_markup") < names.index("send_message"), (
+        "old 📤 must be stripped before the new draft message is sent"
     )
 
 

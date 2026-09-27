@@ -189,6 +189,11 @@ async def append_draft_to_reply(
         block = format_draft_block(client_line, memo_line)
         try:
             if len(reply_html) + len(block) > _TG_LIMIT:
+                if markup is not None:
+                    # Кнопка была на сообщении клиента (is_latest) — снимаем её
+                    # ДО отправки новой, иначе оба сообщения на миг несут живой
+                    # 📤 и оба шлют клиенту один и тот же черновик.
+                    await _tm._strip_prev_suggest_button(bot, message_id)
                 sent = await bot.send_message(
                     chat_id=_tm.config.group_chat_id, message_thread_id=topic_id,
                     text=block.lstrip("\n─"), parse_mode="HTML",
@@ -196,9 +201,6 @@ async def append_draft_to_reply(
                     reply_markup=markup,
                 )
                 if markup is not None:
-                    # Кнопка была на сообщении клиента (is_latest) — теперь она
-                    # переехала в это новое сообщение, старую снимаем.
-                    await _tm._strip_prev_suggest_button(bot, message_id)
                     await _tm.db.update_topic(ticket_id, suggest_button_msg_id=sent.message_id)
             else:
                 await bot.edit_message_text(
