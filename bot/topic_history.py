@@ -49,8 +49,13 @@ async def post_suggestion_messages(
             from .formatter import format_draft_block
             from .handlers.ai_feedback import draft_kb
             if not client_line and (memo_line or "").strip() in ("", "—"):
+                await _tm.db.update_topic(ticket_id, ai_summary_sent_at=to_storage(_tm.utcnow()))
                 return True                                   # NO_ACTION — молчим
-            await bot.send_message(
+            record = await _tm.db.get_topic(ticket_id)
+            await _tm._strip_prev_suggest_button(
+                bot, record.suggest_button_msg_id if record else None
+            )
+            sent = await bot.send_message(
                 chat_id=_tm.config.group_chat_id,
                 message_thread_id=topic_id,
                 text=format_draft_block(
@@ -63,6 +68,8 @@ async def post_suggestion_messages(
                 disable_notification=True,
                 reply_markup=draft_kb() if client_line else None,
             )
+            if client_line:
+                await _tm.db.update_topic(ticket_id, suggest_button_msg_id=sent.message_id)
         else:
             if not answer_only:
                 suit_label = (
@@ -163,49 +170,58 @@ async def append_draft_to_reply(
         logger.warning("reply draft: HDE fetch failed for ticket %s: %s", ticket_id, exc)
         return False
 
-    all_posts = sorted(posts + comments, key=lambda p: p.date_created)
-    anchor = str(max((p.post_id for p in all_posts), default="")) or None
-    result = await _tm._generate_summary_with_retry(
-        all_posts, info, ticket_title=ticket_title, ticket_id=ticket_id,
-        company_id="", topic_id=topic_id, trigger_source="reply",
-    )
-    if result is None:
-        return False
-    suit_line, client_line, memo_line, _conf = result
-    if not client_line and (memo_line or "").strip() in ("", "—"):
-        return False                                           # NO_ACTION
-
-    latest = await _tm.db.get_topic(ticket_id)
-    is_latest = latest is not None and latest.suggest_button_msg_id == message_id
-    markup = draft_kb() if (is_latest and client_line) else None
-    block = format_draft_block(client_line, memo_line)
     try:
-        if len(reply_html) + len(block) > _TG_LIMIT:
-            await bot.send_message(
-                chat_id=_tm.config.group_chat_id, message_thread_id=topic_id,
-                text=block.lstrip("\n─"), parse_mode="HTML",
-                disable_web_page_preview=True, disable_notification=True,
-                reply_markup=markup,
-            )
-        else:
-            await bot.edit_message_text(
-                chat_id=_tm.config.group_chat_id, message_id=message_id,
-                text=reply_html + block, parse_mode="HTML",
-                disable_web_page_preview=True, reply_markup=markup,
-            )
-    except TelegramAPIError as exc:
-        logger.warning("reply draft: delivery failed for topic %d: %s", topic_id, exc)
-        return False
-
-    if markup is not None:
-        await register_feedback_pending(
-            topic_id=topic_id, ticket_id=ticket_id,
-            history=_build_history_text(all_posts, info), title=ticket_title,
-            answer_text=client_line,
-            ai_full_text=f"Суть: {suit_line}\nКлиенту: {client_line}\nПамятка: {memo_line or '—'}",
-            trigger_source="reply", context_until_post_id=anchor,
+        all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+        anchor = str(max((p.post_id for p in all_posts), default="")) or None
+        result = await _tm._generate_summary_with_retry(
+            all_posts, info, ticket_title=ticket_title, ticket_id=ticket_id,
+            company_id="", topic_id=topic_id, trigger_source="reply",
         )
-    return True
+        if result is None:
+            return False
+        suit_line, client_line, memo_line, _conf = result
+        if not client_line and (memo_line or "").strip() in ("", "—"):
+            return False                                           # NO_ACTION
+
+        latest = await _tm.db.get_topic(ticket_id)
+        is_latest = latest is not None and latest.suggest_button_msg_id == message_id
+        markup = draft_kb() if (is_latest and client_line) else None
+        block = format_draft_block(client_line, memo_line)
+        try:
+            if len(reply_html) + len(block) > _TG_LIMIT:
+                sent = await bot.send_message(
+                    chat_id=_tm.config.group_chat_id, message_thread_id=topic_id,
+                    text=block.lstrip("\n─"), parse_mode="HTML",
+                    disable_web_page_preview=True, disable_notification=True,
+                    reply_markup=markup,
+                )
+                if markup is not None:
+                    # Кнопка была на сообщении клиента (is_latest) — теперь она
+                    # переехала в это новое сообщение, старую снимаем.
+                    await _tm._strip_prev_suggest_button(bot, message_id)
+                    await _tm.db.update_topic(ticket_id, suggest_button_msg_id=sent.message_id)
+            else:
+                await bot.edit_message_text(
+                    chat_id=_tm.config.group_chat_id, message_id=message_id,
+                    text=reply_html + block, parse_mode="HTML",
+                    disable_web_page_preview=True, reply_markup=markup,
+                )
+        except TelegramAPIError as exc:
+            logger.warning("reply draft: delivery failed for topic %d: %s", topic_id, exc)
+            return False
+
+        if markup is not None:
+            await register_feedback_pending(
+                topic_id=topic_id, ticket_id=ticket_id,
+                history=_build_history_text(all_posts, info), title=ticket_title,
+                answer_text=client_line,
+                ai_full_text=f"Суть: {suit_line}\nКлиенту: {client_line}\nПамятка: {memo_line or '—'}",
+                trigger_source="reply", context_until_post_id=anchor,
+            )
+        return True
+    except Exception:
+        logger.exception("reply draft failed for ticket %s", ticket_id)
+        return False
 
 
 async def retry_missing_ai_summaries(bot: Bot) -> int:

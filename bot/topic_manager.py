@@ -549,6 +549,11 @@ async def handle_ticket_updated(bot: Bot, payload: dict) -> None:
     )
 
 
+# Strong refs so background reply-draft tasks aren't garbage-collected mid-run
+# (same pattern as _background_tasks in bot/hde_webhook.py).
+_reply_draft_tasks: set[asyncio.Task] = set()
+
+
 async def handle_client_reply(bot: Bot, payload: dict) -> None:
     ticket_id = _payload_value(payload, "ticket_id")
     async with _ticket_lock(ticket_id):
@@ -603,11 +608,13 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
         and config.agent_reply_drafts_enabled
     ):
         from .topic_history import append_draft_to_reply
-        asyncio.create_task(append_draft_to_reply(
+        task = asyncio.create_task(append_draft_to_reply(
             bot, ticket_id=record.ticket_id, topic_id=record.topic_id,
             message_id=sent.message_id, reply_html=reply_text,
             ticket_title=record.ticket_name or "",
         ))
+        _reply_draft_tasks.add(task)
+        task.add_done_callback(_reply_draft_tasks.discard)
 
     try:
         await _send_client_attachments(bot, record.topic_id, payload)
