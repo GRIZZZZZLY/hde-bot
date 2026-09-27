@@ -525,3 +525,87 @@ async def test_v2_empty_client_skips_unknown_source_check(monkeypatch):
     )
     assert client == ""
     assert "⚠️" not in memo
+
+
+async def test_v2_no_action_drops_model_memo(monkeypatch):
+    """Final review F1 (spec §6): NO_ACTION ничего не дописывает — ни клиенту, ни в Памятку."""
+    from bot.config import config
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+
+    async def draft(ctx, title, **k):
+        return {"action": "NO_ACTION", "suit": "спасибо", "client": "",
+                "memo": "ответ не нужен", "confidence": 95, "confidence_reason": "",
+                "analysis": "", "source_ids": []}
+
+    async def rec(**kw):
+        return 1
+
+    _, client, memo, _ = await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T22",
+        _context_fn=_ctx, _draft_fn=draft, _selfcheck_fn=None,
+        _safety_pre=_PROCEED, _safety_post=_PROCEED,
+        _record_fn=rec, _posts_fn=_fresh_posts_same,
+    )
+    assert client == "" and memo == ""
+
+
+async def test_v2_citing_a_link_from_a_past_answer_is_not_flagged(monkeypatch):
+    """Final review F3: ссылка из прошлого ответа оператора (demos) — не выдумка."""
+    from bot.config import config
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+
+    async def ctx(*a, **k):
+        d = _ctx_dict()
+        d["demos"] = [{"source_type": "dialogue_pair", "source_id": 5, "rank": 1,
+                       "score": 0.9, "title": "тикет T9",
+                       "used_excerpt": "Вопрос: q\nОтвет оператора: инструкция "
+                                       "https://posiflora.teamly.ru/abc"}]
+        return d
+
+    async def draft(c, title, **k):
+        return {"action": "ANSWER", "suit": "s",
+                "client": "Инструкция здесь: https://posiflora.teamly.ru/abc",
+                "memo": "m", "confidence": 70, "confidence_reason": "",
+                "analysis": "", "source_ids": []}
+
+    async def rec(**kw):
+        return 1
+
+    _, client, memo, _ = await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T23",
+        _context_fn=ctx, _draft_fn=draft, _selfcheck_fn=None,
+        _safety_pre=_PROCEED, _safety_post=_PROCEED,
+        _record_fn=rec, _posts_fn=_fresh_posts_same,
+    )
+    assert "posiflora.teamly.ru/abc" in client
+    assert "⚠️" not in memo
+
+
+async def test_reply_trigger_does_not_regenerate_on_newer_post(monkeypatch):
+    """Final review F8: у нового сообщения клиента своя задача черновика —
+    reply-черновик не перегенерируется, но предупреждение о свежести остаётся."""
+    from bot.config import config
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+
+    async def moving_posts(ticket_id):
+        return _POSTS + [SimpleNamespace(user_id=1, text="уже перезагрузил", post_id=6)]
+
+    calls = {"draft": 0}
+
+    async def draft(ctx, title, **k):
+        calls["draft"] += 1
+        return {"action": "ANSWER", "suit": "s", "client": "Перезагрузите кассу.",
+                "memo": "m", "confidence": 80, "confidence_reason": "",
+                "analysis": "", "source_ids": []}
+
+    async def rec(**kw):
+        return 1
+
+    _, _, memo, _ = await run_agent(
+        _POSTS, _INFO, ticket_title="t", ticket_id="T24", trigger_source="reply",
+        _context_fn=_ctx, _draft_fn=draft, _selfcheck_fn=None,
+        _safety_pre=_PROCEED, _safety_post=_PROCEED,
+        _record_fn=rec, _posts_fn=moving_posts,
+    )
+    assert calls["draft"] == 1
+    assert "новое сообщение" in memo

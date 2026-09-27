@@ -112,7 +112,13 @@ async def run_agent(
                          f"небезопасен. " + base_memo)
         elif config.agent_voice_v2_enabled:
             from .lint import check_draft
-            sources_text = "\n".join(e.get("used_excerpt", "") for e in context["evidence"])
+            if action == "NO_ACTION":
+                base_memo = ""          # spec §6: NO_ACTION ничего не дописывает
+            # прошлые ответы операторов тоже источник: ссылка оттуда — не выдумка
+            sources_text = "\n".join(
+                e.get("used_excerpt", "")
+                for e in context["evidence"] + context.get("demos", [])
+            )
             lint = check_draft(
                 client, base_memo,
                 history=context["history"],
@@ -168,7 +174,8 @@ async def run_agent(
             logger.warning("run_agent: freshness fetch failed: %s", exc)
             fresh_posts = posts
         fresh_anchor = _anchor_post_id(fresh_posts)
-        if fresh_anchor == anchor or attempt == 1:
+        # reply: у нового сообщения клиента своя задача черновика — не перегенерируем
+        if fresh_anchor == anchor or attempt == 1 or trigger_source == "reply":
             stale_warning = fresh_anchor != anchor
             break
         posts = fresh_posts  # superseded → одна перегенерация на свежих постах

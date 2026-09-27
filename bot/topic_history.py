@@ -47,7 +47,7 @@ async def post_suggestion_messages(
     try:
         if _tm.config.agent_voice_v2_enabled:
             from .formatter import format_draft_block
-            from .handlers.ai_feedback import draft_kb
+            from .handlers.ai_feedback import draft_kb, suggest_button_kb
             if not client_line and (memo_line or "").strip() in ("", "—"):
                 await _tm.db.update_topic(ticket_id, ai_summary_sent_at=to_storage(_tm.utcnow()))
                 return True                                   # NO_ACTION — молчим
@@ -66,10 +66,10 @@ async def post_suggestion_messages(
                 parse_mode="HTML",
                 disable_web_page_preview=True,
                 disable_notification=True,
-                reply_markup=draft_kb() if client_line else None,
+                # ESCALATE (только Памятка): 🔄 остаётся, spec §6
+                reply_markup=draft_kb() if client_line else suggest_button_kb(),
             )
-            if client_line:
-                await _tm.db.update_topic(ticket_id, suggest_button_msg_id=sent.message_id)
+            await _tm.db.update_topic(ticket_id, suggest_button_msg_id=sent.message_id)
         else:
             if not answer_only:
                 suit_label = (
@@ -155,7 +155,7 @@ async def append_draft_to_reply(
     from . import topic_manager as _tm
     from .ai_summary import _build_history_text
     from .formatter import format_draft_block
-    from .handlers.ai_feedback import draft_kb, register_feedback_pending
+    from .handlers.ai_feedback import draft_kb, register_feedback_pending, suggest_button_kb
     from .hde_api import HDEApiClient, HDEApiError
 
     try:
@@ -185,7 +185,8 @@ async def append_draft_to_reply(
 
         latest = await _tm.db.get_topic(ticket_id)
         is_latest = latest is not None and latest.suggest_button_msg_id == message_id
-        markup = draft_kb() if (is_latest and client_line) else None
+        # ESCALATE (пустой ответ, есть Памятка): 🔄 остаётся, pending не нужен
+        markup = (draft_kb() if client_line else suggest_button_kb()) if is_latest else None
         block = format_draft_block(client_line, memo_line)
         try:
             if len(reply_html) + len(block) > _TG_LIMIT:
@@ -212,7 +213,7 @@ async def append_draft_to_reply(
             logger.warning("reply draft: delivery failed for topic %d: %s", topic_id, exc)
             return False
 
-        if markup is not None:
+        if markup is not None and client_line:
             await register_feedback_pending(
                 topic_id=topic_id, ticket_id=ticket_id,
                 history=_build_history_text(all_posts, info), title=ticket_title,

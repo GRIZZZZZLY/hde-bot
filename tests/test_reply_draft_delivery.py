@@ -101,6 +101,40 @@ async def test_no_action_appends_nothing(monkeypatch):
     reg.assert_not_awaited()
 
 
+async def test_escalate_keeps_suggest_button_and_registers_no_pending(monkeypatch):
+    """Final review F1 (spec §6): ESCALATE дописывает только Памятку, 🔄 остаётся."""
+    ok, bot, reg, _db = await _run(
+        monkeypatch, latest_msg_id=77, result=("s", "", "Эскалация: возврат денег", 0))
+    assert ok
+    kwargs = bot.edit_message_text.await_args.kwargs
+    assert "Эскалация: возврат денег" in kwargs["text"]
+    buttons = [b for row in kwargs["reply_markup"].inline_keyboard for b in row]
+    assert [b.callback_data for b in buttons] == ["ai:suggest"]
+    reg.assert_not_awaited()
+
+
+async def test_v2_escalate_message_carries_suggest_button(monkeypatch):
+    """Final review F1: ESCALATE без текста клиенту — сообщение с 🔄, не без кнопок."""
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+    bot = MagicMock()
+    bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=999))
+    bot.edit_message_reply_markup = AsyncMock()
+    with (
+        patch("bot.handlers.ai_feedback.register_feedback_pending", new=AsyncMock()),
+        patch("bot.topic_manager.db") as db,
+    ):
+        db.update_topic = AsyncMock()
+        db.get_topic = AsyncMock(return_value=None)
+        ok = await topic_history.post_suggestion_messages(
+            bot, topic_id=1, ticket_id="T", suit_line="Возврат",
+            client_line="", memo_line="Эскалация: возврат денег", confidence_pct=0,
+            all_posts=[], info=SimpleNamespace(client_id=1), ticket_title="t", anchor="5",
+        )
+    assert ok
+    markup = bot.send_message.await_args.kwargs["reply_markup"]
+    assert [b.callback_data for row in markup.inline_keyboard for b in row] == ["ai:suggest"]
+
+
 async def test_hde_lookup_error_after_fetch_returns_false_without_raising(monkeypatch):
     """Fix round 1, finding 2: a background task must never crash silently —
     any error past the initial HDE fetch (here: db.get_topic) is caught."""
