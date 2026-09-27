@@ -71,34 +71,44 @@ def make_ab_pairs(rows: list[dict], seed: int = 42) -> tuple[list[dict], dict]:
 
 
 async def build(n: int, db_path: str) -> None:
-    from bot.hde_api import HDEApiClient
+    from bot.hde_api import HDEApiClient, HDEApiError
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     rows = con.execute(
         "SELECT id, ticket_id, title, context_until_post_id, judge_reference_answer "
         "FROM ai_suggestions WHERE judge_reference_answer IS NOT NULL "
-        "AND judge_reference_answer != '' ORDER BY id DESC"
+        "AND judge_reference_answer != '' AND context_until_post_id IS NOT NULL "
+        "AND context_until_post_id != '' ORDER BY id DESC"
     ).fetchall()
     seen, cases = set(), []
     client = HDEApiClient()
     for sid, ticket_id, title, anchor, reference in rows:
-        if ticket_id in seen or len(cases) >= n:
+        if ticket_id in seen:
             continue
+        if len(cases) >= n:
+            break
         seen.add(ticket_id)
-        info = await client.get_ticket_info(str(ticket_id))
-        posts = await client.get_ticket_posts(str(ticket_id))
-        comments = await client.get_ticket_comments(str(ticket_id))
+        try:
+            info = await client.get_ticket_info(str(ticket_id))
+            posts = await client.get_ticket_posts(str(ticket_id))
+            try:
+                comments = await client.get_ticket_comments(str(ticket_id))
+            except HDEApiError:
+                comments = []
+            cut = int(anchor or 0)
+            kept = sorted((p for p in posts + comments if int(p.post_id) <= cut),
+                         key=lambda p: p.date_created)
+            cases.append({
+                "case_id": sid, "ticket_id": str(ticket_id), "title": title or "",
+                "reference": reference,
+                "info": {"client_id": info.client_id, "client_name": info.client_name,
+                         "owner_id": info.owner_id, "owner_name": info.owner_name},
+                "posts": [{"post_id": p.post_id, "user_id": p.user_id, "text": p.text,
+                           "date_created": p.date_created, "is_comment": p.is_comment}
+                          for p in kept],
+            })
+        except Exception as exc:
+            print(f"skip ticket {ticket_id}: {exc}")
         await asyncio.sleep(1.2)                  # HDE: 300 req/min на весь аккаунт
-        cut = int(anchor or 0)
-        kept = [p for p in posts + comments if int(p.post_id) <= cut]
-        cases.append({
-            "case_id": sid, "ticket_id": str(ticket_id), "title": title or "",
-            "reference": reference,
-            "info": {"client_id": info.client_id, "client_name": info.client_name,
-                     "owner_id": info.owner_id, "owner_name": info.owner_name},
-            "posts": [{"post_id": p.post_id, "user_id": p.user_id, "text": p.text,
-                       "date_created": p.date_created, "is_comment": p.is_comment}
-                      for p in kept],
-        })
     SET_PATH.parent.mkdir(parents=True, exist_ok=True)
     SET_PATH.write_text(json.dumps({"cases": cases}, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"saved {len(cases)} cases → {SET_PATH}")
