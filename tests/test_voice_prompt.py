@@ -22,10 +22,34 @@ def _worst_context() -> dict:
 
 
 def test_worst_case_fits_budget_with_full_history():
+    # 12 000 символов ≈ 5,7k токенов + 600 на ответ — под 8000 TPM Groq с запасом
     system = voice.build_prompt(_worst_context(), "Т" * 200)
     history_budget = 3000
-    assert len(system) + history_budget <= 11_500, len(system)
+    assert len(system) + history_budget <= 12_000, len(system)
     assert len(system) <= voice.SYSTEM_BUDGET_CHARS
+
+
+def test_open_problem_is_not_a_reason_to_stay_silent():
+    """Итоги проверки v2, п.10.4.1: на «Хорошо» / «Жду» / телефон при открытой
+    проблеме модель молчала в половине тикетов."""
+    system = voice.build_prompt({}, "T")
+    assert "NO_ACTION — только если проблема решена" in system
+    assert "«Хорошо», «Жду»" in system
+
+
+def test_typical_first_steps_come_before_remote_access():
+    """п.10.4.2: быстрые шаги операторов, которых нет в источниках."""
+    system = voice.build_prompt({}, "T")
+    assert "ТИПОВЫЕ ПЕРВЫЕ ШАГИ" in system
+    assert "другой USB-разъём" in system
+    assert system.index("ТИПОВЫЕ ПЕРВЫЕ ШАГИ") < system.index("ЭТАЛОННЫЕ ПРИМЕРЫ")
+
+
+def test_voice_bans_two_actions_and_generic_empathy():
+    """п.10.4.3: «вопрос + если нет, сделайте…» и «ситуация неприятная»."""
+    text = voice.load_voice()
+    assert "«если нет — сделайте…»" in text
+    assert "«ситуация неприятная»" in text
 
 
 def test_voice_comes_before_ticket_data_and_format_is_last():
