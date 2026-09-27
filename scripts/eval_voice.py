@@ -31,7 +31,9 @@ KEY_PATH = ROOT / "artifacts" / "voice_ab_key.json"
 _REMOTE = re.compile(r"anydesk|rudesktop|анидеск|рудесктоп|удал[её]нн", re.I)
 _WAIT = re.compile(r"инженер|специалист|свяжет|ожидайте|ждите|звонк|передад", re.I)
 _CHECK = re.compile(r"получилось|сработало|заработал|проверьте,? (?:пожалуйста,? )?сейчас", re.I)
-_PACE_S = 20      # 8000 TPM на qwen3.8: один запрос ~6k токенов
+# 8000 TPM на qwen3.8 — окно в минуту, а один запрос ~6k токенов (старый путь до ~8k):
+# два запроса в одну минуту уже за лимитом. 65 с оставляет запас живому боту.
+_PACE_S = 65
 
 
 def pattern_flags(text: str) -> dict[str, bool]:
