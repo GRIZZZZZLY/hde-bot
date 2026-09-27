@@ -111,3 +111,10 @@ def test_hours_from_sources_are_not_flagged():
     r = _lint("Мы работаем с 9 часов до 18 часов.", sources_text="График: с 9 часов до 18 часов")
     assert not any("срок" in h for h in r.hard)
     assert any("срок" in h for h in _lint("Мы работаем с 9 часов до 18 часов.").hard)
+
+
+def test_closer_after_comma_leaves_no_dangling_comma():
+    """Final review F8: концовка после запятой оставляла «роутер,»."""
+    r = _lint("Перезагрузите роутер, обращайтесь если у вас возникнут вопросы.")
+    assert r.client == "Перезагрузите роутер"
+    assert "closer" in r.fixed

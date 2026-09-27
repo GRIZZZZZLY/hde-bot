@@ -71,6 +71,13 @@ def test_stress_markers():
     assert not cv2.detect_stress(["Подскажите, как добавить товар в номенклатуру?"])
 
 
+def test_stress_ignores_words_that_merely_contain_markers():
+    """Final review F8: «стоим» внутри «стоимость», «снова» внутри «основании»."""
+    assert not cv2.detect_stress(["Какая стоимость подписки?"])
+    assert not cv2.detect_stress(["Сделали чек на основании продажи"])
+    assert not cv2.detect_stress(["В первую очередь интересует печать чеков"])
+
+
 def test_first_staff_reply_ignores_bot_boilerplate():
     posts = [_p(1, 1, "не печатает"),
              _p(2, 99, "Ваше обращение принято в работу и передано специалисту")]
@@ -116,3 +123,26 @@ async def test_v2_context_has_signals_and_clean_history(monkeypatch):
     assert "передано специалисту" not in ctx["history"]
     assert "смените порт" in ctx["evidence"][0]["used_excerpt"]
     assert len(ctx["evidence"][0]["used_excerpt"]) <= 760
+
+
+async def test_v2_history_has_a_hard_size_cap(monkeypatch):
+    """Final review F2: одно огромное сообщение клиента не должно съесть 8000 TPM."""
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+    monkeypatch.setattr(config, "agent_dynamic_fewshot_enabled", False)
+    text = "НАЧАЛО " + "касса не печатает " * 500 + " КОНЕЦ"
+    assert len(text) > 9000
+    info = SimpleNamespace(client_id=1)
+
+    async def no_embed(text, task_type="query"):
+        return None
+
+    async def none_async(*a, **k):
+        return None
+
+    ctx = await build_agent_context(
+        [_p(1, 1, text)], info, "Не печатает", _embed_fn=no_embed,
+        _similar_fn=none_async, _equipment_fn=lambda t, h: None, _wiki_fn=none_async,
+        _pattern_fn=none_async, _topic_fn=none_async,
+    )
+    assert len(ctx["history"]) <= 3100
+    assert "НАЧАЛО" in ctx["history"] and "КОНЕЦ" in ctx["history"]

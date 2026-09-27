@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 _EXCERPT_LIMIT = 600
 _ATTACHMENT_LIMIT = 900
 _CALL_NOTES_LIMIT = 900
+_V2_HISTORY_CAP = 3000      # бюджет режет целыми сообщениями, одно огромное проходит целиком
 
 
 def _excerpt_with_url(item) -> str:
@@ -138,6 +139,8 @@ async def build_agent_context(
         from . import context_v2 as cv2
         messages = cv2.client_messages(posts, getattr(info, "client_id", ""))
         history = cv2.strip_history_macros(history)
+        if len(history) > _V2_HISTORY_CAP:
+            history = history[:1000] + "\n[...часть переписки пропущена...]\n" + history[-2000:]
         retrieval_query = cv2.build_retrieval_query(ticket_title, messages)
     else:
         retrieval_query = f"{ticket_title}\n{client_text}"[:600]

@@ -121,7 +121,7 @@ def check_draft(
             res.fixed.append("greeting")
     closed = re.sub(r"\s+", " ", CLOSER_RE.sub("", res.client)).strip()
     if closed != res.client:
-        res.client = closed
+        res.client = re.sub(r"[\s,;:]+$", "", closed)   # «роутер, обращайтесь…» → без висящей запятой
         res.fixed.append("closer")
 
     text = res.client
