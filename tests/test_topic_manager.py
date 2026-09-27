@@ -946,3 +946,116 @@ async def test_retry_missing_ai_summaries_reuses_one_hde_client(monkeypatch):
 
     assert sent == 2
     assert len(instances) == 1
+
+
+async def _active_topic_with_button(msg_id: int = 555):
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Broken printer", priority="high", status="open",
+        owner_id="me", owner_name="Me", hde_link="https://hde.example.com/tickets/1",
+    )
+    await db_module.update_topic("TKT-1", topic_state="active", suggest_button_msg_id=msg_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("v2", [True, False])
+async def test_staff_reply_strips_stale_draft_button_on_v2(initialized_db, monkeypatch, v2):
+    """Final review F8: оператор уже ответил в HDE — у черновика снимаем кнопки."""
+    monkeypatch.setattr(topic_manager.config, "presla_hde_verify", False)
+    monkeypatch.setattr(topic_manager.config, "agent_voice_v2_enabled", v2)
+    await _active_topic_with_button(555)
+    strip = AsyncMock()
+    monkeypatch.setattr(topic_manager, "_strip_prev_suggest_button", strip)
+
+    await handle_staff_reply(make_bot(), make_payload(user_name="Support"))
+
+    if v2:
+        strip.assert_awaited_once()
+        assert strip.await_args.args[1] == 555
+    else:
+        strip.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("v2,drafts,send_fails,expected", [
+    (True, True, False, True),
+    (True, False, False, False),
+    (False, True, False, False),
+    (True, True, True, False),
+])
+async def test_client_reply_starts_reply_draft_only_when_enabled_and_sent(
+    initialized_db, monkeypatch, v2, drafts, send_fails, expected,
+):
+    """Final review F8 (Task 6 gap): черновик на ответ клиента — только при обоих
+    флагах и только если сообщение клиента реально ушло в топик."""
+    from aiogram.exceptions import TelegramAPIError
+
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager.config, "agent_voice_v2_enabled", v2)
+    monkeypatch.setattr(topic_manager.config, "agent_reply_drafts_enabled", drafts)
+    await _active_topic_with_button(None)
+    bot = make_bot()
+    if send_fails:
+        bot.send_message.side_effect = TelegramAPIError(MagicMock(), "flood control")
+    draft = AsyncMock(return_value=True)
+
+    with patch("bot.topic_history.append_draft_to_reply", draft):
+        await handle_client_reply(bot, make_payload())
+        await asyncio.sleep(0)
+
+    assert draft.called is expected
+    if expected:
+        assert draft.call_args.kwargs["message_id"] == 1001
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("v2", [True, False])
+async def test_first_message_without_draft_gets_suggest_button_on_v2(monkeypatch, v2):
+    """Final review F8 (Task 6 gap): черновика по первому сообщению нет — на v2
+    в топике остаётся кнопка 🔄/💡, чтобы получить его вручную."""
+    from bot.hde_api import HDEPost, HDETicketInfo
+
+    monkeypatch.setattr(topic_manager.config, "agent_voice_v2_enabled", v2)
+    monkeypatch.setattr(topic_manager.config, "ticket_history_post_enabled", False)
+    monkeypatch.setattr(topic_manager.config, "has_hde_api_credentials", lambda: True)
+    bot = make_bot()
+    with (
+        patch("bot.hde_api.HDEApiClient") as MockClient,
+        patch("bot.topic_manager._post_client_history", new_callable=AsyncMock),
+        patch("bot.topic_manager._generate_summary_with_retry", new=AsyncMock(return_value=None)),
+        patch("bot.ticket_fields.apply_ticket_fields", new_callable=AsyncMock),
+    ):
+        instance = MockClient.return_value
+        instance.get_ticket_info = AsyncMock(return_value=HDETicketInfo(1, "A", 2, "B"))
+        instance.get_ticket_posts = AsyncMock(return_value=[
+            HDEPost(post_id=1, user_id=1, text="касса не печатает",
+                    date_created="10:00:00 01.01.2026")])
+        instance.get_ticket_comments = AsyncMock(return_value=[])
+        await topic_manager._post_ticket_history(bot, "TKT-1", 999, ticket_title="T")
+
+    texts = [c.kwargs.get("text", "") for c in bot.send_message.await_args_list]
+    button_msgs = [c for c in bot.send_message.await_args_list
+                   if "Черновик по первому сообщению" in c.kwargs.get("text", "")]
+    if v2:
+        assert len(button_msgs) == 1, texts
+        kb = button_msgs[0].kwargs["reply_markup"]
+        assert [b.callback_data for row in kb.inline_keyboard for b in row] == ["ai:suggest"]
+    else:
+        assert button_msgs == []
+
+
+@pytest.mark.asyncio
+async def test_staff_reply_older_than_client_keeps_fresh_draft_button(initialized_db, monkeypatch):
+    """Final review F8: запоздалый staff_reply (старше последнего сообщения
+    клиента) — не ответ на него; свежий черновик остаётся с кнопками."""
+    monkeypatch.setattr(topic_manager.config, "presla_hde_verify", False)
+    monkeypatch.setattr(topic_manager.config, "agent_voice_v2_enabled", True)
+    await _active_topic_with_button(555)
+    await db_module.update_topic("TKT-1", last_client_reply_at=to_storage(utcnow()))
+    strip = AsyncMock()
+    monkeypatch.setattr(topic_manager, "_strip_prev_suggest_button", strip)
+
+    # make_payload last_post_date 2026-04-03 — раньше сообщения клиента
+    await handle_staff_reply(make_bot(), make_payload(user_name="Support"))
+
+    strip.assert_not_awaited()

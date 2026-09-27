@@ -89,3 +89,25 @@ async def test_agent_enabled_but_auto_first_disabled_uses_legacy(monkeypatch):
         )
     assert result == ("с", "к", "п", 50)
     agent.assert_not_awaited()
+
+
+async def test_v2_first_message_goes_through_agent_without_auto_first_flag(monkeypatch):
+    """Final review F5: на v2 первое сообщение идёт через агента v2, а не legacy."""
+    import bot.topic_manager as tm
+    monkeypatch.setattr(config_module.config, "agent_enabled", True)
+    monkeypatch.setattr(config_module.config, "agent_auto_first_suggestion_enabled", False)
+    monkeypatch.setattr(config_module.config, "agent_voice_v2_enabled", True)
+    monkeypatch.setattr(config_module.config, "ai_suggestion_auto_enabled", True)
+    with patch("bot.topic_manager.run_agent", new=AsyncMock(
+        return_value=("с", "к", "п", 80),
+    )) as agent, patch(
+        "bot.topic_manager.generate_ticket_summary", new=AsyncMock(),
+    ) as legacy:
+        result = await tm._generate_summary_with_retry(
+            [SimpleNamespace(user_id=1, text="q", post_id=1)],
+            SimpleNamespace(client_id=1), ticket_title="t", ticket_id="T6",
+            trigger_source="first",
+        )
+    assert result == ("с", "к", "п", 80)
+    agent.assert_awaited_once()
+    legacy.assert_not_awaited()

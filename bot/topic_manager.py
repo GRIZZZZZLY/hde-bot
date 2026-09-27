@@ -226,7 +226,9 @@ async def _generate_summary_with_retry(
     if trigger_source == "first" and not config.ai_suggestion_auto_enabled:
         return None
     agent_allowed = config.agent_enabled and (
-        config.agent_auto_first_suggestion_enabled or trigger_source != "first"
+        config.agent_auto_first_suggestion_enabled
+        or trigger_source != "first"
+        or config.agent_voice_v2_enabled   # v2: первое сообщение — тоже через агента
     )
     if agent_allowed:
         try:
@@ -754,6 +756,9 @@ async def _handle_staff_reply_locked(bot: Bot, payload: dict, ticket_id: str) ->
     )
     if should_clear:
         await _try_delete_pre_sla_message(bot, record)
+        if config.agent_voice_v2_enabled:
+            # оператор уже ответил в HDE — черновик устарел, его 📤 не нужен
+            await _strip_prev_suggest_button(bot, record.suggest_button_msg_id)
     pre_sla_clear = (
         {
             "pre_sla_notify_at": None,
