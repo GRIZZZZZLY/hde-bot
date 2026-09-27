@@ -389,6 +389,7 @@ async def cb_ai_edit(callback: CallbackQuery) -> None:
         logger.debug("ai_feedback: reply markup cleanup failed: %s", exc)
     if pending is None:
         return
+    _awaiting_correction.add(topic_id)
     await callback.message.answer(
         "✏️ <b>Введи правильный ответ клиенту</b> — я сохраню его как пример.\n"
         "<i>Следующее сообщение в этом топике будет сохранено.</i>",
@@ -398,11 +399,22 @@ async def cb_ai_edit(callback: CallbackQuery) -> None:
 
 # ── Correction capture ───────────────────────────────────────────────────────
 
+# На v2 pending есть у каждого черновика, поэтому ждём исправление только там,
+# где нажали ✏️ — иначе любое сообщение оператора ушло бы в базу как пример.
+# ponytail: в памяти процесса — после рестарта ✏️ надо нажать заново.
+_awaiting_correction: set[int] = set()
+
+
 class _HasPendingCorrection(BaseFilter):
     async def __call__(self, message: Message) -> bool:
+        from ..config import config
+
         if message.message_thread_id is None:
             return False
         if message.from_user is None or message.from_user.is_bot:
+            return False
+        if (config.agent_voice_v2_enabled
+                and message.message_thread_id not in _awaiting_correction):
             return False
         pending = await get_ai_feedback_pending(message.message_thread_id)
         return pending is not None
@@ -467,6 +479,14 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
         await callback.answer("⚠️ Текст ответа не найден", show_alert=True)
         return
 
+    # pending один на топик: если после этого сообщения пришёл другой черновик,
+    # клиенту ушёл бы текст, которого оператор под кнопкой не видел
+    shown = callback.message.text or callback.message.caption or ""
+    if " ".join(answer_text.split()) not in " ".join(shown.split()):
+        await callback.answer("⚠️ Черновик устарел — нажми 🔄 для нового варианта", show_alert=True)
+        await _record_event(topic_id, "send_refused_stale")
+        return
+
     await _record_event(topic_id, "send_requested")
     try:
         client = HDEApiClient()
@@ -514,6 +534,7 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
 @router.message(_HasPendingCorrection(), F.text.is_not(None), _NOT_COMMAND)
 async def capture_correction(message: Message) -> None:
     topic_id = message.message_thread_id
+    _awaiting_correction.discard(topic_id)
     pending = await get_ai_feedback_pending(topic_id)
     if pending is None:
         return
