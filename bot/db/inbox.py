@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json
 
 import aiosqlite
 
@@ -31,6 +32,14 @@ def _iso(ts: _dt.datetime) -> str:
     return ts.strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def event_ticket_id(payload: str) -> str:
+    """ticket_id события; '' для битого payload (его обработка сама упадёт в failed)."""
+    try:
+        return str(json.loads(payload).get("ticket_id") or "")
+    except (ValueError, AttributeError):
+        return ""
+
+
 async def enqueue_event(event_id: str, payload: str, *, now: _dt.datetime | None = None) -> bool:
     """Durable-сохранение события. True — новое, False — дубль доставки (I7-дедуп)."""
     now = now or _utcnow()
@@ -49,26 +58,29 @@ async def claim_next_event(
     lease_seconds: int = _LEASE_SECONDS,
     max_attempts: int = _MAX_ATTEMPTS,
     now: _dt.datetime | None = None,
+    busy_tickets: frozenset[str] = frozenset(),
 ) -> dict | None:
     """Атомарно взять следующее обрабатываемое событие: pending со сроком ИЛИ
     processing с истёкшим lease (краш-реклейм). Исчерпавшие attempts → 'dead' и
-    пропускаются. Возвращает строку с уже инкрементированным attempts или None."""
+    пропускаются. Возвращает строку с уже инкрементированным attempts или None.
+
+    События тикетов из busy_tickets (уже в работе у воркера) пропускаются: так
+    события одного тикета идут строго по очереди, а долгий хендлер (дольше lease)
+    не переклеймится, пока ещё работает."""
     now = now or _utcnow()
     now_s = _iso(now)
     lease_s = _iso(now + _dt.timedelta(seconds=lease_seconds))
     async with connect() as db:
         db.row_factory = aiosqlite.Row
-        while True:
-            async with db.execute(
-                "SELECT * FROM webhook_inbox WHERE "
-                "(status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) "
-                "OR (status='processing' AND (lease_until IS NULL OR lease_until <= ?)) "
-                "ORDER BY id LIMIT 1",
-                (now_s, now_s),
-            ) as cur:
-                row = await cur.fetchone()
-            if row is None:
-                return None
+        async with db.execute(
+            "SELECT * FROM webhook_inbox WHERE "
+            "(status='pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)) "
+            "OR (status='processing' AND (lease_until IS NULL OR lease_until <= ?)) "
+            "ORDER BY id",
+            (now_s, now_s),
+        ) as cur:
+            rows = await cur.fetchall()
+        for row in rows:
             if int(row["attempts"]) >= max_attempts:
                 await db.execute(
                     "UPDATE webhook_inbox SET status='dead', lease_until=NULL WHERE event_id=?",
@@ -76,6 +88,8 @@ async def claim_next_event(
                 )
                 await db.commit()
                 continue  # проверить следующего кандидата
+            if busy_tickets and event_ticket_id(row["payload"]) in busy_tickets:
+                continue
             attempts = int(row["attempts"]) + 1
             await db.execute(
                 "UPDATE webhook_inbox SET status='processing', attempts=?, lease_until=? "
@@ -87,6 +101,7 @@ async def claim_next_event(
             result["attempts"] = attempts
             result["status"] = "processing"
             return result
+        return None
 
 
 async def mark_completed(event_id: str) -> None:

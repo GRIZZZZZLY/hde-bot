@@ -93,3 +93,21 @@ async def test_dead_after_max_attempts_and_never_claimed_again():
     # attempts исчерпаны → следующий claim переводит в dead и ничего не выдаёт
     assert await claim_next_event(max_attempts=5, now=_later(1000)) is None
     assert (await get_inbox_event("E1"))["status"] == "dead"
+
+
+async def test_claim_skips_tickets_already_in_flight():
+    """Тикет в работе: его события (и его собственная строка с истёкшим lease)
+    не выдаются, пока хендлер не закончил; другие тикеты — выдаются."""
+    await db_module.init_db()
+    await enqueue_event("E1", '{"ticket_id": "T1"}', now=_T0)
+    await enqueue_event("E2", '{"ticket_id": "T1"}', now=_T0)
+    await enqueue_event("E3", '{"ticket_id": "T2"}', now=_T0)
+    await enqueue_event("E4", "not json", now=_T0)
+    first = await claim_next_event(lease_seconds=120, now=_T0)
+    assert first["event_id"] == "E1"
+    # lease E1 истёк, но T1 ещё обрабатывается → ни E1, ни E2
+    row = await claim_next_event(now=_later(200), busy_tickets=frozenset({"T1"}))
+    assert row["event_id"] == "E3"
+    row = await claim_next_event(now=_later(200), busy_tickets=frozenset({"T1", "T2"}))
+    assert row["event_id"] == "E4"                    # битый payload не блокирует очередь
+    assert await claim_next_event(now=_later(200), busy_tickets=frozenset({"T1", "T2", ""})) is None

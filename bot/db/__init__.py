@@ -33,6 +33,7 @@ from .inbox import (
     claim_next_event,
     count_inbox_by_status,
     enqueue_event,
+    event_ticket_id,
     get_inbox_event,
     mark_completed,
     mark_failed,

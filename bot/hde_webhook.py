@@ -146,6 +146,14 @@ _background_tasks: set[asyncio.Task] = set()
 # kick из вебхука и периодический воркер, чтобы не диспатчить событие дважды.
 _drain_lock = asyncio.Lock()
 
+# Сколько тикетов дрен ведёт одновременно. События одного тикета — строго по
+# очереди, разные тикеты — параллельно: иначе история и черновик по одному
+# тикету держат создание топиков остальных (прод 2026-08-30: 7 тикетов, взятых
+# разом, последний топик через 313 с). Нагрузку на Groq и HDE ограничивают
+# LLM_SEMAPHORE и лимитер HDE API, не этот предел; он лишь не даёт очереди,
+# накопленной за простой, стартовать целиком.
+_MAX_PARALLEL_TICKETS = 8
+
 
 async def dispatch_event(bot: Bot, payload: dict) -> None:
     """Обработать одно событие: основной хендлер (fatal → исключение, воркер
@@ -174,23 +182,47 @@ async def drain_inbox(bot: Bot, *, max_events: int = 100, _dispatch_fn=None) -> 
     → mark_failed (ретрай с backoff, после лимита — dead)."""
     dispatch = _dispatch_fn or dispatch_event
     stats = {"processed": 0, "failed": 0}
+
+    async def process(row) -> None:
+        try:
+            payload = json.loads(row["payload"])
+            await dispatch(bot, payload)
+        except Exception as exc:
+            logger.exception("Inbox dispatch failed for %s: %s", row["event_id"], exc)
+            metrics.inc("webhook_failed")
+            await db.mark_failed(row["event_id"], str(exc))
+            stats["failed"] += 1
+            return
+        await db.mark_completed(row["event_id"])
+        metrics.inc("webhook_processed")
+        stats["processed"] += 1
+        logger.info("Processed %s for ticket %s",
+                    payload.get("event_type"), payload.get("ticket_id"))
+
+    running: dict[asyncio.Task, str] = {}   # задача → её ticket_id
+    claimed = 0
     async with _drain_lock:
-        for _ in range(max_events):
-            row = await db.claim_next_event()
-            if row is None:
-                break
-            try:
-                payload = json.loads(row["payload"])
-                await dispatch(bot, payload)
-            except Exception as exc:
-                logger.exception("Inbox dispatch failed for %s: %s", row["event_id"], exc)
-                metrics.inc("webhook_failed")
-                await db.mark_failed(row["event_id"], str(exc))
-                stats["failed"] += 1
-                continue
-            await db.mark_completed(row["event_id"])
-            metrics.inc("webhook_processed")
-            stats["processed"] += 1
-            logger.info("Processed %s for ticket %s",
-                        payload.get("event_type"), payload.get("ticket_id"))
+        try:
+            while True:
+                row = None
+                if claimed < max_events and len(running) < _MAX_PARALLEL_TICKETS:
+                    row = await db.claim_next_event(busy_tickets=frozenset(running.values()))
+                if row is not None:
+                    claimed += 1
+                    running[asyncio.create_task(process(row))] = db.event_ticket_id(row["payload"])
+                    continue
+                if not running:
+                    break
+                # Ждём освобождения слота, но не дольше секунды: за это время мог
+                # прийти вебхук по другому тикету — его надо взять сразу.
+                done, _ = await asyncio.wait(
+                    running, timeout=1.0, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    running.pop(task)
+                    if not task.cancelled() and task.exception() is not None:
+                        logger.error("Inbox bookkeeping failed: %s", task.exception())
+        finally:
+            for task in running:   # дрен отменён (остановка бота) — хендлеры тоже
+                task.cancel()
     return stats
