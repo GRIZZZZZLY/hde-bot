@@ -137,7 +137,7 @@ async def regenerate_draft(bot, *, ticket_id: str, topic_id, reason: str):
     """
     from .. import topic_manager as _tm
     from ..handlers.ai_feedback import post_suggestion_messages
-    from ..hde_api import HDEApiClient, HDEApiError
+    from ..hde_api import HDEApiClient, HDEApiError, post_sort_key
 
     if topic_id is None or bot is None:
         return None
@@ -148,7 +148,7 @@ async def regenerate_draft(bot, *, ticket_id: str, topic_id, reason: str):
         comments = await client.get_ticket_comments(ticket_id)
     except HDEApiError:
         comments = []
-    all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+    all_posts = sorted(posts + comments, key=post_sort_key)
     anchor = str(max((p.post_id for p in all_posts), default="")) or None
 
     record = await _tm.db.get_topic(ticket_id)

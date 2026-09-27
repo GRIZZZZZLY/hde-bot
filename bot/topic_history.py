@@ -156,7 +156,7 @@ async def append_draft_to_reply(
     from .ai_summary import _build_history_text
     from .formatter import format_draft_block
     from .handlers.ai_feedback import draft_kb, register_feedback_pending, suggest_button_kb
-    from .hde_api import HDEApiClient, HDEApiError
+    from .hde_api import HDEApiClient, HDEApiError, post_sort_key
 
     try:
         client = HDEApiClient()
@@ -171,7 +171,7 @@ async def append_draft_to_reply(
         return False
 
     try:
-        all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+        all_posts = sorted(posts + comments, key=post_sort_key)
         anchor = str(max((p.post_id for p in all_posts), default="")) or None
         result = await _tm._generate_summary_with_retry(
             all_posts, info, ticket_title=ticket_title, ticket_id=ticket_id,
@@ -230,7 +230,7 @@ async def append_draft_to_reply(
 async def retry_missing_ai_summaries(bot: Bot) -> int:
     """Find topics that never got an AI summary and retry. Returns number of summaries sent."""
     from . import topic_manager as _tm
-    from .hde_api import HDEApiClient, HDEApiError
+    from .hde_api import HDEApiClient, HDEApiError, post_sort_key
 
     records = await _tm.db.list_topics_missing_summary()
     sent = 0
@@ -262,7 +262,7 @@ async def retry_missing_ai_summaries(bot: Bot) -> int:
             logger.error("retry_missing_ai_summaries: unexpected error for ticket %s: %s", ticket_id, exc)
             continue
 
-        all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+        all_posts = sorted(posts + comments, key=post_sort_key)
         anchor = str(max((p.post_id for p in all_posts), default="")) or None
         result = await _tm._generate_summary_with_retry(
             all_posts, info,
@@ -308,7 +308,7 @@ async def _post_ticket_history(
     from . import topic_manager as _tm
     if not _tm.config.has_hde_api_credentials():
         return
-    from .hde_api import HDEApiClient, HDEApiError
+    from .hde_api import HDEApiClient, HDEApiError, post_sort_key
     try:
         client = HDEApiClient()
         info = await client.get_ticket_info(ticket_id)
@@ -325,7 +325,7 @@ async def _post_ticket_history(
         return
 
     # Merge posts and comments, sort by date_created ascending
-    all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+    all_posts = sorted(posts + comments, key=post_sort_key)
     anchor = str(max((p.post_id for p in all_posts), default="")) or None
 
     await _tm._post_client_history(bot, topic_id, ticket_id, client=client, info=info)

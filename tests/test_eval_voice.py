@@ -129,19 +129,19 @@ async def test_build_survives_failing_ticket_and_sorts_by_date(monkeypatch, tmp_
         async def get_ticket_posts(self, tid):
             if tid == "100":
                 return [
-                    HDEPost(post_id="1", user_id="u1", text="t1", date_created="2026-01-01", is_comment=False),
-                    HDEPost(post_id="3", user_id="u3", text="t3", date_created="2026-01-03", is_comment=False),
+                    HDEPost(post_id="1", user_id="u1", text="t1", date_created="10:00:00 01.01.2026", is_comment=False),
+                    HDEPost(post_id="3", user_id="u3", text="t3", date_created="10:00:00 03.01.2026", is_comment=False),
                 ]
             elif tid == "102":
                 return [
-                    HDEPost(post_id="1", user_id="u1", text="t1", date_created="2026-01-01", is_comment=False),
-                    HDEPost(post_id="2", user_id="u2", text="t2", date_created="2026-01-02", is_comment=False),
+                    HDEPost(post_id="1", user_id="u1", text="t1", date_created="10:00:00 01.01.2026", is_comment=False),
+                    HDEPost(post_id="2", user_id="u2", text="t2", date_created="10:00:00 02.01.2026", is_comment=False),
                 ]
             return []
 
         async def get_ticket_comments(self, tid):
             if tid == "102":
-                return [HDEPost(post_id="2", user_id="uc", text="tc", date_created="2026-01-01T12:00:00", is_comment=True)]
+                return [HDEPost(post_id="2", user_id="uc", text="tc", date_created="12:00:00 01.01.2026", is_comment=True)]
             raise HDEApiError("fail")
 
     # Monkeypatch
@@ -172,7 +172,7 @@ async def test_build_survives_failing_ticket_and_sorts_by_date(monkeypatch, tmp_
     case2 = next((c for c in cases if c["ticket_id"] == "102"), None)
     assert case2 is not None
     assert len(case2["posts"]) == 3
-    # Should be sorted by date_created: t1 (2026-01-01), then comment+post2 (2026-01-01/02)
-    assert case2["posts"][0]["post_id"] == "1"
-    # Check that posts are sorted by date_created
-    assert (case2["posts"][0]["date_created"] <= case2["posts"][1]["date_created"] <= case2["posts"][2]["date_created"])
+    # HDE dates ("HH:MM:SS DD.MM.YYYY") sort by day, then time: post1 (01.01 10:00),
+    # comment (01.01 12:00), post2 (02.01 10:00) — final review F7
+    assert [(p["post_id"], p["is_comment"]) for p in case2["posts"]] == [
+        ("1", False), ("2", True), ("2", False)]

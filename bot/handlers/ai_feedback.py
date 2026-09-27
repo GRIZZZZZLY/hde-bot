@@ -231,7 +231,7 @@ async def cb_ai_suggest(callback: CallbackQuery) -> None:
 
 async def _generate_and_post_suggestion(bot, record) -> None:
     from .. import topic_manager as _tm
-    from ..hde_api import HDEApiClient, HDEApiError
+    from ..hde_api import HDEApiClient, HDEApiError, post_sort_key
     from ..topic_history import post_suggestion_messages
 
     ticket_id = record.ticket_id
@@ -261,7 +261,7 @@ async def _generate_and_post_suggestion(bot, record) -> None:
         await _notify_failure()
         return
 
-    all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+    all_posts = sorted(posts + comments, key=post_sort_key)
     anchor = str(max((p.post_id for p in all_posts), default="")) or None
 
     result = await _tm._generate_summary_with_retry(

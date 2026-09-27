@@ -17,7 +17,7 @@ import aiohttp
 from aiogram import Bot
 
 from .config import config
-from .hde_api import HDEApiClient, shared_session
+from .hde_api import HDEApiClient, post_sort_key, shared_session
 
 logger = logging.getLogger(__name__)
 
@@ -490,7 +490,7 @@ async def retry_env_classification(bot: Bot, ticket_id: str, topic_id: int) -> N
             comments = await client.get_ticket_comments(ticket_id)
         except Exception:
             comments = []
-        all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+        all_posts = sorted(posts + comments, key=post_sort_key)
         history = _build_history_text(all_posts, info)
 
         record = await _db.get_topic(ticket_id)

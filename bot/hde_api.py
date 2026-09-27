@@ -129,6 +129,17 @@ class HDEPost:
             self.files = []
 
 
+def post_sort_key(post) -> tuple:
+    """HDE date_created is "HH:MM:SS DD.MM.YYYY"; sort by date, then time, then id."""
+    raw = (getattr(post, "date_created", "") or "").strip()
+    try:
+        t, d = raw.split(" ", 1)
+        day, month, year = d.split(".")
+        return (int(year), int(month), int(day), t, int(getattr(post, "post_id", 0) or 0))
+    except (ValueError, AttributeError):
+        return (0, 0, 0, "", int(getattr(post, "post_id", 0) or 0))
+
+
 @dataclass
 class HDETicketInfo:
     client_id: int

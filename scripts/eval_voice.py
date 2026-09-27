@@ -74,7 +74,7 @@ def make_ab_pairs(rows: list[dict], seed: int = 42) -> tuple[list[dict], dict]:
 
 
 async def build(n: int, db_path: str) -> None:
-    from bot.hde_api import HDEApiClient, HDEApiError
+    from bot.hde_api import HDEApiClient, HDEApiError, post_sort_key
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     rows = con.execute(
         "SELECT id, ticket_id, title, context_until_post_id, judge_reference_answer "
@@ -99,7 +99,7 @@ async def build(n: int, db_path: str) -> None:
                 comments = []
             cut = int(anchor or 0)
             kept = sorted((p for p in posts + comments if int(p.post_id) <= cut),
-                         key=lambda p: p.date_created)
+                         key=post_sort_key)
             cases.append({
                 "case_id": sid, "ticket_id": str(ticket_id), "title": title or "",
                 "reference": reference,

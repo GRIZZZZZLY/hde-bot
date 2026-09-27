@@ -186,7 +186,7 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
     import hashlib
     from ..config import config
     from ..db import list_knowledge_content_hashes, save_knowledge_item, set_setting
-    from ..hde_api import HDEApiClient, HDEApiError
+    from ..hde_api import HDEApiClient, HDEApiError, post_sort_key
     from ..ai_summary import _build_history_text
     from ..knowledge.indexer import index_knowledge_item
     from datetime import datetime, timezone
@@ -281,7 +281,7 @@ async def cmd_aiimport(message: Message, command: CommandObject) -> None:
                         comments = await client.get_ticket_comments(ticket_id)
                     except Exception:
                         comments = []
-                    all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+                    all_posts = sorted(posts + comments, key=post_sort_key)
                 except Exception as exc:
                     logger.warning("Failed to fetch ticket %s: %s", ticket_id, exc)
                     errors += 1

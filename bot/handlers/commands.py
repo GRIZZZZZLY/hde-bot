@@ -16,7 +16,7 @@ from .. import metrics
 from ..ai_summary import _build_history_text
 from ..digest import send_morning_digest
 from ..formatter import format_refresh_result
-from ..hde_api import HDEApiClient, HDEApiError
+from ..hde_api import HDEApiClient, HDEApiError, post_sort_key
 from ..refresh import refresh_topics
 from ..ticket_fields import (
     FIELD_ROL,
@@ -144,7 +144,7 @@ async def cmd_autofill(message: Message) -> None:
             comments = await client.get_ticket_comments(ticket_id)
         except HDEApiError:
             comments = []
-        all_posts = sorted(posts + comments, key=lambda p: p.date_created)
+        all_posts = sorted(posts + comments, key=post_sort_key)
         history = _build_history_text(all_posts, info)
         result = await apply_ticket_fields(
             message.bot, ticket_id, context.topic_id, history,

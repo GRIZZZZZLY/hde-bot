@@ -613,3 +613,20 @@ async def test_rate_limiter_disabled_when_zero():
     await rl.acquire()
     assert slept == []            # rpm<=0 → троттл выключен, без задержек
     assert rl.min_interval == 0.0
+
+
+def test_post_sort_key_orders_by_date_then_time():
+    """Final review F7: "HH:MM:SS DD.MM.YYYY" строкой сортировался по времени суток."""
+    from bot.hde_api import HDEPost, post_sort_key
+
+    late_day1 = HDEPost(post_id=1, user_id=1, text="", date_created="18:00:00 13.09.2026")
+    early_day2 = HDEPost(post_id=2, user_id=1, text="", date_created="09:00:00 14.09.2026")
+    assert [p.post_id for p in sorted([early_day2, late_day1], key=post_sort_key)] == [1, 2]
+
+
+def test_post_sort_key_falls_back_to_post_id_on_bad_date():
+    from bot.hde_api import HDEPost, post_sort_key
+
+    posts = [HDEPost(post_id=7, user_id=1, text="", date_created="мусор"),
+             HDEPost(post_id=3, user_id=1, text="", date_created="")]
+    assert [p.post_id for p in sorted(posts, key=post_sort_key)] == [3, 7]
