@@ -38,7 +38,8 @@ from .operator_text import clean_operator_text, strip_html
 logger = logging.getLogger(__name__)
 
 _CATEGORIES = (
-    "same_action", "bot_escalated", "bot_wrong_fact", "context_gap", "not_comparable",
+    "same_action", "bot_better", "bot_escalated", "bot_wrong_fact", "context_gap",
+    "not_comparable",
 )
 
 # same_action = бот ≈ человек (accepted); расхождение → эталон = человек (corrected).
@@ -47,9 +48,12 @@ _CATEGORIES = (
 # означала бы «черновик плох», и эта ложь уехала бы в датасет офлайн-оценки.
 _CATEGORY_LABEL = {
     "same_action": "accepted",
+    "bot_better": "accepted",
     "bot_escalated": "corrected",
     "bot_wrong_fact": "corrected",
 }
+
+_REG_KEYS = ("ack", "one_step", "why", "risk", "check_back", "no_conveyor", "no_invented_promise")
 
 # Каналы контекста, которых боту не хватило. Значение вне списка — фантазия
 # модели, сводим к other: терять из-за него весь вердикт незачем.
@@ -153,6 +157,8 @@ def _build_judge_prompt(
         "Черновик ассистент писал РАНЬШЕ, чем оператор свой ответ, и видел меньше.\n"
         "same_action — по сути одно и то же действие или уточнение; формулировки "
         "и порядок слов могут отличаться.\n"
+        "bot_better — по сути черновик точнее или безопаснее ответа оператора (оператор "
+        "тоже ошибается; ответы написаны до нового регламента общения).\n"
         # context_gap стоит ДО bot_wrong_fact намеренно: найдя «неверный факт»,
         # модель вердикт уже не переоценивает, и «бот не мог знать» превращается
         # в «бот ошибся» — ровно тот шум, из-за которого владелец каждое утро
@@ -177,14 +183,27 @@ def _build_judge_prompt(
         # разница в объёме, а не ошибка факта, и она уводила пару в очередь
         # кандидатов в базу знаний, где такой строке делать нечего.
         "ВАЖНО: лишний или недостающий шаг сам по себе НЕ bot_wrong_fact. Если "
-        "основное действие совпадает — это same_action. Разный порядок слов, "
-        "объём и вежливость значения не имеют. Ставь bot_wrong_fact только когда "
+        "основное действие совпадает — это same_action. Разный порядок слов и объём "
+        "на категорию не влияют: форму оценивает отдельный чек-лист ниже. Ставь "
+        "bot_wrong_fact только когда "
         "можешь назвать конкретный неверный факт.\n"
         "Если ответ оператора — «да»/«нет»/короткое подтверждение без содержания, "
         "это not_comparable: сверять не с чем.\n"
-        'Верни СТРОГО JSON: {"category":"same_action|context_gap|bot_escalated|'
+        "Если черновик выдумал обещание (инженер свяжется, звонок, срок) или отправил "
+        "клиента ждать специалиста, а оператор дал шаг — это bot_escalated, даже если "
+        "контекста не хватало.\n"
+        "Отдельно оцени ФОРМУ черновика по регламенту (не сравнивая с оператором), "
+        "каждый пункт yes|no|na: ack — признал конкретное неудобство, если клиент "
+        "раздражён или спешит; one_step — один шаг или один вопрос; why — объяснил зачем, "
+        "если просит данные; risk — предупредил о риске до шага; check_back — попросил "
+        "проверить результат после инструкции; no_conveyor — нет дежурных фраз; "
+        "no_invented_promise — нет выдуманных обещаний.\n"
+        'Верни СТРОГО JSON: {"category":"same_action|bot_better|context_gap|bot_escalated|'
         'bot_wrong_fact|not_comparable","missing":"screenshot|comment|call|'
-        'client_msg|other","reason":"кратко по-русски"}. Поле missing '
+        'client_msg|other","reason":"кратко по-русски",'
+        '"regulation":{"ack":"yes|no|na","one_step":"yes|no|na","why":"yes|no|na",'
+        '"risk":"yes|no|na","check_back":"yes|no|na","no_conveyor":"yes|no|na",'
+        '"no_invented_promise":"yes|no|na"}}. Поле missing '
         "заполняй только для context_gap, иначе пустой строкой."
     )
     # Без вопроса клиента судья сравнивал два ответа в вакууме и не мог
@@ -257,6 +276,13 @@ async def judge_divergence(
     reason = str(obj.get("reason", ""))[:200]
     if category == "context_gap":
         reason = f"missing={_normalise_missing(obj.get('missing'))} {reason}".strip()
+    reg = obj.get("regulation")
+    if isinstance(reg, dict):
+        compact = ",".join(
+            f"{k}:{reg[k]}" for k in _REG_KEYS if str(reg.get(k, "")) in ("yes", "no", "na")
+        )
+        if compact:
+            reason = f"{reason} reg={compact}".strip()
     return category, reason
 
 
@@ -318,7 +344,7 @@ async def reconcile_recent(
         str(config.hde_owner_id), *config.agent_staff_user_ids
     }
 
-    stats = {"same_action": 0, "bot_escalated": 0, "bot_wrong_fact": 0,
+    stats = {"same_action": 0, "bot_better": 0, "bot_escalated": 0, "bot_wrong_fact": 0,
              "context_gap": 0, "not_comparable": 0, "skipped": 0, "errors": 0}
     for i, sug in enumerate(await _suggestions_fn(hours=hours)):
         try:

@@ -95,11 +95,14 @@ CallFn = Callable[..., Awaitable[str]]
 
 
 def _load_style_guide() -> str:
-    path = Path(__file__).resolve().parents[1] / "prompts" / "style_guide_ru.md"
-    try:
-        return path.read_text(encoding="utf-8")
-    except OSError:
-        return ""
+    """Голос по регламенту (spec 2026-09-27 §4.2); старый стайлгайд — запасной."""
+    prompts = Path(__file__).resolve().parents[1] / "prompts"
+    for name in ("voice_ru.md", "style_guide_ru.md"):
+        try:
+            return (prompts / name).read_text(encoding="utf-8")
+        except OSError:
+            continue
+    return ""
 
 
 # --- рубрика ---------------------------------------------------------------

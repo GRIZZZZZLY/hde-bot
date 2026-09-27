@@ -130,3 +130,20 @@ async def test_v2_never_falls_back_to_legacy_summary(monkeypatch):
         )
     assert result is None
     legacy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reconcile_measures_but_does_not_distill_by_default(monkeypatch):
+    monkeypatch.setattr(config, "nightly_reconcile_enabled", True)
+    monkeypatch.setattr(config, "agent_dialogue_mining_enabled", True)
+    monkeypatch.setattr(config, "reconcile_kb_distill_enabled", False)
+    monkeypatch.setattr(scheduler, "_last_reconcile_date", None)
+    monkeypatch.setattr(scheduler, "_now_msk", lambda: datetime(2026, 9, 28, 2, 5,
+                        tzinfo=zoneinfo.ZoneInfo("Europe/Moscow")))
+    with patch("bot.agent.reconcile.reconcile_recent", new=AsyncMock(return_value={})) as rec, \
+         patch("bot.agent.kb_distill.process_pending_candidates", new=AsyncMock()) as distill, \
+         patch.object(scheduler.db, "archive_unused_auto_rules", new=AsyncMock()) as archive:
+        await scheduler._maybe_reconcile_answers(MagicMock())
+    rec.assert_awaited_once()
+    distill.assert_not_awaited()
+    archive.assert_not_awaited()

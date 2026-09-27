@@ -321,7 +321,7 @@ async def test_reconcile_recent_maps_categories_to_labels():
         _staff={"op"}, _judge_fn=judge_fn, _sleep_fn=sleep_fn,
     )
     assert stats == {
-        "same_action": 1, "bot_escalated": 1, "bot_wrong_fact": 1,
+        "same_action": 1, "bot_better": 0, "bot_escalated": 1, "bot_wrong_fact": 1,
         "context_gap": 0, "not_comparable": 1, "skipped": 2, "errors": 0,
     }
     assert [(sid, label) for sid, label, _, _ in saved] == [
@@ -559,3 +559,25 @@ async def test_reconcile_recent_passes_client_text_to_judge():
     )
     assert seen["client_text"] == "терминал не отвечает"
     assert stats["same_action"] == 1
+
+
+def test_judge_prompt_has_regulation_checklist_and_no_politeness_waiver():
+    from bot.agent.reconcile import _build_judge_prompt
+    system, _ = _build_judge_prompt("черновик", "ответ", "вопрос")
+    assert "bot_better" in system
+    assert "вежливость значения не имеют" not in system
+    assert '"regulation"' in system
+    assert "выдумал обещание" in system
+
+
+async def test_bot_better_is_accepted_and_regulation_goes_to_reason():
+    from bot.agent.reconcile import judge_divergence
+
+    async def call(system, user, *, model):
+        import json
+        return json.dumps({"category": "bot_better", "missing": "", "reason": "шаг точнее",
+                           "regulation": {"ack": "na", "one_step": "yes", "check_back": "no"}})
+
+    verdict = await judge_divergence("ч", "о", client_text="q", _call_fn=call)
+    assert verdict[0] == "bot_better"
+    assert "reg=ack:na,one_step:yes,check_back:no" in verdict[1]

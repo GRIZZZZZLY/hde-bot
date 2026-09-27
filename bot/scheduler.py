@@ -427,8 +427,10 @@ async def _maybe_send_reconciliation_digest(bot: Bot) -> None:
 async def _maybe_reconcile_answers(bot) -> None:
     """Ночная сверка (02:00 MSK) предложений бота с фактическими ответами
     операторов. Раз в сутки; вердикты ложатся в judge-поля ai_suggestions,
-    утренняя сводка их показывает. Флаги — nightly_reconcile_enabled (тихий
-    режим) и agent_dialogue_mining_enabled."""
+    утренняя сводка их показывает. Замер идёт под nightly_reconcile_enabled
+    (тихий режим) и agent_dialogue_mining_enabled; пополнение базы знаний
+    (разбор очереди кандидатов + архивация авто-правил) — отдельным флагом
+    reconcile_kb_distill_enabled."""
     global _last_reconcile_date
     if not config.nightly_reconcile_enabled:
         return
@@ -445,6 +447,8 @@ async def _maybe_reconcile_answers(bot) -> None:
         logger.info("Nightly answer reconciliation: %s", stats)
     except Exception as exc:
         logger.warning("Nightly answer reconciliation failed: %s", exc)
+    if not config.reconcile_kb_distill_enabled:
+        return
     # Разбор очереди кандидатов идёт СРАЗУ после сверки, тем же проходом: к
     # утренней сводке очередь должна быть уже разобрана, иначе владелец опять
     # получит десяток решений по фактам, а не одну строку с итогами.

@@ -311,7 +311,7 @@ async def test_topic_lookup_failure_does_not_break_reconcile():
         _judge_fn=_judge, _sleep_fn=_sleep, _topic_fn=_topic,
         _staff={"op"}, pause_s=0.0,
     )
-    assert stats == {"same_action": 1, "bot_escalated": 0, "bot_wrong_fact": 0,
+    assert stats == {"same_action": 1, "bot_better": 0, "bot_escalated": 0, "bot_wrong_fact": 0,
                      "context_gap": 0, "not_comparable": 0, "skipped": 0, "errors": 0}
 
 
