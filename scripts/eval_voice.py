@@ -1,0 +1,173 @@
+"""Офлайн-проверка агента v2 против старого пути (spec 2026-09-27 §7).
+
+Запуск на сервере (там прод-БД, модель эмбеддингов и ключ Groq):
+  python scripts/eval_voice.py build --n 50     # набор из прод-БД + посты из HDE
+  python scripts/eval_voice.py run              # ~100 запросов к Groq, ночью
+  python scripts/eval_voice.py report           # счётчики + слепые пары для A/B
+
+Генерация идёт через настоящий код агента (build_agent_context +
+generate_agent_draft), а не через упрощённый вызов: иначе проверка мерит не тот
+пайплайн (урок разбора 2026-09-27, §3.9).
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import random
+import re
+import sqlite3
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+SET_PATH = ROOT / "data" / "golden" / "voice_v2_set.json"
+RUN_PATH = ROOT / "artifacts" / "voice_eval.json"
+PAIRS_PATH = ROOT / "artifacts" / "voice_ab_pairs.json"
+KEY_PATH = ROOT / "artifacts" / "voice_ab_key.json"
+
+_REMOTE = re.compile(r"anydesk|rudesktop|анидеск|рудесктоп|удал[её]нн", re.I)
+_WAIT = re.compile(r"инженер|специалист|свяжет|ожидайте|ждите|звонк|передад", re.I)
+_CHECK = re.compile(r"получилось|сработало|заработал|проверьте,? (?:пожалуйста,? )?сейчас", re.I)
+_PACE_S = 20      # 8000 TPM на qwen3.8: один запрос ~6k токенов
+
+
+def pattern_flags(text: str) -> dict[str, bool]:
+    text = text or ""
+    return {
+        "remote": bool(_REMOTE.search(text)),
+        "wait": bool(_WAIT.search(text)),
+        "check_back": bool(_CHECK.search(text)),
+        "multi_question": text.count("?") > 1,
+    }
+
+
+def summarize(rows: list[dict]) -> dict:
+    out = {}
+    for side in ("old", "new"):
+        texts = [(r.get(side) or {}).get("client", "") for r in rows]
+        n = max(len(texts), 1)
+        flags = [pattern_flags(t) for t in texts]
+        out[side] = {k: round(sum(f[k] for f in flags) / n, 3) for k in flags[0]} if flags else {}
+        hard = [len(((r.get(side) or {}).get("lint") or {}).get("hard", [])) for r in rows]
+        out[side]["hard_lint_share"] = round(sum(1 for h in hard if h) / n, 3)
+    return out
+
+
+def make_ab_pairs(rows: list[dict], seed: int = 42) -> tuple[list[dict], dict]:
+    rnd = random.Random(seed)
+    pairs, key = [], {}
+    for r in rows:
+        old, new = (r["old"] or {}).get("client", ""), (r["new"] or {}).get("client", "")
+        if rnd.random() < 0.5:
+            pairs.append({"case_id": r["case_id"], "A": old, "B": new})
+            key[str(r["case_id"])] = "A=old"
+        else:
+            pairs.append({"case_id": r["case_id"], "A": new, "B": old})
+            key[str(r["case_id"])] = "A=new"
+    return pairs, key
+
+
+async def build(n: int, db_path: str) -> None:
+    from bot.hde_api import HDEApiClient
+    con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    rows = con.execute(
+        "SELECT id, ticket_id, title, context_until_post_id, judge_reference_answer "
+        "FROM ai_suggestions WHERE judge_reference_answer IS NOT NULL "
+        "AND judge_reference_answer != '' ORDER BY id DESC"
+    ).fetchall()
+    seen, cases = set(), []
+    client = HDEApiClient()
+    for sid, ticket_id, title, anchor, reference in rows:
+        if ticket_id in seen or len(cases) >= n:
+            continue
+        seen.add(ticket_id)
+        info = await client.get_ticket_info(str(ticket_id))
+        posts = await client.get_ticket_posts(str(ticket_id))
+        comments = await client.get_ticket_comments(str(ticket_id))
+        await asyncio.sleep(1.2)                  # HDE: 300 req/min на весь аккаунт
+        cut = int(anchor or 0)
+        kept = [p for p in posts + comments if int(p.post_id) <= cut]
+        cases.append({
+            "case_id": sid, "ticket_id": str(ticket_id), "title": title or "",
+            "reference": reference,
+            "info": {"client_id": info.client_id, "client_name": info.client_name,
+                     "owner_id": info.owner_id, "owner_name": info.owner_name},
+            "posts": [{"post_id": p.post_id, "user_id": p.user_id, "text": p.text,
+                       "date_created": p.date_created, "is_comment": p.is_comment}
+                      for p in kept],
+        })
+    SET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SET_PATH.write_text(json.dumps({"cases": cases}, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"saved {len(cases)} cases → {SET_PATH}")
+
+
+async def _one(case: dict, v2: bool) -> dict:
+    from bot.agent.context import build_agent_context
+    from bot.agent.generate import generate_agent_draft
+    from bot.agent.lint import check_draft
+    from bot.config import config
+    from bot.hde_api import HDEPost, HDETicketInfo
+
+    config.agent_voice_v2_enabled = v2        # обычный изменяемый экземпляр, как в тестах
+    posts = [HDEPost(**p) for p in case["posts"]]
+    info = HDETicketInfo(**case["info"])
+    ctx = await build_agent_context(posts, info, case["title"], ticket_id=case["ticket_id"])
+    draft = await generate_agent_draft(ctx, case["title"]) or {}
+    lint = check_draft(
+        draft.get("client", ""), draft.get("memo", ""), history=ctx["history"],
+        sources_text="\n".join(e.get("used_excerpt", "") for e in ctx["evidence"]),
+        first_staff_reply=ctx.get("first_staff_reply", False),
+        grounds=ctx.get("grounds", []), source_ids=draft.get("source_ids", []),
+    )
+    return {"action": draft.get("action"), "client": draft.get("client", ""),
+            "memo": draft.get("memo", ""), "analysis": draft.get("analysis", ""),
+            "lint": lint.as_dict()}
+
+
+async def run() -> None:
+    cases = json.loads(SET_PATH.read_text(encoding="utf-8"))["cases"]
+    rows = []
+    for i, case in enumerate(cases):
+        row = {"case_id": case["case_id"], "ticket_id": case["ticket_id"],
+               "reference": case["reference"]}
+        for side, v2 in (("old", False), ("new", True)):
+            if i or side == "new":
+                await asyncio.sleep(_PACE_S)
+            row[side] = await _one(case, v2)
+        rows.append(row)
+        print(f"{i + 1}/{len(cases)}", flush=True)
+    RUN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RUN_PATH.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def report() -> None:
+    rows = json.loads(RUN_PATH.read_text(encoding="utf-8"))
+    print(json.dumps(summarize(rows), ensure_ascii=False, indent=1))
+    pairs, key = make_ab_pairs(rows)
+    PAIRS_PATH.write_text(json.dumps(pairs, ensure_ascii=False, indent=1), encoding="utf-8")
+    KEY_PATH.write_text(json.dumps(key, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"A/B pairs → {PAIRS_PATH} (key: {KEY_PATH})")
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    b = sub.add_parser("build")
+    b.add_argument("--n", type=int, default=50)
+    b.add_argument("--db", default=str(ROOT / "hde_bot.db"))
+    sub.add_parser("run")
+    sub.add_parser("report")
+    a = ap.parse_args()
+    if a.cmd == "build":
+        asyncio.run(build(a.n, a.db))
+    elif a.cmd == "run":
+        asyncio.run(run())
+    else:
+        report()
+
+
+if __name__ == "__main__":
+    main()
