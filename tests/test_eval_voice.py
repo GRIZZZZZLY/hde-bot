@@ -95,6 +95,42 @@ async def test_run_does_not_touch_knowledge_last_used(monkeypatch, tmp_path):
     real.assert_not_awaited()
 
 
+async def test_run_new_side_in_parts_keeps_old_results(monkeypatch, tmp_path):
+    """Дневной лимит Groq 200k токенов: повтор — только новой версии и частями;
+    ответы старой версии из прошлого прогона не трогаем."""
+    cases = [{"case_id": i, "ticket_id": str(i), "reference": f"r{i}"} for i in range(4)]
+    set_path = tmp_path / "set.json"
+    set_path.write_text(json.dumps({"cases": cases}), encoding="utf-8")
+    run_path = tmp_path / "run.json"
+    old_rows = [{"case_id": i, "ticket_id": str(i), "reference": f"r{i}",
+                 "old": {"client": f"old{i}"}, "new": {"failed": True, "client": ""}}
+                for i in range(3)]                       # case 3 ещё не прогоняли
+    run_path.write_text(json.dumps(old_rows), encoding="utf-8")
+    monkeypatch.setattr(ev, "SET_PATH", set_path)
+    monkeypatch.setattr(ev, "RUN_PATH", run_path)
+    import bot.db as db_mod
+    # run() глушит update_knowledge_last_used на весь процесс скрипта —
+    # в тестах возвращаем настоящую функцию, иначе заглушка утечёт в соседние тесты
+    monkeypatch.setattr(db_mod, "update_knowledge_last_used", db_mod.update_knowledge_last_used)
+    calls = []
+
+    async def fake_one(case, v2):
+        calls.append((case["case_id"], v2))
+        return {"client": f"new{case['case_id']}", "lint": {"hard": []}}
+
+    monkeypatch.setattr(ev, "_one", fake_one)
+    monkeypatch.setattr(ev.asyncio, "sleep", AsyncMock())
+
+    await ev.run(side="new", start=1, count=3)
+
+    assert calls == [(1, True), (2, True), (3, True)]      # только новая версия, кейсы 1..3
+    rows = {r["case_id"]: r for r in json.loads(run_path.read_text(encoding="utf-8"))}
+    assert rows[0]["new"] == {"failed": True, "client": ""}  # вне части — не тронут
+    assert rows[1]["old"] == {"client": "old1"} and rows[1]["new"]["client"] == "new1"
+    assert rows[3]["old"]["failed"] is True and rows[3]["new"]["client"] == "new3"
+    assert [r["case_id"] for r in json.loads(run_path.read_text(encoding="utf-8"))] == [0, 1, 2, 3]
+
+
 def test_ab_pairs_are_blind_and_reproducible():
     rows = [{"case_id": i, "old": {"client": f"o{i}"}, "new": {"client": f"n{i}"}} for i in range(6)]
     pairs, key = ev.make_ab_pairs(rows, seed=1)

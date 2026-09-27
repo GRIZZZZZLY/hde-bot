@@ -2,7 +2,7 @@
 
 Запуск на сервере (там прод-БД, модель эмбеддингов и ключ Groq):
   python scripts/eval_voice.py build --n 50     # набор из прод-БД + посты из HDE
-  python scripts/eval_voice.py run              # ~100 запросов к Groq, ночью
+  python scripts/eval_voice.py run [--side new] [--start N --count M]  # частями: TPD 200k/сутки
   python scripts/eval_voice.py report           # счётчики + слепые пары для A/B
 
 Генерация идёт через настоящий код агента (build_agent_context +
@@ -154,24 +154,36 @@ async def _noop(*_a, **_k) -> None:
     return None
 
 
-async def run() -> None:
+async def run(side: str = "both", start: int = 0, count: int | None = None) -> None:
+    """Прогон части набора. У Groq дневной лимит 200k токенов на qwen3.8 на весь
+    аккаунт — весь набор за день не пройти. Поэтому side="new" перегенерирует
+    только новую версию, а готовые ответы старой берёт из прошлого прогона;
+    результат сохраняется после каждого кейса, прерванный прогон не теряется."""
     import bot.db as _db
     # build_agent_context отмечает last_used_at у статей — прогон проверки не
     # должен продлевать им жизнь в прод-БД (архивация автоправил смотрит на него)
     _db.update_knowledge_last_used = _noop
     cases = json.loads(SET_PATH.read_text(encoding="utf-8"))["cases"]
-    rows = []
-    for i, case in enumerate(cases):
-        row = {"case_id": case["case_id"], "ticket_id": case["ticket_id"],
-               "reference": case["reference"]}
-        for side, v2 in (("old", False), ("new", True)):
-            if i or side == "new":
-                await asyncio.sleep(_PACE_S)
-            row[side] = await _one(case, v2)
-        rows.append(row)
-        print(f"{i + 1}/{len(cases)}", flush=True)
+    chosen = cases[start:start + count] if count else cases[start:]
+    rows = ({r["case_id"]: r for r in json.loads(RUN_PATH.read_text(encoding="utf-8"))}
+            if RUN_PATH.exists() else {})
+    sides = (("old", False), ("new", True)) if side == "both" else (("new", True),)
     RUN_PATH.parent.mkdir(parents=True, exist_ok=True)
-    RUN_PATH.write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
+    first = True
+    for i, case in enumerate(chosen):
+        row = rows.get(case["case_id"]) or {
+            "case_id": case["case_id"], "ticket_id": case["ticket_id"],
+            "reference": case["reference"], "old": {"failed": True, "client": ""},
+        }
+        for name, v2 in sides:
+            if not first:
+                await asyncio.sleep(_PACE_S)
+            first = False
+            row[name] = await _one(case, v2)
+        rows[case["case_id"]] = row
+        ordered = [rows[c["case_id"]] for c in cases if c["case_id"] in rows]
+        RUN_PATH.write_text(json.dumps(ordered, ensure_ascii=False, indent=1), encoding="utf-8")
+        print(f"{i + 1}/{len(chosen)}", flush=True)
 
 
 def report() -> None:
@@ -189,13 +201,16 @@ def main() -> None:
     b = sub.add_parser("build")
     b.add_argument("--n", type=int, default=50)
     b.add_argument("--db", default=str(ROOT / "hde_bot.db"))
-    sub.add_parser("run")
+    r = sub.add_parser("run")
+    r.add_argument("--side", choices=("both", "new"), default="both")
+    r.add_argument("--start", type=int, default=0)
+    r.add_argument("--count", type=int, default=None)
     sub.add_parser("report")
     a = ap.parse_args()
     if a.cmd == "build":
         asyncio.run(build(a.n, a.db))
     elif a.cmd == "run":
-        asyncio.run(run())
+        asyncio.run(run(a.side, a.start, a.count))
     else:
         report()
 
