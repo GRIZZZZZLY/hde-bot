@@ -261,6 +261,11 @@ async def build_agent_context(
         "solution_steps": solution_steps,
         "grounds": grounds,
         "stress": cv2.detect_stress(messages) if v2 else False,
+        "ticket_state": (
+            cv2.ticket_state(ticket_title, messages,
+                             cv2.staff_messages(posts, getattr(info, "client_id", "")))
+            if v2 else ""
+        ),
         "first_staff_reply": (
             cv2.is_first_staff_reply(posts, getattr(info, "client_id", "")) if v2 else False
         ),

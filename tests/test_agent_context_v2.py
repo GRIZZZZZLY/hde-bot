@@ -146,3 +146,65 @@ async def test_v2_history_has_a_hard_size_cap(monkeypatch):
     )
     assert len(ctx["history"]) <= 3100
     assert "НАЧАЛО" in ctx["history"] and "КОНЕЦ" in ctx["history"]
+
+
+def test_state_recommends_other_usb_port_for_a_usb_printer_even_after_a_reboot():
+    """1125: «Кассу перезагружали» — оператор всё равно дал другой USB-разъём."""
+    state = cv2.ticket_state("Порт недоступен", ["Ошибка закрытия смены", "Кассу перезагружали"], [])
+    assert "Рекомендованный первый шаг: кабель кассы в другой USB-разъём" in state
+    assert "«Кассу перезагружали»" in state
+
+
+def test_state_recommends_router_reboot_for_a_network_printer():
+    state = cv2.ticket_state("инаут эрор фр штрих", ["Сеть"], ["Касса подключена по USB или по сети?"])
+    assert "Рекомендованный первый шаг: перезагрузить Wi-Fi роутер и кассу" in state
+
+
+def test_state_moves_to_remote_access_when_the_typical_step_was_tried():
+    state = cv2.ticket_state(
+        "Терминал оплата не выходит на терминал",
+        ["на терминал не выводится оплата. Перезагрузка не помогает"], [])
+    assert "Рекомендованный первый шаг" not in state
+    assert "уже пробовали" in state and "удалённое подключение" in state
+
+    usb = cv2.ticket_state("Не печатает чек", ["Так же ошибка выходит"],
+                           ["Попробуйте переподключить кассу в другой USB порт"])
+    assert "уже пробовали" in usb
+
+
+def test_state_knows_a_remote_id_from_a_phone_number():
+    for sent in ["123 456 789", "1336770727", "Номер 1 199 135 791"]:
+        assert "уже прислал номер для удалённого подключения" in cv2.ticket_state("", [sent], []), sent
+    for phone in ["+7 913 674 89 16", "89136748916", "8(921)679-90-00", "921 679 72 79"]:
+        assert "номер для удалённого" not in cv2.ticket_state("", [phone], []), phone
+
+
+def test_state_ignores_the_staff_message_the_client_quoted():
+    quoted = ("Support Posiflora Необходимо удаленно подключиться к вашему компьютеру. "
+              "Скачайте программу для удаленного доступа AnyDesk")
+    assert "программа" not in cv2.ticket_state("", [quoted], [])
+    assert "программа для удалённого доступа у него есть" in cv2.ticket_state(
+        "", ["Данная программа у нас установлена"], [])
+
+
+def test_state_is_empty_when_nothing_is_known():
+    assert cv2.ticket_state("Как добавить товар?", ["Подскажите, как добавить товар"], []) == ""
+
+
+async def test_v2_context_carries_the_ticket_state(monkeypatch):
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+    monkeypatch.setattr(config, "agent_dynamic_fewshot_enabled", False)
+
+    async def no_embed(text, task_type="query"):
+        return None
+
+    async def none_async(*a, **k):
+        return None
+
+    ctx = await build_agent_context(
+        [_p(1, 1, "Касса не печатает"), _p(2, 99, "Как подключена касса?"), _p(3, 1, "USB")],
+        SimpleNamespace(client_id=1), "Не печатает", _embed_fn=no_embed,
+        _similar_fn=none_async, _equipment_fn=lambda t, h: None, _wiki_fn=none_async,
+        _pattern_fn=none_async, _topic_fn=none_async,
+    )
+    assert "другой USB-разъём" in ctx["ticket_state"]

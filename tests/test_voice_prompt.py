@@ -6,6 +6,7 @@ from bot.agent import voice
 def _worst_context() -> dict:
     return {
         "ticket_facts": "Компания клиента: " + "Ц" * 300,
+        "ticket_state": "С" * 900,
         "attachments": "А" * 900,
         "call_notes": "З" * 900,
         "evidence": [
@@ -37,12 +38,14 @@ def test_open_problem_is_not_a_reason_to_stay_silent():
     assert "«Хорошо», «Жду»" in system
 
 
-def test_typical_first_steps_come_before_remote_access():
-    """п.10.4.2: быстрые шаги операторов, которых нет в источниках."""
-    system = voice.build_prompt({}, "T")
-    assert "ТИПОВЫЕ ПЕРВЫЕ ШАГИ" in system
-    assert "другой USB-разъём" in system
-    assert system.index("ТИПОВЫЕ ПЕРВЫЕ ШАГИ") < system.index("ЭТАЛОННЫЕ ПРИМЕРЫ")
+def test_first_step_comes_from_the_ticket_state_not_from_a_list():
+    """§12: список типовых шагов в промпте модель почти не брала — шаг выбирает код."""
+    system = voice.build_prompt(
+        {"ticket_state": "Рекомендованный первый шаг: кабель кассы в другой USB-разъём."}, "T")
+    assert "Состояние тикета" in system and "другой USB-разъём" in system
+    assert "«Рекомендованный первый шаг»" in system          # правило выбора действия
+    assert "ТИПОВЫЕ ПЕРВЫЕ ШАГИ" not in system
+    assert "Состояние тикета" not in voice.build_prompt({}, "T")
 
 
 def test_voice_bans_two_actions_and_generic_empathy():
