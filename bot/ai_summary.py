@@ -109,7 +109,8 @@ async def call_groq_text(
     base_url/api_key — другой OpenAI-совместимый провайдер вместо Groq (агент v2);
     reasoning_effort ему передавайте "" — это параметр Groq.
     """
-    key = api_key or config.groq_api_key
+    # ключ Groq чужому провайдеру не отдаём, даже если свой ключ забыли прописать
+    key = api_key if base_url else config.groq_api_key
     if not key:
         return None
     url = f"{base_url.rstrip('/')}/chat/completions" if base_url else _GROQ_URL

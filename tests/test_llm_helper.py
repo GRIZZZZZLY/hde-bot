@@ -112,6 +112,14 @@ async def test_call_groq_text_other_openai_compatible_provider(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_call_groq_text_never_sends_groq_key_to_another_provider(monkeypatch):
+    monkeypatch.setattr(ai_summary_module.config, "groq_api_key", "gsk-secret", raising=False)
+    monkeypatch.setattr(ai_summary_module, "shared_session", lambda: pytest.fail("no call"))
+
+    assert await call_groq_text("вопрос", base_url="https://api.forgetapi.ru/v1", api_key="") is None
+
+
+@pytest.mark.asyncio
 async def test_call_groq_text_none_without_api_key(monkeypatch):
     monkeypatch.setattr(ai_summary_module.config, "groq_api_key", "", raising=False)
 
