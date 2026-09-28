@@ -14,10 +14,11 @@ from .actions import (
 logger = logging.getLogger(__name__)
 
 _V2_RETRY_S = 20
-# внешний провайдер v2: модели-«рассуждатели» тратят часть вывода на мысли,
-# а потолка Groq в 1000 выходных токенов/мин там нет
-_V2_EXTERNAL_MAX_TOKENS = 2000
-_V2_EXTERNAL_TIMEOUT_S = 90
+# внешний провайдер v2: deepseek-v4-flash на части тикетов скрыто рассуждает
+# (0–2000+ токенов, отключить через ForgetAPI нельзя), и при потолке 2000 ответ
+# приходил пустым. Потолка Groq в 1000 выходных токенов/мин там нет.
+_V2_EXTERNAL_MAX_TOKENS = 8000
+_V2_EXTERNAL_TIMEOUT_S = 180
 
 
 def build_ticket_context_block(context: dict) -> str:
