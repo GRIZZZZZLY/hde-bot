@@ -112,6 +112,36 @@ async def test_call_groq_text_other_openai_compatible_provider(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_other_provider_is_paced_and_does_not_hold_the_groq_slots(monkeypatch):
+    """ForgetAPI: 3 запроса в минуту, ответ идёт до 80 с. Общий семафор Groq/Deepgram
+    такие вызовы не держат, а старты разнесены на _EXTERNAL_INTERVAL_S."""
+    from bot.llm_semaphore import LLM_SEMAPHORE, LLM_CONCURRENCY
+    session = FakeSession(FakeResponse(200, {"choices": [{"message": {"content": "ок"}}]}))
+    monkeypatch.setattr(ai_summary_module, "shared_session", lambda: session)
+    clock = {"t": 1000.0}
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+        clock["t"] += s
+
+    monkeypatch.setattr(ai_summary_module.time, "monotonic", lambda: clock["t"])
+    monkeypatch.setattr(ai_summary_module.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(ai_summary_module, "_external_last_start", 0.0)
+
+    for _ in range(LLM_CONCURRENCY):
+        await LLM_SEMAPHORE.acquire()          # Groq занят целиком
+    try:
+        for _ in range(2):
+            assert await call_groq_text(
+                "в", base_url="https://api.forgetapi.ru/v1", api_key="fgt-x") == "ок"
+    finally:
+        for _ in range(LLM_CONCURRENCY):
+            LLM_SEMAPHORE.release()
+    assert sleeps == [ai_summary_module._EXTERNAL_INTERVAL_S]
+
+
+@pytest.mark.asyncio
 async def test_call_groq_text_never_sends_groq_key_to_another_provider(monkeypatch):
     monkeypatch.setattr(ai_summary_module.config, "groq_api_key", "gsk-secret", raising=False)
     monkeypatch.setattr(ai_summary_module, "shared_session", lambda: pytest.fail("no call"))

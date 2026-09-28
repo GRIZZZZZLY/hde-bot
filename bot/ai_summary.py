@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -85,6 +86,25 @@ _EQUIPMENT_PATTERNS = [
 ]
 
 
+# Другой провайдер (агент v2, ForgetAPI): бесплатный тариф — 3 запроса в минуту, а
+# ответ DeepSeek с рассуждением идёт до 80 с. Общий семафор Groq/Deepgram такие
+# вызовы не держат: три долгих черновика заняли бы все его места. Вместо него —
+# старты не чаще раза в _EXTERNAL_INTERVAL_S.
+# ponytail: интервал под Tier 0 (3 RPM); тариф выше — уменьшить.
+_EXTERNAL_INTERVAL_S = 20.0
+_external_lock = asyncio.Lock()
+_external_last_start = 0.0
+
+
+async def _external_turn() -> None:
+    global _external_last_start
+    async with _external_lock:
+        wait = _EXTERNAL_INTERVAL_S - (time.monotonic() - _external_last_start)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        _external_last_start = time.monotonic()
+
+
 async def call_groq_text(
     prompt: str,
     *,
@@ -128,9 +148,11 @@ async def call_groq_text(
         reasoning_effort = config.groq_reasoning_effort
     if reasoning_effort:
         payload["reasoning_effort"] = reasoning_effort
+    if base_url:
+        await _external_turn()
     started = time.monotonic()
     try:
-        async with LLM_SEMAPHORE, shared_session() as session:
+        async with (nullcontext() if base_url else LLM_SEMAPHORE), shared_session() as session:
             async with session.post(
                 url,
                 json=payload,
