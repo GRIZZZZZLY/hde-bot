@@ -14,6 +14,10 @@ from .actions import (
 logger = logging.getLogger(__name__)
 
 _V2_RETRY_S = 20
+# внешний провайдер v2: модели-«рассуждатели» тратят часть вывода на мысли,
+# а потолка Groq в 1000 выходных токенов/мин там нет
+_V2_EXTERNAL_MAX_TOKENS = 2000
+_V2_EXTERNAL_TIMEOUT_S = 90
 
 
 def build_ticket_context_block(context: dict) -> str:
@@ -66,13 +70,23 @@ async def generate_agent_draft(
             import asyncio
             _sleep_fn = asyncio.sleep
         system = build_prompt(context, ticket_title)
+        call_kwargs = dict(
+            system=system, model=config.agent_draft_model,
+            max_tokens=600, temperature=0.3,
+            reasoning_effort=config.groq_reasoning_effort,
+        )
+        if config.agent_v2_llm_base_url:
+            # другой OpenAI-совместимый провайдер только для v2: у него нет потолка
+            # Groq в 1000 выходных токенов/мин, а reasoning_effort — параметр Groq
+            call_kwargs.update(
+                model=config.agent_v2_llm_model or config.agent_draft_model,
+                max_tokens=_V2_EXTERNAL_MAX_TOKENS, reasoning_effort="",
+                timeout_seconds=_V2_EXTERNAL_TIMEOUT_S,
+                base_url=config.agent_v2_llm_base_url, api_key=config.agent_v2_llm_api_key,
+            )
         raw = None
         for attempt in range(2):
-            raw = await _call_fn(
-                context["history"], system=system, model=config.agent_draft_model,
-                max_tokens=600, temperature=0.3,
-                reasoning_effort=config.groq_reasoning_effort,
-            )
+            raw = await _call_fn(context["history"], **call_kwargs)
             if (raw or "").strip() or attempt == 1:
                 break
             # ponytail: фиксированная пауза вместо x-ratelimit-reset-tokens —

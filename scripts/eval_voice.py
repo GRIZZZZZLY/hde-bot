@@ -154,7 +154,8 @@ async def _noop(*_a, **_k) -> None:
     return None
 
 
-async def run(side: str = "both", start: int = 0, count: int | None = None) -> None:
+async def run(side: str = "both", start: int = 0, count: int | None = None,
+              pace_s: float = _PACE_S) -> None:
     """Прогон части набора. У Groq дневной лимит 200k токенов на qwen3.8 на весь
     аккаунт — весь набор за день не пройти. Поэтому side="new" перегенерирует
     только новую версию, а готовые ответы старой берёт из прошлого прогона;
@@ -177,7 +178,7 @@ async def run(side: str = "both", start: int = 0, count: int | None = None) -> N
         }
         for name, v2 in sides:
             if not first:
-                await asyncio.sleep(_PACE_S)
+                await asyncio.sleep(pace_s)
             first = False
             row[name] = await _one(case, v2)
         rows[case["case_id"]] = row
@@ -205,12 +206,14 @@ def main() -> None:
     r.add_argument("--side", choices=("both", "new"), default="both")
     r.add_argument("--start", type=int, default=0)
     r.add_argument("--count", type=int, default=None)
+    r.add_argument("--pace", type=float, default=_PACE_S,
+                   help="пауза между запросами, с (Groq: 65; другой провайдер: меньше)")
     sub.add_parser("report")
     a = ap.parse_args()
     if a.cmd == "build":
         asyncio.run(build(a.n, a.db))
     elif a.cmd == "run":
-        asyncio.run(run(a.side, a.start, a.count))
+        asyncio.run(run(a.side, a.start, a.count, a.pace))
     else:
         report()
 

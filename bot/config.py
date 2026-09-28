@@ -58,6 +58,9 @@ class Config:
     agent_voice_v2_enabled: bool
     agent_reply_drafts_enabled: bool
     reconcile_kb_distill_enabled: bool
+    agent_v2_llm_base_url: str
+    agent_v2_llm_api_key: str
+    agent_v2_llm_model: str
     general_topic_id: int | None
     unassigned_department: str
     work_days: tuple[int, ...]
@@ -162,6 +165,11 @@ class Config:
             reconcile_kb_distill_enabled=_parse_bool(
                 os.getenv("RECONCILE_KB_DISTILL_ENABLED"), default=False
             ),
+            # Другой OpenAI-совместимый провайдер только для черновиков v2. Пусто —
+            # v2 ходит в Groq с AGENT_DRAFT_MODEL, как старый путь.
+            agent_v2_llm_base_url=os.getenv("AGENT_V2_LLM_BASE_URL", "").strip(),
+            agent_v2_llm_api_key=os.getenv("AGENT_V2_LLM_API_KEY", "").strip(),
+            agent_v2_llm_model=os.getenv("AGENT_V2_LLM_MODEL", "").strip(),
             general_topic_id=_parse_optional_int(os.getenv("GENERAL_TOPIC_ID")),
             unassigned_department=os.getenv("UNASSIGNED_DEPARTMENT", "").strip(),
             work_days=tuple(

@@ -94,6 +94,8 @@ async def call_groq_text(
     temperature: float = 0.1,
     timeout_seconds: float = 20,
     reasoning_effort: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
 ) -> str | None:
     """One-shot Groq chat completion via the shared session and LLM semaphore.
 
@@ -104,9 +106,13 @@ async def call_groq_text(
     model пусто → модель суммарки из env (жёсткий llama-3.3 Groq отключил).
     reasoning_effort (напр. "none") прокидывается для reasoning-моделей (qwen3),
     чтобы отключить <think> и не жечь токены; None → значение из config.
+    base_url/api_key — другой OpenAI-совместимый провайдер вместо Groq (агент v2);
+    reasoning_effort ему передавайте "" — это параметр Groq.
     """
-    if not config.groq_api_key:
+    key = api_key or config.groq_api_key
+    if not key:
         return None
+    url = f"{base_url.rstrip('/')}/chat/completions" if base_url else _GROQ_URL
     messages: list[dict] = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -125,9 +131,9 @@ async def call_groq_text(
     try:
         async with LLM_SEMAPHORE, shared_session() as session:
             async with session.post(
-                _GROQ_URL,
+                url,
                 json=payload,
-                headers={"Authorization": f"Bearer {config.groq_api_key}"},
+                headers={"Authorization": f"Bearer {key}"},
                 timeout=aiohttp.ClientTimeout(total=timeout_seconds),
             ) as resp:
                 if resp.status != 200:

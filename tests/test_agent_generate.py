@@ -225,6 +225,33 @@ async def test_v2_uses_voice_prompt_small_budget_and_retries_once(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_v2_can_use_another_provider_without_touching_the_old_path(monkeypatch):
+    """AGENT_V2_LLM_*: только путь v2 уходит к другому провайдеру; модель старого пути
+    (agent_draft_model) остаётся на Groq."""
+    from bot.agent.generate import generate_agent_draft
+    from bot.config import config
+    monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
+    monkeypatch.setattr(config, "agent_v2_llm_base_url", "https://api.forgetapi.ru/v1", raising=False)
+    monkeypatch.setattr(config, "agent_v2_llm_api_key", "fgt-x", raising=False)
+    monkeypatch.setattr(config, "agent_v2_llm_model", "deepseek-v4-flash", raising=False)
+    seen = {}
+
+    async def fake_call(history, **kw):
+        seen.update(kw)
+        return ('{"analysis": "a", "action": "ANSWER", "suit": "s", '
+                '"client": "Перезагрузите роутер.", "memo": "—", "source_ids": []}')
+
+    ctx = {"history": "Клиент: не печатает", "evidence": [], "demos": [],
+           "stress": False, "first_staff_reply": False}
+    draft = await generate_agent_draft(ctx, "Т", _call_fn=fake_call)
+    assert draft["client"] == "Перезагрузите роутер."
+    assert seen["model"] == "deepseek-v4-flash"
+    assert seen["base_url"] == "https://api.forgetapi.ru/v1" and seen["api_key"] == "fgt-x"
+    assert seen["reasoning_effort"] == ""        # Groq-параметр чужому провайдеру не шлём
+    assert seen["max_tokens"] > 600              # у него нет потолка Groq 1000 выходных/мин
+
+
+@pytest.mark.asyncio
 async def test_draft_survives_model_emitting_reasoning_block():
     """Даже если модель всё равно напишет рассуждение, JSON из него достаётся."""
     async def fake_call(prompt, *, system=None, model=None, max_tokens=None,

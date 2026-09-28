@@ -83,6 +83,35 @@ async def test_call_groq_text_none_on_http_error(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_call_groq_text_other_openai_compatible_provider(monkeypatch):
+    """v2 может ходить в другого OpenAI-совместимого провайдера: свой адрес и ключ,
+    без Groq-специфичного reasoning_effort."""
+    session = FakeSession(FakeResponse(200, {"choices": [{"message": {"content": "ок"}}]}))
+    seen = {}
+
+    def post(url, **kwargs):
+        seen["url"] = url
+        seen["auth"] = kwargs["headers"]["Authorization"]
+        session.last_json = kwargs.get("json")
+        return session._response
+
+    session.post = post
+    monkeypatch.setattr(ai_summary_module, "shared_session", lambda: session)
+    monkeypatch.setattr(ai_summary_module.config, "groq_api_key", "", raising=False)
+
+    result = await call_groq_text(
+        "вопрос", model="deepseek-v4-flash", reasoning_effort="",
+        base_url="https://api.forgetapi.ru/v1/", api_key="fgt-x",
+    )
+
+    assert result == "ок"
+    assert seen["url"] == "https://api.forgetapi.ru/v1/chat/completions"
+    assert seen["auth"] == "Bearer fgt-x"
+    assert session.last_json["model"] == "deepseek-v4-flash"
+    assert "reasoning_effort" not in session.last_json
+
+
+@pytest.mark.asyncio
 async def test_call_groq_text_none_without_api_key(monkeypatch):
     monkeypatch.setattr(ai_summary_module.config, "groq_api_key", "", raising=False)
 
