@@ -119,6 +119,26 @@ async def test_llm_semaphore_limits_concurrency():
     await asyncio.gather(*tasks)
 
 
+@pytest.mark.asyncio
+async def test_describe_image_mime_from_response_wins_over_name():
+    """HDE отдаёт webp под именем image.png — тип берётся из ответа."""
+    from bot import vision
+
+    mock_session = _mock_session({"choices": [{"message": {"content": "ok"}}]})
+    with patch("bot.vision.aiohttp.ClientSession", return_value=mock_session), \
+         patch("bot.vision.config") as mock_config:
+        mock_config.groq_api_key = "fake-key"
+        await vision.describe_image(b"RIFF fake", "image.png", mime="image/webp")
+        await vision.describe_image(b"RIFF fake", "image.png", mime="application/octet-stream")
+
+    urls = [
+        call.kwargs["json"]["messages"][0]["content"][1]["image_url"]["url"]
+        for call in mock_session.post.call_args_list
+    ]
+    assert urls[0].startswith("data:image/webp;base64,")
+    assert urls[1].startswith("data:image/png;base64,")   # не картинка → по имени
+
+
 def test_guess_mime_variants():
     from bot.vision import _guess_mime
 

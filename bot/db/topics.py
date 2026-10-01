@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 import aiosqlite
 
@@ -194,26 +194,29 @@ async def append_call_notes(ticket_id: str, notes: list[str]) -> None:
         await db.commit()
 
 
-async def append_photo_descriptions(ticket_id: str, descriptions: list[str]) -> None:
+async def append_photo_descriptions(
+    ticket_id: str, descriptions: list[str], hashes: Iterable[str] = ()
+) -> None:
     """Append Vision-generated photo descriptions to the topic (newline-joined).
 
-    Used by knowledge indexing to include image content in embeddings.
-    No-op if descriptions is empty or ticket is unknown.
+    Read by the agent draft, autofill and knowledge indexing. *hashes* are the
+    HDE file hashes already processed, so the same photo is not sent to Vision
+    again. No-op if both are empty or ticket is unknown.
     """
-    if not descriptions:
-        return
     addition = "\n".join(d.strip() for d in descriptions if d and d.strip())
-    if not addition:
+    hash_line = " ".join(h for h in hashes if h)
+    if not addition and not hash_line:
         return
     async with connect() as db:
         await db.execute(
             """
             UPDATE ticket_topics
             SET photo_descriptions = TRIM(COALESCE(photo_descriptions, '') || CHAR(10) || ?, CHAR(10)),
+                photo_hashes = TRIM(COALESCE(photo_hashes, '') || ' ' || ?),
                 updated_at = datetime('now')
             WHERE ticket_id = ?
             """,
-            (addition, ticket_id),
+            (addition, hash_line, ticket_id),
         )
         await db.commit()
 

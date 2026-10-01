@@ -42,6 +42,7 @@ async def run_agent(
     _safety_post=None,
     _record_fn=None,
     _posts_fn=None,
+    _photos_fn=None,
 ) -> tuple[str, str, str, int] | None:
     if _context_fn is None:
         from .context import build_agent_context as _context_fn
@@ -57,6 +58,8 @@ async def run_agent(
         from ..db import record_suggestion as _record_fn
     if _posts_fn is None:
         _posts_fn = _default_posts_fn
+    if _photos_fn is None:
+        from .context import describe_client_photos as _photos_fn
 
     from ..config import config
     from .actions import compose_memo, compose_selfcheck_warning, extract_client_text
@@ -83,6 +86,12 @@ async def run_agent(
             started=started,
         )
         return "", "", memo, 0
+
+    # Фото клиента → текст до сборки контекста; без описания черновик всё равно пишется
+    try:
+        await _photos_fn(ticket_id, posts, info)
+    except Exception as exc:
+        logger.warning("agent: photo descriptions skipped for %s: %s", ticket_id, exc)
 
     # 3-6. Полный проход; при superseded — одна перегенерация
     stale_warning = False

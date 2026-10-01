@@ -96,6 +96,9 @@ TICKET_TOPIC_COLUMNS = {
     "last_assigned_at": "TEXT",
     "ai_summary_sent_at": "TEXT",
     "photo_descriptions": "TEXT DEFAULT ''",
+    # hash'и файлов HDE через пробел, уже прошедших Vision: повторный черновик
+    # по 💡 не отправляет ту же картинку в Groq второй раз.
+    "photo_hashes": "TEXT DEFAULT ''",
     "env_option_id": "TEXT",
     "priority_option_id": "TEXT",
     "type_option_id": "TEXT",
@@ -162,6 +165,7 @@ class TicketTopic:
     last_assigned_at: Optional[str]
     ai_summary_sent_at: Optional[str]
     photo_descriptions: str = ""
+    photo_hashes: str = ""
     # Окружение autofill: None = не классифицировали, '' = не определено, цифры = option id
     env_option_id: Optional[str] = None
     # Приоритет/Тип autofill: None = не классифицировали, '' = не определено,
@@ -827,6 +831,7 @@ def _row_to_topic(row: aiosqlite.Row) -> TicketTopic:
         last_assigned_at=row["last_assigned_at"],
         ai_summary_sent_at=row["ai_summary_sent_at"] if "ai_summary_sent_at" in row.keys() else None,
         photo_descriptions=row["photo_descriptions"] if "photo_descriptions" in row.keys() else "",
+        photo_hashes=(row["photo_hashes"] or "") if "photo_hashes" in row.keys() else "",
         env_option_id=row["env_option_id"] if "env_option_id" in row.keys() else None,
         priority_option_id=row["priority_option_id"] if "priority_option_id" in row.keys() else None,
         type_option_id=row["type_option_id"] if "type_option_id" in row.keys() else None,

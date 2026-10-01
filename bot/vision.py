@@ -17,8 +17,9 @@ _GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 _PROMPT = (
     "Это скриншот из обращения в техподдержку кассового оборудования "
     "(АТОЛ, Эвотор, Штрих-М, Viki, эквайринг).\n"
-    "Прочитай текст ошибки/сообщения на картинке и кратко опиши проблему "
-    "в 1–2 предложениях на русском. Если текста нет — опиши, что видно. "
+    "Перепиши дословно, в кавычках, текст ошибки или сообщения с экрана "
+    "(коды и номера без изменений), затем одной фразой на русском скажи, "
+    "что на экране. Если текста нет — опиши, что видно. "
     "Не добавляй вступлений и пояснений, только суть."
 )
 
@@ -37,8 +38,12 @@ def _guess_mime(filename: str) -> str:
     return "image/jpeg"
 
 
-async def describe_image(image_bytes: bytes, filename: str = "") -> str | None:
-    """Return short Russian description of the image or None on failure."""
+async def describe_image(image_bytes: bytes, filename: str = "", mime: str = "") -> str | None:
+    """Return short Russian description of the image or None on failure.
+
+    *mime* from the download response wins over the file name: HDE names a
+    webp "image.png".
+    """
     if not config.groq_api_key:
         return None
     if not image_bytes:
@@ -48,7 +53,9 @@ async def describe_image(image_bytes: bytes, filename: str = "") -> str | None:
         return None
 
     b64 = base64.b64encode(image_bytes).decode("ascii")
-    data_uri = f"data:{_guess_mime(filename)};base64,{b64}"
+    if not mime.startswith("image/"):
+        mime = _guess_mime(filename)
+    data_uri = f"data:{mime};base64,{b64}"
     payload = {
         "model": config.groq_vision_model,
         "messages": [{
@@ -59,7 +66,7 @@ async def describe_image(image_bytes: bytes, filename: str = "") -> str | None:
             ],
         }],
         "temperature": 0.1,
-        "max_tokens": 200,
+        "max_tokens": 300,  # дословный текст ошибки длиннее пересказа
     }
     if config.groq_reasoning_effort:
         payload["reasoning_effort"] = config.groq_reasoning_effort

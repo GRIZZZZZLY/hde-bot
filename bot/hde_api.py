@@ -441,6 +441,26 @@ class HDEApiClient:
             page += 1
         return collected
 
+    async def download_ticket_file(self, ticket_id: str, file_hash: str) -> HDEAttachment | None:
+        """File of a ticket by API key: GET /tickets/{id}/files/{hash}.
+
+        Keeps working when HDE's "file access only after login" is on, where the
+        post's /ru/file/download/ link needs a browser session. No access → 404.
+        """
+        await _get_rate_limiter().acquire()
+        async with self._make_session() as session:
+            async with session.get(f"{self.base_url}/tickets/{ticket_id}/files/{file_hash}") as response:
+                if response.status != 200:
+                    logger.warning("HDE file %s of ticket %s: status %d", file_hash, ticket_id, response.status)
+                    return None
+                content = await response.read()
+                content_type = response.headers.get("Content-Type", "").split(";")[0].strip()
+        return HDEAttachment(
+            filename=file_hash,
+            content=content,
+            content_type=content_type or "application/octet-stream",
+        )
+
     async def get_ticket_comments(self, ticket_id: str, limit: int = 20) -> list[HDEPost]:
         """Return up to *limit* internal comments (oldest-first)."""
         url = f"{self.base_url}/tickets/{ticket_id}/comments/"

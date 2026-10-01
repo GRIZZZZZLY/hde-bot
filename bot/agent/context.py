@@ -12,6 +12,8 @@ _EXCERPT_LIMIT = 600
 _ATTACHMENT_LIMIT = 900
 _CALL_NOTES_LIMIT = 900
 _V2_HISTORY_CAP = 3000      # бюджет режет целыми сообщениями, одно огромное проходит целиком
+_PHOTO_TYPES = {"jpg", "jpeg", "png", "gif", "webp"}
+_MAX_NEW_PHOTOS = 3         # за один черновик; остальные опишутся со следующим
 
 
 def _excerpt_with_url(item) -> str:
@@ -74,6 +76,88 @@ async def load_ticket_side_context(ticket_id: str, *, _topic_fn=None) -> dict:
         ).strip()[:_CALL_NOTES_LIMIT],
         "ticket_facts": build_ticket_facts(topic),
     }
+
+
+def _file_hash(file_info: dict) -> str:
+    """hash файла HDE: поле hash или хвост ссылки /ru/file/download/<hash>."""
+    explicit = str(file_info.get("hash") or "").strip()
+    return explicit or str(file_info.get("url") or "").rstrip("/").rsplit("/", 1)[-1]
+
+
+async def describe_client_photos(
+    ticket_id: str,
+    posts,
+    info,
+    *,
+    _topic_fn=None,
+    _download_fn=None,
+    _describe_fn=None,
+    _store_fn=None,
+) -> None:
+    """Фото клиента → текст Vision в photo_descriptions, до сборки контекста.
+
+    Модель черновика (DeepSeek через ForgetAPI) картинок не видит: изображение
+    молча отбрасывается. Старый путь через вебхук (topic_media) не наполнил
+    photo_descriptions ни разу — HDE не шлёт в нём ссылок на файлы. Поэтому
+    файлы берутся из уже загруженных постов клиента и качаются по API-ключу.
+
+    Описанный файл запоминается по hash и в Groq больше не идёт. Сбой
+    скачивания или Vision не запоминается — повторим со следующим черновиком;
+    картинка больше лимита Groq запоминается без описания — она не влезет никогда.
+    """
+    from ..vision import _MAX_BYTES
+
+    client_id = str(getattr(info, "client_id", ""))
+    names: dict[str, str] = {}  # hash → имя файла, порядок переписки
+    for post in posts:
+        if getattr(post, "is_comment", False) or str(getattr(post, "user_id", "")) != client_id:
+            continue
+        for file_info in getattr(post, "files", None) or []:
+            if (file_info.get("data_type") or "").lower().lstrip(".") not in _PHOTO_TYPES:
+                continue
+            file_hash = _file_hash(file_info)
+            if file_hash:
+                names[file_hash] = file_info.get("name") or ""
+    if not names or not ticket_id:
+        return
+
+    if _topic_fn is None:
+        from ..db import get_topic as _topic_fn
+    if _download_fn is None:
+        from ..hde_api import HDEApiClient
+        _download_fn = HDEApiClient().download_ticket_file
+    if _describe_fn is None:
+        from ..vision import describe_image as _describe_fn
+    if _store_fn is None:
+        from ..db import append_photo_descriptions as _store_fn
+
+    topic = await _topic_fn(str(ticket_id))
+    if topic is None:
+        return
+    done = set((getattr(topic, "photo_hashes", "") or "").split())
+    fresh = [h for h in names if h not in done][-_MAX_NEW_PHOTOS:]  # свежие ближе к вопросу
+
+    descriptions: list[str] = []
+    hashes: list[str] = []
+    # ponytail: по одной картинке подряд, до ~15 с на первый черновик; gather, если станет долго
+    for file_hash in fresh:
+        try:
+            attachment = await _download_fn(str(ticket_id), file_hash)
+            if attachment is None:
+                continue
+            if len(attachment.content) > _MAX_BYTES:
+                hashes.append(file_hash)
+                continue
+            text = await _describe_fn(attachment.content, names[file_hash], mime=attachment.content_type)
+        except Exception as exc:
+            logger.warning("agent photos: %s of ticket %s failed: %s", file_hash, ticket_id, exc)
+            continue
+        if text:
+            descriptions.append(text)
+            hashes.append(file_hash)
+    if hashes:
+        await _store_fn(str(ticket_id), descriptions, hashes=hashes)
+        logger.info("agent photos: ticket %s, described %d of %d new", ticket_id, len(descriptions), len(fresh))
 
 
 def build_history_budgeted(posts, info, *, budget: int = 3000, _history_fn=None) -> str:
