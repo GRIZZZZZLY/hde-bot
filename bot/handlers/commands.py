@@ -251,6 +251,11 @@ async def _send_take_greeting(ticket_id: str, mode: str, operator) -> str:
     return f"\n💬 Клиенту: «{promise}»"
 
 
+# Tickets being taken right now. One bot process, so an in-memory claim is enough
+# to make «first press wins» hold across the engineers' groups.
+_taking: set[str] = set()
+
+
 @router.callback_query(F.data.startswith("take:"))
 async def cb_take_ticket(callback: CallbackQuery) -> None:
     """Inline button: assign the unassigned ticket to the engineer who pressed it."""
@@ -274,6 +279,19 @@ async def cb_take_ticket(callback: CallbackQuery) -> None:
     if operator is None or not operator.hde_id:
         await callback.answer("Ты не в списке инженеров бота", show_alert=True)
         return
+    if ticket_id in _taking or await db.get_general_message(ticket_id) is None:
+        await callback.answer("Тикет уже забрали", show_alert=True)
+        return
+    _taking.add(ticket_id)
+    try:
+        await _take(callback, ticket_id, mode, operator)
+    finally:
+        _taking.discard(ticket_id)
+
+
+async def _take(callback: CallbackQuery, ticket_id: str, mode: str, operator) -> None:
+    from ..hde_api import HDEApiClient, HDEApiError
+    from .. import db
 
     # Prevent double-tap: remove button immediately
     try:
@@ -306,7 +324,20 @@ async def cb_take_ticket(callback: CallbackQuery) -> None:
     except Exception as exc:
         logger.debug("take_ticket: message edit failed: %s", exc)
 
-    # Remove DB record so on_owner_changed webhook skips deletion
+    # The same notification in the other engineers' groups: show who took it.
+    taken_text = f"✅ <b>Забрал {operator.name or 'Оператор'}</b>\n\n{callback.message.text or ''}"
+    for row in await db.list_general_messages_for(ticket_id):
+        if row["chat_id"] == callback.message.chat.id:
+            continue
+        try:
+            await callback.bot.edit_message_text(
+                chat_id=row["chat_id"], message_id=row["message_id"], text=taken_text,
+                parse_mode="HTML", disable_web_page_preview=True,
+            )
+        except Exception as exc:
+            logger.debug("take_ticket: could not mark taken in chat %s: %s", row["chat_id"], exc)
+
+    # Remove DB records so on_owner_changed webhook skips deletion
     await db.delete_general_message(ticket_id)
     await callback.answer(f"Тикет {ticket_id} назначен на тебя")
 

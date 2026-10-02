@@ -329,16 +329,7 @@ async def init_db() -> None:
             ON topic_media_cache(chat_id, topic_id, media_group_id, message_id)
             """
         )
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS unassigned_general_messages (
-                ticket_id   TEXT PRIMARY KEY,
-                message_id  INTEGER NOT NULL,
-                ticket_name TEXT DEFAULT '',
-                created_at  TEXT DEFAULT (datetime('now'))
-            )
-            """
-        )
+        await db.execute(_CHAT_SCOPED_DDL["unassigned_general_messages"])
         await db.execute(
             """
             CREATE TABLE IF NOT EXISTS report_runs (
@@ -689,6 +680,17 @@ async def _ensure_ticket_topic_columns(db: aiosqlite.Connection) -> None:
 
 
 _CHAT_SCOPED_DDL = {
+    # One General notification per engineer's group for the same ticket.
+    "unassigned_general_messages": """
+            CREATE TABLE IF NOT EXISTS unassigned_general_messages (
+                chat_id     INTEGER NOT NULL,
+                ticket_id   TEXT NOT NULL,
+                message_id  INTEGER NOT NULL,
+                ticket_name TEXT DEFAULT '',
+                created_at  TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (chat_id, ticket_id)
+            )
+""",
     "topic_media_cache": """
             CREATE TABLE IF NOT EXISTS topic_media_cache (
                 chat_id         INTEGER NOT NULL,
@@ -734,7 +736,9 @@ _CHAT_SCOPED_DDL = {
 
 # Таблицы, где ключ — номер топика. Номер топика уникален только внутри
 # супергруппы, поэтому с несколькими инженерами ключ становится (чат, топик).
-_CHAT_SCOPED_TABLES = ("topic_media_cache", "sent_hde_messages", "ai_feedback_pending")
+_CHAT_SCOPED_TABLES = (
+    "topic_media_cache", "sent_hde_messages", "ai_feedback_pending", "unassigned_general_messages",
+)
 
 
 async def _scope_tables_by_chat(db: aiosqlite.Connection) -> None:

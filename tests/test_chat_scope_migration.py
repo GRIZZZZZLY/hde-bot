@@ -24,6 +24,10 @@ _OLD_SCHEMA = [
     """CREATE TABLE ai_feedback_pending (
         topic_id INTEGER PRIMARY KEY, ticket_id TEXT NOT NULL, history TEXT NOT NULL,
         title TEXT NOT NULL DEFAULT '', expires_at TEXT NOT NULL)""",
+    """CREATE TABLE unassigned_general_messages (
+        ticket_id TEXT PRIMARY KEY, message_id INTEGER NOT NULL, ticket_name TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now')))""",
+    "INSERT INTO unassigned_general_messages (ticket_id, message_id, ticket_name) VALUES ('T2', 70, 'Принтер')",
     "INSERT INTO ticket_topics (ticket_id, topic_id, ticket_name) VALUES ('T1', 350, 'Касса')",
     "INSERT INTO topic_media_cache (topic_id, message_id, attachment_kind, file_id) VALUES (350, 7, 'photo', 'F')",
     "INSERT INTO sent_hde_messages VALUES (11, 350, 'T1', 900, 'post', datetime('now'))",
@@ -52,6 +56,8 @@ async def test_old_database_is_scoped_to_the_primary_group(set_test_db):
     pending = await db.get_ai_feedback_pending(group, 350)
     assert pending is not None and pending["ticket_id"] == "T1"
     assert await db.get_ai_feedback_pending(-100999, 350) is None
+    general = await db.list_general_messages_for("T2")
+    assert [(g["chat_id"], g["message_id"]) for g in general] == [(group, 70)]
 
     async with aiosqlite.connect(set_test_db) as conn:
         async with conn.execute("SELECT chat_id, file_id FROM topic_media_cache") as cur:

@@ -7,33 +7,42 @@ import aiosqlite
 from .core import connect
 
 
-async def save_general_message(ticket_id: str, message_id: int, ticket_name: str) -> None:
+async def save_general_message(ticket_id: str, message_id: int, ticket_name: str, chat_id: int) -> None:
     async with connect() as db:
         await db.execute(
             """
-            INSERT INTO unassigned_general_messages (ticket_id, message_id, ticket_name)
-            VALUES (?, ?, ?)
-            ON CONFLICT(ticket_id) DO UPDATE SET
+            INSERT INTO unassigned_general_messages (chat_id, ticket_id, message_id, ticket_name)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(chat_id, ticket_id) DO UPDATE SET
                 message_id = excluded.message_id,
                 ticket_name = excluded.ticket_name
             """,
-            (ticket_id, message_id, ticket_name),
+            (chat_id, ticket_id, message_id, ticket_name),
         )
         await db.commit()
 
 
 async def get_general_message(ticket_id: str) -> Optional[dict]:
+    """Any General notification of this ticket (in whichever group); None if not posted."""
+    rows = await list_general_messages_for(ticket_id)
+    return rows[0] if rows else None
+
+
+async def list_general_messages_for(ticket_id: str) -> list[dict]:
+    """General notifications of one ticket, one per engineer's group."""
     async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT ticket_id, message_id, ticket_name, created_at FROM unassigned_general_messages WHERE ticket_id = ?",
+            "SELECT chat_id, ticket_id, message_id, ticket_name, created_at "
+            "FROM unassigned_general_messages WHERE ticket_id = ? ORDER BY chat_id",
             (ticket_id,),
         ) as cursor:
-            row = await cursor.fetchone()
-    return dict(row) if row else None
+            rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
 
 
 async def delete_general_message(ticket_id: str) -> None:
+    """Forget the ticket's General notifications in every group."""
     async with connect() as db:
         await db.execute(
             "DELETE FROM unassigned_general_messages WHERE ticket_id = ?",
@@ -45,18 +54,18 @@ async def delete_general_message(ticket_id: str) -> None:
 async def count_general_messages() -> int:
     async with connect() as db:
         async with db.execute(
-            "SELECT COUNT(*) FROM unassigned_general_messages"
+            "SELECT COUNT(DISTINCT ticket_id) FROM unassigned_general_messages"
         ) as cursor:
             row = await cursor.fetchone()
     return row[0] if row else 0
 
 
 async def list_general_messages() -> list[dict]:
-    """Return all currently posted General notifications."""
+    """Return all currently posted General notifications (one row per group)."""
     async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT ticket_id, message_id, ticket_name FROM unassigned_general_messages"
+            "SELECT chat_id, ticket_id, message_id, ticket_name FROM unassigned_general_messages"
         ) as cursor:
             rows = await cursor.fetchall()
     return [dict(r) for r in rows]

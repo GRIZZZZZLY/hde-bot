@@ -88,6 +88,7 @@ from .misc import (
     get_setting,
     is_report_sent,
     list_general_messages,
+    list_general_messages_for,
     list_pending_general,
     mark_report_sent,
     save_general_message,

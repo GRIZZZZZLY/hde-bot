@@ -123,52 +123,69 @@ def take_greeting(first_name: str, mode: str) -> str:
     )
 
 
-async def _send(bot: Bot, text: str, ticket_id: str) -> int | None:
-    """Send a message to the General topic. Returns message_id or None on failure."""
+def _general_chats() -> list[int]:
+    """Every engineer's group gets the General notification."""
+    return list(dict.fromkeys(o.chat_id for o in operators.all_operators()))
+
+
+async def _send(bot: Bot, text: str, ticket_id: str, ticket_name: str) -> int:
+    """Post the notification to the General thread of every group that does not have it yet.
+
+    Saves each posted message and returns how many groups got it.
+    """
     assert config.general_topic_id is not None
-    try:
-        # thread_id=1 is the General topic in forum groups — Telegram may reject it
-        # when the group was created without explicit topics; omit it so the message
-        # falls through to the main (General) thread automatically.
-        kwargs: dict = dict(
-            chat_id=operators.primary().chat_id,
-            text=text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-            reply_markup=await _take_keyboard(ticket_id),
-        )
-        if config.general_topic_id != 1:
-            kwargs["message_thread_id"] = config.general_topic_id
-        msg = await bot.send_message(**kwargs)
-        return msg.message_id
-    except TelegramAPIError as exc:
-        logger.error("Failed to send General notification: %s", exc)
-        return None
+    have = {row["chat_id"] for row in await db.list_general_messages_for(ticket_id)}
+    posted = 0
+    for chat_id in _general_chats():
+        if chat_id in have:
+            continue
+        try:
+            # thread_id=1 is the General topic in forum groups — Telegram may reject it
+            # when the group was created without explicit topics; omit it so the message
+            # falls through to the main (General) thread automatically.
+            kwargs: dict = dict(
+                chat_id=chat_id,
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=await _take_keyboard(ticket_id),
+            )
+            if config.general_topic_id != 1:
+                kwargs["message_thread_id"] = config.general_topic_id
+            msg = await bot.send_message(**kwargs)
+        except TelegramAPIError as exc:
+            logger.error("Failed to send General notification to chat %s: %s", chat_id, exc)
+            continue
+        await db.save_general_message(ticket_id, msg.message_id, ticket_name, chat_id)
+        posted += 1
+    return posted
 
 
-async def _edit(bot: Bot, message_id: int, text: str, ticket_id: str) -> None:
+async def _edit_all(bot: Bot, ticket_id: str, text: str, ticket_name: str) -> None:
     assert config.general_topic_id is not None
-    try:
-        await bot.edit_message_text(
-            chat_id=operators.primary().chat_id,
-            message_id=message_id,
-            text=text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-            reply_markup=await _take_keyboard(ticket_id),
-        )
-    except TelegramAPIError as exc:
-        logger.error("Failed to edit General notification %d: %s", message_id, exc)
+    for row in await db.list_general_messages_for(ticket_id):
+        try:
+            await bot.edit_message_text(
+                chat_id=row["chat_id"],
+                message_id=row["message_id"],
+                text=text,
+                parse_mode="HTML",
+                disable_web_page_preview=True,
+                reply_markup=await _take_keyboard(ticket_id),
+            )
+        except TelegramAPIError as exc:
+            logger.error("Failed to edit General notification %d: %s", row["message_id"], exc)
+        await db.save_general_message(ticket_id, row["message_id"], ticket_name, row["chat_id"])
 
 
-async def _delete(bot: Bot, message_id: int) -> None:
-    try:
-        await bot.delete_message(
-            chat_id=operators.primary().chat_id,
-            message_id=message_id,
-        )
-    except TelegramAPIError as exc:
-        logger.error("Failed to delete General notification %d: %s", message_id, exc)
+async def _delete_all(bot: Bot, ticket_id: str) -> None:
+    """Remove the ticket's General notification from every group."""
+    for row in await db.list_general_messages_for(ticket_id):
+        try:
+            await bot.delete_message(chat_id=row["chat_id"], message_id=row["message_id"])
+        except TelegramAPIError as exc:
+            logger.error("Failed to delete General notification %d: %s", row["message_id"], exc)
+    await db.delete_general_message(ticket_id)
 
 
 def _payload_str(payload: dict, key: str) -> str:
@@ -216,10 +233,8 @@ async def on_assigned_on_create(bot: Bot, payload: dict) -> None:
         ticket_name=_payload_str(payload, "ticket_name"),
         link=_payload_str(payload, "link"),
     )
-    message_id = await _send(bot, text, ticket_id)
-    if message_id:
-        await db.save_general_message(ticket_id, message_id, _payload_str(payload, "ticket_name"))
-        logger.info("Posted General notification for ticket %s (msg_id=%d)", ticket_id, message_id)
+    if await _send(bot, text, ticket_id, _payload_str(payload, "ticket_name")):
+        logger.info("Posted General notification for ticket %s", ticket_id)
 
 
 async def on_owner_changed(bot: Bot, payload: dict) -> None:
@@ -284,9 +299,7 @@ async def on_owner_changed(bot: Bot, payload: dict) -> None:
                     ticket_name=_payload_str(payload, "ticket_name"),
                     link=_payload_str(payload, "link"),
                 )
-                message_id = await _send(bot, text, ticket_id)
-                if message_id:
-                    await db.save_general_message(ticket_id, message_id, _payload_str(payload, "ticket_name"))
+                if await _send(bot, text, ticket_id, _payload_str(payload, "ticket_name")):
                     logger.info("Posted General notification on re-unassign for ticket %s", ticket_id)
         finally:
             _currently_posting.discard(ticket_id)
@@ -305,8 +318,7 @@ async def on_owner_changed(bot: Bot, payload: dict) -> None:
                 ticket_id,
             )
             return
-        await _delete(bot, existing["message_id"])
-        await db.delete_general_message(ticket_id)
+        await _delete_all(bot, ticket_id)
         logger.info("Deleted General notification for ticket %s (assigned to %s)", ticket_id, owner_name)
 
 
@@ -343,9 +355,7 @@ async def on_ticket_updated(bot: Bot, payload: dict) -> None:
                             ticket_name=_payload_str(payload, "ticket_name"),
                             link=_payload_str(payload, "link"),
                         )
-                        message_id = await _send(bot, text, ticket_id)
-                        if message_id:
-                            await db.save_general_message(ticket_id, message_id, _payload_str(payload, "ticket_name"))
+                        if await _send(bot, text, ticket_id, _payload_str(payload, "ticket_name")):
                             logger.info("Posted General notification for ticket %s (via ticket_updated)", ticket_id)
             finally:
                 _currently_posting.discard(ticket_id)
@@ -363,8 +373,7 @@ async def on_ticket_updated(bot: Bot, payload: dict) -> None:
     name = owner_name.strip().lower()
     has_real_owner = bool(name) and not any(m in name for m in _UNASSIGNED_MARKERS)
     if has_real_owner or _is_our_operator(payload):
-        await _delete(bot, existing["message_id"])
-        await db.delete_general_message(ticket_id)
+        await _delete_all(bot, ticket_id)
         logger.info(
             "Deleted General notification on ticket_updated for ticket %s (assigned to %r)",
             ticket_id, owner_name or "our operator",
@@ -379,8 +388,7 @@ async def on_ticket_updated(bot: Bot, payload: dict) -> None:
         ticket_name=new_name,
         link=_payload_str(payload, "link"),
     )
-    await _edit(bot, existing["message_id"], text, ticket_id)
-    await db.save_general_message(ticket_id, existing["message_id"], new_name)
+    await _edit_all(bot, ticket_id, text, new_name)
     logger.info("Edited General notification for ticket %s", ticket_id)
 
 
@@ -389,11 +397,9 @@ async def on_ticket_closed(bot: Bot, payload: dict) -> None:
         return
     ticket_id = _payload_str(payload, "ticket_id")
     await db.delete_pending_general(ticket_id)
-    existing = await db.get_general_message(ticket_id)
-    if existing is None:
+    if await db.get_general_message(ticket_id) is None:
         return
-    await _delete(bot, existing["message_id"])
-    await db.delete_general_message(ticket_id)
+    await _delete_all(bot, ticket_id)
     logger.info("Deleted General notification on close for ticket %s", ticket_id)
 
 
@@ -423,37 +429,26 @@ async def reconcile_with_hde(bot: Bot) -> None:
     unassigned_by_id = {t.ticket_id: t for t in unassigned}
 
     # 1) Remove stale General messages (ticket no longer unassigned/open in HDE)
-    existing = await db.list_general_messages()
-    for row in existing:
-        ticket_id = row["ticket_id"]
-        if ticket_id in unassigned_by_id:
-            continue
+    stale_ids = {row["ticket_id"] for row in await db.list_general_messages()} - set(unassigned_by_id)
+    for ticket_id in stale_ids:
         if ticket_id in _currently_posting:
             continue  # webhook is mid-flight on this ticket
-        await _delete(bot, row["message_id"])
-        await db.delete_general_message(ticket_id)
+        await _delete_all(bot, ticket_id)
         logger.info("Reconcile: removed stale General message for ticket %s", ticket_id)
 
-    # 2) Post missing General messages (unassigned in HDE but not yet posted)
-    existing_ids = {row["ticket_id"] for row in existing}
+    # 2) Post missing General messages (unassigned in HDE but not yet posted in some group).
+    #    _send skips the groups that already have it, so a newly added engineer catches up.
     for ticket in unassigned:
-        if ticket.ticket_id in existing_ids:
-            continue
         if ticket.ticket_id in _currently_posting:
             continue  # webhook is mid-flight on this ticket
         _currently_posting.add(ticket.ticket_id)
         try:
-            # Re-check inside the guard to avoid racing with a webhook that just saved
-            if await db.get_general_message(ticket.ticket_id):
-                continue
             text = _format_general_message(
                 display_id=ticket.unique_id,
                 ticket_name=ticket.title,
                 link=ticket.hde_link,
             )
-            message_id = await _send(bot, text, ticket.ticket_id)
-            if message_id:
-                await db.save_general_message(ticket.ticket_id, message_id, ticket.title)
+            if await _send(bot, text, ticket.ticket_id, ticket.title):
                 # Drop from pending if it was queued — we just posted it via reconcile
                 await db.delete_pending_general(ticket.ticket_id)
                 logger.info("Reconcile: posted missing General message for ticket %s", ticket.ticket_id)
@@ -480,11 +475,9 @@ async def flush_overnight_general(bot: Bot) -> None:
             ticket_name=row["ticket_name"],
             link=row["link"],
         )
-        message_id = await _send(bot, text, ticket_id)
-        if message_id:
-            await db.save_general_message(ticket_id, message_id, row["ticket_name"])
+        if await _send(bot, text, ticket_id, row["ticket_name"]):
             await db.delete_pending_general(ticket_id)
-            logger.info("Flushed General notification for ticket %s (msg_id=%d)", ticket_id, message_id)
+            logger.info("Flushed General notification for ticket %s", ticket_id)
         else:
             logger.error("Failed to flush General notification for ticket %s — kept in pending", ticket_id)
 

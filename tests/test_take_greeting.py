@@ -70,10 +70,14 @@ class _FakeApi:
         self.posts.append((ticket_id, text))
 
 
-def _callback(data: str, user_id: int | None = None):
-    message = SimpleNamespace(text="🆕 Неприсвоенный тикет", edit_reply_markup=AsyncMock(), edit_text=AsyncMock())
+def _callback(data: str, user_id: int | None = None, chat_id: int | None = None):
+    message = SimpleNamespace(
+        text="🆕 Неприсвоенный тикет", edit_reply_markup=AsyncMock(), edit_text=AsyncMock(),
+        chat=SimpleNamespace(id=config.group_chat_id if chat_id is None else chat_id),
+    )
     user = SimpleNamespace(id=config.personal_chat_id if user_id is None else user_id)
-    return SimpleNamespace(data=data, message=message, answer=AsyncMock(), from_user=user)
+    bot = SimpleNamespace(edit_message_text=AsyncMock())
+    return SimpleNamespace(data=data, message=message, answer=AsyncMock(), from_user=user, bot=bot)
 
 
 @pytest.fixture
@@ -90,6 +94,12 @@ def api(monkeypatch, initialized_db):
     monkeypatch.setattr(config, "hde_owner_name", "Игорь Кравцов")
     monkeypatch.setattr(config, "public_reply_enabled", True)
     return fake
+
+
+@pytest.fixture(autouse=True)
+async def _posted_in_general(initialized_db):
+    """Ticket 555 is announced in General of the primary group, as before a press."""
+    await db.save_general_message("555", 70, "Касса", config.group_chat_id)
 
 
 @pytest.mark.asyncio
@@ -160,3 +170,24 @@ async def test_stranger_cannot_take(api):
     await cb_take_ticket(cb)
     assert api.assigned == [] and api.posts == []
     cb.message.edit_reply_markup.assert_not_awaited()  # buttons stay for the engineers
+
+
+@pytest.mark.asyncio
+async def test_first_press_wins_across_groups(api, monkeypatch):
+    from bot import operators
+    maxim = operators.Operator("102", "Максим Яницкий", 1220214456, -100222, api_auth="m@x:key")
+    monkeypatch.setattr(operators, "COLLEAGUES", (maxim,))
+    await db.save_general_message("555", 71, "Касса", -100222)
+
+    first = _callback("take:555:2", user_id=1220214456, chat_id=-100222)
+    await cb_take_ticket(first)
+    # the primary group's copy now says who took it, and has no buttons
+    edit = first.bot.edit_message_text.call_args.kwargs
+    assert (edit["chat_id"], edit["message_id"]) == (config.group_chat_id, 70)
+    assert "Забрал Максим Яницкий" in edit["text"] and "reply_markup" not in edit
+    assert await db.list_general_messages_for("555") == []
+
+    late = _callback("take:555:now")  # the primary engineer presses a second later
+    await cb_take_ticket(late)
+    assert api.assigned == [("555", "102")]  # still Maxim's
+    assert "уже забрали" in late.answer.call_args.args[0]
