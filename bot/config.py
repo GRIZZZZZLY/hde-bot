@@ -263,11 +263,15 @@ class Config:
         return bool(self.hde_api_base_url and self.hde_api_email and self.hde_api_key)
 
     def is_operator_allowed(self, telegram_user_id: int) -> bool:
-        return telegram_user_id in self.operator_telegram_user_ids
+        from .operators import by_tg_user
+        return telegram_user_id in self.operator_telegram_user_ids or by_tg_user(telegram_user_id) is not None
 
     def is_known_chat(self, chat_id: int) -> bool:
-        """The bot answers only in its group and in operators' private chats."""
-        return chat_id in (self.group_chat_id, self.personal_chat_id, *self.operator_telegram_user_ids)
+        """The bot answers only in operators' groups and private chats."""
+        from .operators import OPERATORS
+        known = {self.group_chat_id, self.personal_chat_id, *self.operator_telegram_user_ids}
+        known.update(c for o in OPERATORS for c in (o.chat_id, o.tg_user_id))
+        return chat_id in known
 
     def is_public_reply_allowed(self, ticket_id: str, unique_id: str) -> bool:
         if not self.public_reply_ticket_allowlist:
