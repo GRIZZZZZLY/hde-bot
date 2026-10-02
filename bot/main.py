@@ -66,6 +66,9 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
             "⬇ Update id=%s type=%s chat=%s", event.update_id, event.event_type,
             chat.id if chat else "-",
         )
+        if chat and not config.is_known_chat(chat.id):
+            logger.info("✗ Update id=%s ignored: unknown chat %s", event.update_id, chat.id)
+            return None
         result = await handler(event, data)
         logger.info("✓ Update id=%s done", event.update_id)
         return result

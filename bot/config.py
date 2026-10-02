@@ -265,6 +265,10 @@ class Config:
     def is_operator_allowed(self, telegram_user_id: int) -> bool:
         return telegram_user_id in self.operator_telegram_user_ids
 
+    def is_known_chat(self, chat_id: int) -> bool:
+        """The bot answers only in its group and in operators' private chats."""
+        return chat_id in (self.group_chat_id, self.personal_chat_id, *self.operator_telegram_user_ids)
+
     def is_public_reply_allowed(self, ticket_id: str, unique_id: str) -> bool:
         if not self.public_reply_ticket_allowlist:
             return True
