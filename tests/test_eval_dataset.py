@@ -16,6 +16,7 @@ from bot.optimizer.dataset import (
     load_golden_ticket_ids,
     split_samples,
 )
+from bot.config import config
 
 _EVALUATOR_KEYS = {
     "id", "ticket_id", "title", "history", "ai_answer", "op_answer",
@@ -34,7 +35,7 @@ async def _suggestion(
     history: str = "Клиент: касса не печатает чек", title: str = "Не печатает чек",
 ) -> int:
     sid = await _db.record_suggestion(
-        ticket_id=ticket_id, topic_id=1, trigger_source=trigger,
+        ticket_id=ticket_id, topic_id=1, chat_id=config.group_chat_id, trigger_source=trigger,
         context_until_post_id="10", pipeline_version="v1", prompt_version="p1",
         title=title, history=history, ai_answer="Клиенту: перезагрузите кассу",
         confidence=70,

@@ -12,10 +12,10 @@ async def test_register_always_records_with_anchor_and_tag(monkeypatch):
     await db_module.init_db()
     monkeypatch.setattr(config_module.config, "agent_enabled", True)  # флаг не влияет
     await register_feedback_pending(
-        topic_id=1, ticket_id="T1", history="h", title="t",
+        chat_id=config_module.config.group_chat_id, topic_id=1, ticket_id="T1", history="h", title="t",
         answer_text="a", ai_full_text="f", context_until_post_id="42",
     )
-    row = await get_open_suggestion_by_topic(1)
+    row = await get_open_suggestion_by_topic(config_module.config.group_chat_id, 1)
     assert row is not None
     assert row["context_until_post_id"] == "42"
     assert row["prompt_version"] in ("legacy", "db-active")
@@ -30,12 +30,13 @@ async def test_agent_row_and_register_row_dedupe_to_one(monkeypatch):
     kw = dict(ticket_id="T2", trigger_source="first", context_until_post_id="10",
               pipeline_version=config_module.config.agent_pipeline_version,
               prompt_version=prompt_version_tag())
-    sid_agent = await record_suggestion(topic_id=5, action_type="ANSWER", **kw)
+    sid_agent = await record_suggestion(topic_id=5, chat_id=config_module.config.group_chat_id,
+                                       action_type="ANSWER", **kw)
     await register_feedback_pending(
-        topic_id=5, ticket_id="T2", history="h", title="t",
+        chat_id=config_module.config.group_chat_id, topic_id=5, ticket_id="T2", history="h", title="t",
         answer_text="a", ai_full_text="f", context_until_post_id="10",
     )
-    row = await get_open_suggestion_by_topic(5)
+    row = await get_open_suggestion_by_topic(config_module.config.group_chat_id, 5)
     assert row["id"] == sid_agent                     # та же строка
     assert row["action_type"] == "ANSWER"             # trace агента не затёрт
 

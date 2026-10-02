@@ -10,6 +10,7 @@ from bot.handlers.ai_feedback import _suggest_in_flight, cb_ai_suggest
 def _fake_callback(topic_id: int) -> MagicMock:
     message = MagicMock()
     message.message_thread_id = topic_id
+    message.chat.id = config_module.config.group_chat_id
     callback = MagicMock()
     callback.message = message
     callback.data = "ai:suggest"
@@ -24,6 +25,7 @@ async def _upsert_topic(ticket_id: str, topic_id: int) -> None:
         unique_id="U-1", company_name="ACME", ticket_name="Не печатает чек",
         priority="high", status="open", owner_id="me", owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
+        chat_id=config_module.config.group_chat_id,
     )
 
 
@@ -72,7 +74,7 @@ async def test_second_click_while_generating_is_rejected():
     await _upsert_topic("TKT-10", 556)
     callback = _fake_callback(556)
 
-    _suggest_in_flight.add(556)
+    _suggest_in_flight.add("TKT-10")
     try:
         with patch(
             "bot.topic_manager._generate_summary_with_retry", new=AsyncMock()
@@ -81,7 +83,7 @@ async def test_second_click_while_generating_is_rejected():
         gen.assert_not_awaited()
         assert "⏳" in callback.answer.call_args.args[0]
     finally:
-        _suggest_in_flight.discard(556)
+        _suggest_in_flight.discard("TKT-10")
 
 
 async def test_in_flight_guard_released_after_generation():
@@ -95,7 +97,7 @@ async def test_in_flight_guard_released_after_generation():
     ), patch("bot.topic_history.post_suggestion_messages", new=AsyncMock(return_value=True)):
         await cb_ai_suggest(callback)
 
-    assert 557 not in _suggest_in_flight
+    assert "TKT-11" not in _suggest_in_flight
 
 
 async def test_unknown_topic_alerts_and_skips_generation():
@@ -125,7 +127,7 @@ async def test_generation_failure_posts_error_notice():
     # оператору сообщили о неудаче в топик
     sent_text = callback.bot.send_message.call_args.kwargs.get("text", "")
     assert "Не удалось" in sent_text
-    assert 558 not in _suggest_in_flight
+    assert "TKT-12" not in _suggest_in_flight
 
 
 async def test_button_stays_only_under_latest_client_reply(monkeypatch):
@@ -133,7 +135,7 @@ async def test_button_stays_only_under_latest_client_reply(monkeypatch):
     import bot.topic_manager as tm
 
     await db_module.init_db()
-    await db_module.upsert_topic("TKT-B", 777, ticket_name="Касса", company_name="ACME")
+    await db_module.upsert_topic("TKT-B", 777, ticket_name="Касса", company_name="ACME", chat_id=config_module.config.group_chat_id)
     monkeypatch.setattr(tm, "_is_work_time", lambda: True)
 
     bot = AsyncMock()

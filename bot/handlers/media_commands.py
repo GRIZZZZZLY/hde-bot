@@ -35,7 +35,7 @@ async def handle_topic_voice_note(message: Message) -> None:
         return
     if not config.agent_call_fixation_enabled:
         return
-    record = await db.get_topic_by_topic_id(message.message_thread_id)
+    record = await db.get_topic_by_topic_id(message.chat.id, message.message_thread_id)
     if record is None or record.is_deleted:
         return
 
@@ -80,7 +80,7 @@ async def handle_topic_call_recording(message: Message) -> None:
     from ..config import config
     if not config.is_operator_allowed(message.from_user.id):
         return
-    record = await db.get_topic_by_topic_id(message.message_thread_id)
+    record = await db.get_topic_by_topic_id(message.chat.id, message.message_thread_id)
     if record is None or record.is_deleted:
         return
 

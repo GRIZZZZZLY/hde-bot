@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 from datetime import datetime, timedelta, timezone
 
+from bot.config import config
 from bot.db import init_db, save_ai_feedback_pending, get_ai_feedback_pending, delete_ai_feedback_pending
 
 
@@ -41,6 +42,7 @@ async def test_feedback_pending_lifecycle():
     expires = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
 
     await save_ai_feedback_pending(
+        chat_id=config.group_chat_id,
         topic_id=42,
         ticket_id="123",
         history="Клиент: помогите\nСотрудник: ок",
@@ -48,13 +50,13 @@ async def test_feedback_pending_lifecycle():
         expires_at=expires,
     )
 
-    pending = await get_ai_feedback_pending(42)
+    pending = await get_ai_feedback_pending(config.group_chat_id, 42)
     assert pending is not None
     assert pending["ticket_id"] == "123"
     assert pending["title"] == "Проблема с принтером"
 
-    await delete_ai_feedback_pending(42)
-    assert await get_ai_feedback_pending(42) is None
+    await delete_ai_feedback_pending(config.group_chat_id, 42)
+    assert await get_ai_feedback_pending(config.group_chat_id, 42) is None
 
 
 @pytest.mark.asyncio
@@ -63,6 +65,7 @@ async def test_feedback_pending_expired():
     past = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
 
     await save_ai_feedback_pending(
+        chat_id=config.group_chat_id,
         topic_id=99,
         ticket_id="456",
         history="...",
@@ -70,5 +73,5 @@ async def test_feedback_pending_expired():
         expires_at=past,
     )
 
-    pending = await get_ai_feedback_pending(99)
+    pending = await get_ai_feedback_pending(config.group_chat_id, 99)
     assert pending is None  # expired → auto-deleted

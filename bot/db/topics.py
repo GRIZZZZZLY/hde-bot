@@ -20,12 +20,13 @@ async def get_topic(ticket_id: str) -> Optional[TicketTopic]:
     return _row_to_topic(row) if row else None
 
 
-async def get_topic_by_topic_id(topic_id: int) -> Optional[TicketTopic]:
+async def get_topic_by_topic_id(chat_id: int, topic_id: int) -> Optional[TicketTopic]:
+    """Topic numbers are unique only inside one supergroup, so the chat is part of the key."""
     async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT * FROM ticket_topics WHERE topic_id = ?",
-            (topic_id,),
+            "SELECT * FROM ticket_topics WHERE chat_id = ? AND topic_id = ?",
+            (chat_id, topic_id),
         ) as cursor:
             row = await cursor.fetchone()
     return _row_to_topic(row) if row else None
@@ -35,6 +36,7 @@ async def upsert_topic(
     ticket_id: str,
     topic_id: int,
     *,
+    chat_id: int,
     unique_id: str = "",
     company_name: str = "",
     ticket_name: str = "",
@@ -56,6 +58,7 @@ async def upsert_topic(
             """
             INSERT INTO ticket_topics (
                 ticket_id,
+                chat_id,
                 unique_id,
                 topic_id,
                 company_name,
@@ -74,8 +77,9 @@ async def upsert_topic(
                 deleted_at,
                 updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             ON CONFLICT(ticket_id) DO UPDATE SET
+                chat_id = excluded.chat_id,
                 unique_id = excluded.unique_id,
                 topic_id = excluded.topic_id,
                 company_name = excluded.company_name,
@@ -96,6 +100,7 @@ async def upsert_topic(
             """,
             (
                 ticket_id,
+                chat_id,
                 unique_id or ticket_id,
                 topic_id,
                 company_name,
@@ -254,7 +259,7 @@ async def mark_topic_deleted(ticket_id: str) -> None:
     )
     if record is not None:
         await delete_reply_draft(record.topic_id)
-        await delete_topic_media_cache(record.topic_id)
+        await delete_topic_media_cache(record.chat_id, record.topic_id)
 
 
 async def schedule_pre_sla(ticket_id: str, notify_at: str) -> None:

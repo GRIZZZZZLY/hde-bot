@@ -8,11 +8,12 @@ from bot.db.suggestion_store import (
     record_suggestion,
     record_suggestion_event,
 )
+from bot.config import config
 
 
 async def _seed(topic_id: int, ctx: str) -> int:
     return await record_suggestion(
-        ticket_id=f"T{topic_id}", topic_id=topic_id, trigger_source="first",
+        ticket_id=f"T{topic_id}", topic_id=topic_id, chat_id=config.group_chat_id, trigger_source="first",
         context_until_post_id=ctx, pipeline_version="v0", prompt_version="legacy",
     )
 

@@ -39,6 +39,7 @@ class OperatorTopicContext:
     record: db.TicketTopic
     telegram_user_id: int
     topic_id: int
+    chat_id: int
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,7 @@ async def get_operator_topic_context(
     *,
     telegram_user_id: int,
     topic_id: Optional[int],
+    chat_id: int,
 ) -> OperatorTopicContext:
     if topic_id is None:
         raise OperatorReplyError("Команда доступна только внутри topic")
@@ -65,7 +67,7 @@ async def get_operator_topic_context(
     if not config.is_operator_allowed(telegram_user_id):
         raise OperatorReplyError("У вас нет прав для этой команды")
 
-    record = await db.get_topic_by_topic_id(topic_id)
+    record = await db.get_topic_by_topic_id(chat_id, topic_id)
     if record is None or record.is_deleted:
         raise OperatorReplyError("Topic не связан с активным тикетом")
 
@@ -76,6 +78,7 @@ async def get_operator_topic_context(
         record=record,
         telegram_user_id=telegram_user_id,
         topic_id=topic_id,
+        chat_id=chat_id,
     )
 
 
@@ -137,6 +140,7 @@ async def cache_incoming_topic_media(message: Message) -> None:
 
     file_id, attachment_kind, filename, content_type = attachment
     await db.cache_topic_media(
+        chat_id=message.chat.id,
         topic_id=message.message_thread_id,
         message_id=message.message_id,
         media_group_id=message.media_group_id,
@@ -173,7 +177,7 @@ async def _extract_cached_media_group(
     if not media_group_id:
         return "", ()
 
-    cached_items = await db.list_cached_topic_media_group(context.topic_id, media_group_id)
+    cached_items = await db.list_cached_topic_media_group(context.chat_id, context.topic_id, media_group_id)
     if not cached_items:
         return "", ()
 
@@ -258,6 +262,7 @@ async def add_internal_note(
     hde_comment_id = _extract_hde_id(result)
     if hde_comment_id is not None and tg_message_id is not None:
         await db.save_sent_message(
+            chat_id=context.chat_id,
             telegram_message_id=tg_message_id,
             topic_id=context.topic_id,
             ticket_id=context.record.ticket_id,
@@ -301,6 +306,7 @@ async def send_public_reply(
     hde_post_id = _extract_hde_id(result)
     if hde_post_id is not None and tg_message_id is not None:
         await db.save_sent_message(
+            chat_id=context.chat_id,
             telegram_message_id=tg_message_id,
             topic_id=context.topic_id,
             ticket_id=context.record.ticket_id,
@@ -326,7 +332,7 @@ async def edit_operator_message(
     new_text: str,
 ) -> str:
     """Called when operator edits a Telegram message that was sent to HDE."""
-    record = await db.get_sent_message(telegram_message_id, context.topic_id)
+    record = await db.get_sent_message(context.chat_id, telegram_message_id, context.topic_id)
     if record is None:
         raise OperatorReplyError("Это сообщение не связано с HDE")
 
@@ -353,7 +359,7 @@ async def delete_operator_message(
     telegram_message_id: int,
 ) -> str:
     """Called when operator uses /delete replying to a message sent to HDE."""
-    record = await db.get_sent_message(telegram_message_id, context.topic_id)
+    record = await db.get_sent_message(context.chat_id, telegram_message_id, context.topic_id)
     if record is None:
         raise OperatorReplyError("Это сообщение не связано с HDE")
 
@@ -366,7 +372,7 @@ async def delete_operator_message(
     except HDEApiError as exc:
         raise OperatorReplyError(str(exc)) from exc
 
-    await db.delete_sent_message(telegram_message_id, context.topic_id)
+    await db.delete_sent_message(context.chat_id, telegram_message_id, context.topic_id)
 
     ticket = await db.get_topic(record.ticket_id)
     display_id = ticket.unique_id if ticket else record.ticket_id

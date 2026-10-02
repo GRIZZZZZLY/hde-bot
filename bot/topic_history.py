@@ -119,6 +119,7 @@ async def post_suggestion_messages(
             f"Памятка: {memo_line or '—'}"
         )
         await register_feedback_pending(
+            chat_id=_tm.config.group_chat_id,
             topic_id=topic_id,
             ticket_id=ticket_id,
             history=plain_history,
@@ -215,6 +216,7 @@ async def append_draft_to_reply(
 
         if markup is not None and client_line:
             await register_feedback_pending(
+                chat_id=_tm.config.group_chat_id,
                 topic_id=topic_id, ticket_id=ticket_id,
                 history=_build_history_text(all_posts, info), title=ticket_title,
                 answer_text=client_line,

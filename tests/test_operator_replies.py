@@ -59,6 +59,7 @@ def make_message(
     return SimpleNamespace(
         message_id=message_id,
         message_thread_id=message_thread_id,
+        chat=SimpleNamespace(id=config.group_chat_id),
         media_group_id=media_group_id,
         text=text,
         caption=caption,
@@ -87,10 +88,12 @@ async def active_topic(initialized_db):
         owner_id="me",
         owner_name="Me",
         hde_link="https://hde.example.com/tickets/100",
+        chat_id=config.group_chat_id,
     )
     return await get_operator_topic_context(
         telegram_user_id=config.personal_chat_id,
         topic_id=9001,
+        chat_id=config.group_chat_id,
     )
 
 
@@ -105,7 +108,7 @@ async def test_cache_incoming_topic_media_stores_album_entry(initialized_db):
 
     await cache_incoming_topic_media(message)
 
-    items = await db_module.list_cached_topic_media_group(9001, "group-1")
+    items = await db_module.list_cached_topic_media_group(config.group_chat_id, 9001, "group-1")
     assert len(items) == 1
     assert items[0].file_id == "photo-big"
     assert items[0].text == "Album caption"
@@ -309,12 +312,14 @@ async def test_operator_context_rejects_unauthorized_user(initialized_db):
         owner_id="me",
         owner_name="Me",
         hde_link="https://hde.example.com/tickets/101",
+        chat_id=config.group_chat_id,
     )
 
     with pytest.raises(OperatorReplyError):
         await get_operator_topic_context(
             telegram_user_id=999999,
             topic_id=9002,
+            chat_id=config.group_chat_id,
         )
 
 
@@ -323,13 +328,14 @@ async def test_operator_context_rejects_unauthorized_user(initialized_db):
 @pytest.mark.asyncio
 async def test_save_and_get_sent_message(initialized_db):
     await db_module.save_sent_message(
+        chat_id=config.group_chat_id,
         telegram_message_id=111,
         topic_id=9001,
         ticket_id="TKT-100",
         hde_entity_id=42,
         entity_type="post",
     )
-    record = await db_module.get_sent_message(111, 9001)
+    record = await db_module.get_sent_message(config.group_chat_id, 111, 9001)
     assert record is not None
     assert record.hde_entity_id == 42
     assert record.entity_type == "post"
@@ -339,23 +345,23 @@ async def test_save_and_get_sent_message(initialized_db):
 
 @pytest.mark.asyncio
 async def test_get_sent_message_returns_none_when_missing(initialized_db):
-    result = await db_module.get_sent_message(999, 9001)
+    result = await db_module.get_sent_message(config.group_chat_id, 999, 9001)
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_delete_sent_message(initialized_db):
-    await db_module.save_sent_message(111, 9001, "TKT-100", 42, "post")
-    await db_module.delete_sent_message(111, 9001)
-    result = await db_module.get_sent_message(111, 9001)
+    await db_module.save_sent_message(config.group_chat_id, 111, 9001, "TKT-100", 42, "post")
+    await db_module.delete_sent_message(config.group_chat_id, 111, 9001)
+    result = await db_module.get_sent_message(config.group_chat_id, 111, 9001)
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_save_sent_message_replaces_existing(initialized_db):
-    await db_module.save_sent_message(111, 9001, "TKT-100", 42, "post")
-    await db_module.save_sent_message(111, 9001, "TKT-100", 99, "comment")
-    record = await db_module.get_sent_message(111, 9001)
+    await db_module.save_sent_message(config.group_chat_id, 111, 9001, "TKT-100", 42, "post")
+    await db_module.save_sent_message(config.group_chat_id, 111, 9001, "TKT-100", 99, "comment")
+    record = await db_module.get_sent_message(config.group_chat_id, 111, 9001)
     assert record.hde_entity_id == 99
     assert record.entity_type == "comment"
 
@@ -391,6 +397,7 @@ async def test_hde_api_delete_post_calls_delete(monkeypatch):
 @pytest.mark.asyncio
 async def test_edit_operator_message_updates_hde_post(active_topic, initialized_db, monkeypatch):
     await db_module.save_sent_message(
+        chat_id=config.group_chat_id,
         telegram_message_id=501,
         topic_id=9001,
         ticket_id="TKT-100",
@@ -427,6 +434,7 @@ async def test_edit_operator_message_raises_if_not_found(active_topic, initializ
 @pytest.mark.asyncio
 async def test_delete_operator_message_deletes_hde_post(active_topic, initialized_db, monkeypatch):
     await db_module.save_sent_message(
+        chat_id=config.group_chat_id,
         telegram_message_id=502,
         topic_id=9001,
         ticket_id="TKT-100",
@@ -447,7 +455,7 @@ async def test_delete_operator_message_deletes_hde_post(active_topic, initialize
 
     assert "удалено" in result
     assert calls == [("delete_post", "TKT-100", 88)]
-    assert await db_module.get_sent_message(502, 9001) is None
+    assert await db_module.get_sent_message(config.group_chat_id, 502, 9001) is None
 
 
 @pytest.mark.asyncio
@@ -468,6 +476,7 @@ async def test_list_overnight_assigned_returns_matching(initialized_db):
         unique_id="ABC-200", company_name="ACME", ticket_name="Night ticket",
         priority="medium", status="open", owner_id="me", owner_name="Me",
         hde_link="https://hde.example.com/tickets/200",
+        chat_id=config.group_chat_id,
     )
     await db_module.update_topic("TKT-200", last_assigned_at="2026-04-04 02:00:00")
 
@@ -482,6 +491,7 @@ async def test_list_overnight_assigned_excludes_outside_window(initialized_db):
         unique_id="ABC-201", company_name="ACME", ticket_name="Day ticket",
         priority="medium", status="open", owner_id="me", owner_name="Me",
         hde_link="https://hde.example.com/tickets/201",
+        chat_id=config.group_chat_id,
     )
     await db_module.update_topic("TKT-201", last_assigned_at="2026-04-04 10:00:00")
 
@@ -496,6 +506,7 @@ async def test_list_active_topics_returns_active(initialized_db):
         unique_id="ABC-210", company_name="ACME", ticket_name="Active",
         priority="medium", status="open", owner_id="me", owner_name="Me",
         hde_link="https://hde.example.com/tickets/210",
+        chat_id=config.group_chat_id,
     )
     results = await db_module.list_active_topics()
     assert any(r.ticket_id == "TKT-210" for r in results)
@@ -508,6 +519,7 @@ async def test_list_active_topics_excludes_deleted(initialized_db):
         unique_id="ABC-211", company_name="ACME", ticket_name="Deleted",
         priority="medium", status="open", owner_id="me", owner_name="Me",
         hde_link="https://hde.example.com/tickets/211",
+        chat_id=config.group_chat_id,
     )
     await db_module.update_topic("TKT-211", topic_state="deleted")
     results = await db_module.list_active_topics()
@@ -585,6 +597,7 @@ async def test_refresh_marks_stale_topic_deleted(initialized_db, monkeypatch):
         unique_id="ABC-300", company_name="ACME", ticket_name="Stale",
         priority="medium", status="open", owner_id="me", owner_name="Me",
         hde_link="https://hde.example.com/tickets/300",
+        chat_id=config.group_chat_id,
     )
 
     async def fake_get_tickets(self):

@@ -20,7 +20,7 @@ async def _implicit_feedback(record: "db.TicketTopic", staff_text: str) -> None:
 
     from . import topic_manager as _tm
 
-    pending = await _tm.db.get_ai_feedback_pending(record.topic_id)
+    pending = await _tm.db.get_ai_feedback_pending(record.chat_id, record.topic_id)
     if not pending:
         return
 
@@ -38,7 +38,7 @@ async def _implicit_feedback(record: "db.TicketTopic", staff_text: str) -> None:
 
     if ratio >= 0.7:
         # Operator sent nearly the same text — AI suggestion was good
-        await _tm.db.delete_ai_feedback_pending(record.topic_id)
+        await _tm.db.delete_ai_feedback_pending(record.chat_id, record.topic_id)
         content = f"Тема: {pending['title']}\n\n{pending['history']}"
         # Удалить старый implicit_good для этого тикета (один тикет = одна запись)
         try:
@@ -78,7 +78,7 @@ async def _implicit_feedback(record: "db.TicketTopic", staff_text: str) -> None:
                 logger.warning("Pattern update failed: %s", exc)
     elif ratio <= 0.35:
         # Operator wrote something significantly different — save as correction
-        await _tm.db.delete_ai_feedback_pending(record.topic_id)
+        await _tm.db.delete_ai_feedback_pending(record.chat_id, record.topic_id)
         content = (
             f"Тема: {pending['title']}\n\n"
             f"{pending['history']}\n\n"

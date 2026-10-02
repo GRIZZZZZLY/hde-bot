@@ -1,6 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import bot.db as db_module
+from bot.config import config
 from bot.db.suggestion_store import get_open_suggestion_by_topic, get_suggestion, record_suggestion
 from bot.handlers.ai_feedback import _record_event, cb_send_to_hde, register_feedback_pending
 
@@ -8,10 +9,10 @@ from bot.handlers.ai_feedback import _record_event, cb_send_to_hde, register_fee
 async def test_record_event_maps_topic_to_latest_suggestion():
     await db_module.init_db()
     sid = await record_suggestion(
-        ticket_id="T", topic_id=42, trigger_source="first",
+        ticket_id="T", topic_id=42, chat_id=config.group_chat_id, trigger_source="first",
         context_until_post_id="5", pipeline_version="v0", prompt_version="legacy",
     )
-    await _record_event(42, "approved")
+    await _record_event(config.group_chat_id, 42, "approved")
     row = await get_suggestion(sid)
     assert row["review_status"] == "approved"
     assert row["human_label"] == "accepted"
@@ -20,12 +21,13 @@ async def test_record_event_maps_topic_to_latest_suggestion():
 async def test_record_event_noop_without_suggestion():
     await db_module.init_db()
     # no suggestion for this topic — must not raise
-    await _record_event(999, "approved")
+    await _record_event(config.group_chat_id, 999, "approved")
 
 
 def _fake_callback(topic_id: int, data: str = "ai:send_post") -> MagicMock:
     message = MagicMock()
     message.message_thread_id = topic_id
+    message.chat.id = config.group_chat_id
     message.edit_reply_markup = AsyncMock()
     callback = MagicMock()
     callback.message = message
@@ -39,7 +41,7 @@ async def test_send_to_hde_stale_pending_records_no_send_requested():
     leave a dangling 'send_requested' event with no matching 'sent'/'send_failed'."""
     await db_module.init_db()
     sid = await record_suggestion(
-        ticket_id="T3", topic_id=77, trigger_source="first",
+        ticket_id="T3", topic_id=77, chat_id=config.group_chat_id, trigger_source="first",
         context_until_post_id="5", pipeline_version="v0", prompt_version="legacy",
     )
     # No ai_feedback_pending saved for topic 77 → "pending" guard triggers.
@@ -94,7 +96,7 @@ async def test_send_refuses_a_draft_the_operator_did_not_see():
     hde.add_post.assert_not_awaited()
     callback.answer.assert_awaited_once_with(
         "⚠️ Черновик устарел — нажми 🔄 для нового варианта", show_alert=True)
-    assert [c.args[1] for c in events.await_args_list] == ["send_refused_stale"]
+    assert [c.args[2] for c in events.await_args_list] == ["send_refused_stale"]
 
 
 async def test_v2_correction_is_captured_only_after_edit_button(monkeypatch):
@@ -104,11 +106,11 @@ async def test_v2_correction_is_captured_only_after_edit_button(monkeypatch):
     from unittest.mock import patch
 
     import bot.handlers.ai_feedback as fb
-    from bot.config import config
 
     monkeypatch.setattr(config, "agent_voice_v2_enabled", True)
     monkeypatch.setattr(fb, "_awaiting_correction", set())
-    message = SimpleNamespace(message_thread_id=79, from_user=SimpleNamespace(is_bot=False))
+    message = SimpleNamespace(message_thread_id=79, chat=SimpleNamespace(id=config.group_chat_id),
+                              from_user=SimpleNamespace(is_bot=False))
     pending = {"ticket_id": "T79", "answer_text": "a", "title": "t", "history": "h"}
     with (
         patch("bot.handlers.ai_feedback.get_ai_feedback_pending", new=AsyncMock(return_value=pending)),
@@ -131,24 +133,24 @@ async def test_new_pending_draft_cancels_an_unanswered_edit_request(monkeypatch)
 
     import bot.handlers.ai_feedback as fb
 
-    monkeypatch.setattr(fb, "_awaiting_correction", {79})
+    monkeypatch.setattr(fb, "_awaiting_correction", {(config.group_chat_id, 79)})
     with (
         patch("bot.handlers.ai_feedback.save_ai_feedback_pending", new=AsyncMock()),
         patch("bot.handlers.ai_feedback.record_suggestion", new=AsyncMock(return_value=1)),
     ):
-        await fb.register_feedback_pending(79, "T79", "h", "t", answer_text="новый черновик")
-    assert 79 not in fb._awaiting_correction
+        await fb.register_feedback_pending(config.group_chat_id, 79, "T79", "h", "t", answer_text="новый черновик")
+    assert (config.group_chat_id, 79) not in fb._awaiting_correction
 
 
 async def test_register_feedback_pending_records_suggestion():
     await db_module.init_db()
     await register_feedback_pending(
-        topic_id=77, ticket_id="T77", history="диалог клиента",
+        chat_id=config.group_chat_id, topic_id=77, ticket_id="T77", history="диалог клиента",
         title="Не печатает чек", answer_text="Клиенту: проверьте бумагу",
         ai_full_text="Суть: ...\nКлиенту: проверьте бумагу",
         context_until_post_id="123",
     )
-    row = await get_open_suggestion_by_topic(77)
+    row = await get_open_suggestion_by_topic(config.group_chat_id, 77)
     assert row is not None
     assert row["ticket_id"] == "T77"
     assert row["trigger_source"] == "first"
@@ -173,7 +175,7 @@ async def _event_types_for(suggestion_id: int) -> list[str]:
 async def test_suit_and_memo_feedback_record_events_without_corrupting_answer_status():
     await db_module.init_db()
     sid = await record_suggestion(
-        ticket_id="TS", topic_id=55, trigger_source="first",
+        ticket_id="TS", topic_id=55, chat_id=config.group_chat_id, trigger_source="first",
         context_until_post_id="1", pipeline_version="v0", prompt_version="legacy",
     )
     await cb_suit_good(_fake_callback(55, "suit:good"))

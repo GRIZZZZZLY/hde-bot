@@ -222,6 +222,8 @@ async def _record_nonfatal(
         await record_fn(
             ticket_id=ticket_id,
             topic_id=topic_id,
+            # черновик постится в group_chat_id — там же его ищут кнопки фидбэка
+            chat_id=config.group_chat_id if topic_id is not None else None,
             trigger_source=trigger_source,
             context_until_post_id=anchor,
             client_id=str(getattr(info, "client_id", "") or "") or None,

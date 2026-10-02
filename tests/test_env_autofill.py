@@ -6,6 +6,7 @@ import pytest
 
 from bot import db as _db
 from bot.ticket_fields import _keyword_match
+from bot.config import config
 
 
 @pytest.fixture(autouse=True)
@@ -18,7 +19,7 @@ def use_tmp_db(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_env_option_id_roundtrip():
     await _db.init_db()
-    await _db.upsert_topic("t1", 100)
+    await _db.upsert_topic("t1", 100, chat_id=config.group_chat_id)
     await _db.update_topic("t1", env_option_id="145")
     rec = await _db.get_topic("t1")
     assert rec.env_option_id == "145"
@@ -27,7 +28,7 @@ async def test_env_option_id_roundtrip():
 @pytest.mark.asyncio
 async def test_env_option_id_default_none():
     await _db.init_db()
-    await _db.upsert_topic("t1", 100)
+    await _db.upsert_topic("t1", 100, chat_id=config.group_chat_id)
     rec = await _db.get_topic("t1")
     assert rec.env_option_id is None
 
@@ -38,9 +39,9 @@ async def test_env_option_id_default_none():
 async def test_get_common_env_for_company_most_frequent():
     await _db.init_db()
     for i, env in enumerate(["146", "146", "145"]):
-        await _db.upsert_topic(f"t{i}", 100 + i)
+        await _db.upsert_topic(f"t{i}", 100 + i, chat_id=config.group_chat_id)
         await _db.update_topic(f"t{i}", company_name="ООО Ромашка", env_option_id=env)
-    await _db.upsert_topic("t9", 999)
+    await _db.upsert_topic("t9", 999, chat_id=config.group_chat_id)
     await _db.update_topic("t9", company_name="ООО Ромашка")
     assert await _db.get_common_env_for_company("ООО Ромашка", exclude_ticket_id="t9") == "146"
 
@@ -48,7 +49,7 @@ async def test_get_common_env_for_company_most_frequent():
 @pytest.mark.asyncio
 async def test_get_common_env_for_company_excludes_current_and_empty():
     await _db.init_db()
-    await _db.upsert_topic("t1", 100)
+    await _db.upsert_topic("t1", 100, chat_id=config.group_chat_id)
     await _db.update_topic("t1", company_name="ООО Ромашка", env_option_id="")
     assert await _db.get_common_env_for_company("ООО Ромашка", exclude_ticket_id="t2") is None
     assert await _db.get_common_env_for_company("", exclude_ticket_id="t2") is None
@@ -298,7 +299,7 @@ async def test_client_reply_schedules_env_retry_when_undetermined(monkeypatch):
     from unittest.mock import AsyncMock
 
     await _db.init_db()
-    await _db.upsert_topic("TKT-1", 999, ticket_name="Касса", company_name="ACME")
+    await _db.upsert_topic("TKT-1", 999, ticket_name="Касса", company_name="ACME", chat_id=config.group_chat_id)
     await _db.update_topic("TKT-1", env_option_id="")
 
     monkeypatch.setattr(tm, "_is_work_time", lambda: True)
@@ -321,7 +322,7 @@ async def test_client_reply_no_retry_when_env_already_set(monkeypatch):
     from unittest.mock import AsyncMock
 
     await _db.init_db()
-    await _db.upsert_topic("TKT-1", 999, ticket_name="Касса", company_name="ACME")
+    await _db.upsert_topic("TKT-1", 999, ticket_name="Касса", company_name="ACME", chat_id=config.group_chat_id)
     await _db.update_topic("TKT-1", env_option_id="146")
 
     monkeypatch.setattr(tm, "_is_work_time", lambda: True)
@@ -343,7 +344,7 @@ async def test_ticket_closed_logs_env_outcome(monkeypatch):
     from unittest.mock import AsyncMock
 
     await _db.init_db()
-    await _db.upsert_topic("TKT-1", 999)
+    await _db.upsert_topic("TKT-1", 999, chat_id=config.group_chat_id)
     await _db.update_topic("TKT-1", env_option_id="145")
 
     log = AsyncMock()
@@ -363,7 +364,7 @@ async def test_ticket_closed_skips_log_when_never_classified(monkeypatch):
     from unittest.mock import AsyncMock
 
     await _db.init_db()
-    await _db.upsert_topic("TKT-1", 999)  # env_option_id остаётся NULL
+    await _db.upsert_topic("TKT-1", 999, chat_id=config.group_chat_id)  # env_option_id остаётся NULL
 
     log = AsyncMock()
     monkeypatch.setattr(tf, "log_env_outcome", log)

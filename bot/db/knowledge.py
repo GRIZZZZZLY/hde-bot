@@ -123,6 +123,7 @@ async def count_knowledge_by_source() -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 async def save_ai_feedback_pending(
+    chat_id: int,
     topic_id: int,
     ticket_id: str,
     history: str,
@@ -135,21 +136,21 @@ async def save_ai_feedback_pending(
         await db.execute(
             """
             INSERT OR REPLACE INTO ai_feedback_pending
-                (topic_id, ticket_id, history, title, answer_text, ai_full_text, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (chat_id, topic_id, ticket_id, history, title, answer_text, ai_full_text, expires_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (topic_id, ticket_id, history, title, answer_text, ai_full_text, expires_at),
+            (chat_id, topic_id, ticket_id, history, title, answer_text, ai_full_text, expires_at),
         )
         await db.commit()
 
 
-async def get_ai_feedback_pending(topic_id: int) -> Optional[dict]:
+async def get_ai_feedback_pending(chat_id: int, topic_id: int) -> Optional[dict]:
     """Return pending correction state or None if expired/missing."""
     async with connect() as db:
         async with db.execute(
             "SELECT ticket_id, history, title, answer_text, ai_full_text, expires_at "
-            "FROM ai_feedback_pending WHERE topic_id = ?",
-            (topic_id,),
+            "FROM ai_feedback_pending WHERE chat_id = ? AND topic_id = ?",
+            (chat_id, topic_id),
         ) as cur:
             row = await cur.fetchone()
     if row is None:
@@ -157,7 +158,7 @@ async def get_ai_feedback_pending(topic_id: int) -> Optional[dict]:
     from datetime import datetime, timezone
     expires = datetime.fromisoformat(row[5])
     if datetime.now(timezone.utc) > expires:
-        await delete_ai_feedback_pending(topic_id)
+        await delete_ai_feedback_pending(chat_id, topic_id)
         return None
     return {
         "ticket_id": row[0],
@@ -168,10 +169,10 @@ async def get_ai_feedback_pending(topic_id: int) -> Optional[dict]:
     }
 
 
-async def delete_ai_feedback_pending(topic_id: int) -> None:
+async def delete_ai_feedback_pending(chat_id: int, topic_id: int) -> None:
     async with connect() as db:
         await db.execute(
-            "DELETE FROM ai_feedback_pending WHERE topic_id = ?", (topic_id,)
+            "DELETE FROM ai_feedback_pending WHERE chat_id = ? AND topic_id = ?", (chat_id, topic_id)
         )
         await db.commit()
 

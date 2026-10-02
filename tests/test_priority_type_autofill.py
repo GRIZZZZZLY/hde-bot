@@ -3,6 +3,7 @@ classifier, HDE client extension, DB columns, apply wiring, outcome log."""
 import pytest
 
 from bot import db as _db
+from bot.config import config
 
 
 @pytest.fixture(autouse=True)
@@ -162,7 +163,7 @@ async def test_get_ticket_priority_type_error_returns_none(monkeypatch):
 @pytest.mark.asyncio
 async def test_pt_option_ids_roundtrip():
     await _db.init_db()
-    await _db.upsert_topic("t1", 100)
+    await _db.upsert_topic("t1", 100, chat_id=config.group_chat_id)
     await _db.update_topic("t1", priority_option_id="1", type_option_id="0")
     rec = await _db.get_topic("t1")
     assert rec.priority_option_id == "1"
@@ -172,7 +173,7 @@ async def test_pt_option_ids_roundtrip():
 @pytest.mark.asyncio
 async def test_pt_option_ids_default_none():
     await _db.init_db()
-    await _db.upsert_topic("t1", 100)
+    await _db.upsert_topic("t1", 100, chat_id=config.group_chat_id)
     rec = await _db.get_topic("t1")
     assert rec.priority_option_id is None
     assert rec.type_option_id is None
@@ -356,7 +357,7 @@ async def test_ticket_closed_logs_pt_outcome(monkeypatch):
     from unittest.mock import AsyncMock
 
     await _db.init_db()
-    await _db.upsert_topic("TKT-1", 999)
+    await _db.upsert_topic("TKT-1", 999, chat_id=config.group_chat_id)
     await _db.update_topic("TKT-1", priority_option_id="1", type_option_id="3")
 
     monkeypatch.setattr(tf, "log_env_outcome", AsyncMock())
@@ -377,7 +378,7 @@ async def test_ticket_closed_skips_pt_log_when_never_classified(monkeypatch):
     from unittest.mock import AsyncMock
 
     await _db.init_db()
-    await _db.upsert_topic("TKT-1", 999)  # priority_option_id остаётся NULL
+    await _db.upsert_topic("TKT-1", 999, chat_id=config.group_chat_id)  # priority_option_id остаётся NULL
 
     monkeypatch.setattr(tf, "log_env_outcome", AsyncMock())
     log = AsyncMock()

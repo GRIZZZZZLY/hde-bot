@@ -5,17 +5,18 @@ import aiosqlite
 import pytest
 
 import bot.db as db_module
+from bot.config import config
 
 
 @pytest.mark.asyncio
 async def test_gc_removes_rows_older_than_cutoff(initialized_db):
     """Rows with created_at older than N hours are deleted; fresh rows kept."""
     await db_module.cache_topic_media(
-        topic_id=1, message_id=10, media_group_id="mg1",
+        chat_id=config.group_chat_id, topic_id=1, message_id=10, media_group_id="mg1",
         attachment_kind="photo", file_id="file1",
     )
     await db_module.cache_topic_media(
-        topic_id=1, message_id=11, media_group_id="mg1",
+        chat_id=config.group_chat_id, topic_id=1, message_id=11, media_group_id="mg1",
         attachment_kind="photo", file_id="file2",
     )
 
@@ -50,11 +51,11 @@ async def test_gc_empty_returns_zero(initialized_db):
 async def test_gc_keeps_fresh_rows(initialized_db):
     """Fresh (<1h old) rows are untouched."""
     await db_module.cache_topic_media(
-        topic_id=1, message_id=10, media_group_id="mg1",
+        chat_id=config.group_chat_id, topic_id=1, message_id=10, media_group_id="mg1",
         attachment_kind="photo", file_id="file1",
     )
     deleted = await db_module.gc_stale_media_cache(hours=1)
     assert deleted == 0
 
-    rows = await db_module.list_cached_topic_media_group(1, "mg1")
+    rows = await db_module.list_cached_topic_media_group(config.group_chat_id, 1, "mg1")
     assert len(rows) == 1

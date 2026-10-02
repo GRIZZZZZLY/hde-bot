@@ -10,6 +10,7 @@ import json
 from types import SimpleNamespace
 
 from bot.agent.reconcile import collect_after_anchor
+from bot.config import config
 
 
 def _post(pid, uid, text, is_comment=False, dc="00:00:00 01.01.2024", files=None):
@@ -327,7 +328,7 @@ async def test_set_judge_result_with_none_label_keeps_category_only():
     )
     await db_module.init_db()
     sid = await record_suggestion(
-        ticket_id="GAP1", topic_id=1, trigger_source="first",
+        ticket_id="GAP1", topic_id=1, chat_id=config.group_chat_id, trigger_source="first",
         context_until_post_id="1", pipeline_version="v0", prompt_version="legacy",
         history="история", ai_answer="черновик",
     )
@@ -354,7 +355,7 @@ async def test_digest_exposes_context_gap_rows():
     )
     await db_module.init_db()
     sid = await record_suggestion(
-        ticket_id="GAP2", topic_id=1, trigger_source="first",
+        ticket_id="GAP2", topic_id=1, chat_id=config.group_chat_id, trigger_source="first",
         context_until_post_id="1", pipeline_version="v0", prompt_version="legacy",
         ai_answer="передадим специалисту",
     )

@@ -60,38 +60,42 @@ def _load_extra(path: str) -> list[Operator]:
     return extra
 
 
-def _load() -> tuple[Operator, ...]:
-    primary = _primary()
+def _load_colleagues() -> tuple[Operator, ...]:
     try:
-        extra = _load_extra(os.getenv("OPERATORS_FILE", "secrets/operators.json"))
+        return tuple(_load_extra(os.getenv("OPERATORS_FILE", "secrets/operators.json")))
     except (OSError, ValueError, KeyError) as exc:
         # A broken colleague entry must not take the bot down for the primary operator.
         logger.error("OPERATORS_FILE ignored: %s", exc)
-        extra = []
-    return (primary, *(o for o in extra if o.hde_id != primary.hde_id))
+        return ()
 
 
-OPERATORS: tuple[Operator, ...] = _load()
+COLLEAGUES: tuple[Operator, ...] = _load_colleagues()
+
+
+def all_operators() -> tuple[Operator, ...]:
+    """Primary first. Built on each call so it always follows the live config."""
+    first = primary()
+    return (first, *(o for o in COLLEAGUES if o.hde_id != first.hde_id))
 
 
 def primary() -> Operator:
-    return OPERATORS[0]
+    return _primary()
 
 
 def by_owner(owner_id: str, owner_name: str = "") -> Operator | None:
     """The operator who owns a ticket. Webhooks sometimes carry only a first name, so id wins."""
     owner_id = str(owner_id or "").strip()
     if owner_id:
-        return next((o for o in OPERATORS if o.hde_id == owner_id), None)
+        return next((o for o in all_operators() if o.hde_id == owner_id), None)
     name = (owner_name or "").strip().lower()
     if name:
-        return next((o for o in OPERATORS if o.name.lower() == name), None)
+        return next((o for o in all_operators() if o.name.lower() == name), None)
     return None
 
 
 def by_tg_user(user_id: int) -> Operator | None:
-    return next((o for o in OPERATORS if o.tg_user_id == user_id), None)
+    return next((o for o in all_operators() if o.tg_user_id == user_id), None)
 
 
 def by_chat(chat_id: int) -> Operator | None:
-    return next((o for o in OPERATORS if o.chat_id == chat_id), None)
+    return next((o for o in all_operators() if o.chat_id == chat_id), None)

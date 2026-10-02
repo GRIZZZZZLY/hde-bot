@@ -16,6 +16,7 @@ from bot.topic_manager import (
     handle_ticket_closed,
     handle_ticket_updated,
 )
+from bot.config import config
 
 
 def make_payload(**overrides):
@@ -103,6 +104,7 @@ async def test_owner_changed_from_me_marks_topic_pending_delete(initialized_db):
         owner_id="me",
         owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
+        chat_id=config.group_chat_id,
     )
     bot = make_bot()
 
@@ -129,6 +131,7 @@ async def test_owner_changed_back_to_me_reopens_existing_topic(initialized_db):
         owner_id="me",
         owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
+        chat_id=config.group_chat_id,
     )
     bot = make_bot()
 
@@ -157,6 +160,7 @@ async def test_ticket_updated_renames_topic(initialized_db):
         owner_id="me",
         owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
+        chat_id=config.group_chat_id,
     )
     bot = make_bot()
 
@@ -200,6 +204,7 @@ async def test_client_reply_message_has_suggest_button(initialized_db, monkeypat
         owner_id="me",
         owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
+        chat_id=config.group_chat_id,
     )
     await db_module.update_topic("TKT-1", topic_state="active")
     bot = make_bot()
@@ -279,6 +284,7 @@ async def test_staff_reply_clears_pre_sla(initialized_db, monkeypatch):
         owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
         pre_sla_notify_at=to_storage(utcnow() + timedelta(minutes=10)),
+        chat_id=config.group_chat_id,
     )
     bot = make_bot()
 
@@ -313,6 +319,7 @@ async def test_staff_reply_keeps_pre_sla_when_client_reply_is_newer(initialized_
         hde_link="https://hde.example.com/tickets/1",
         pre_sla_notify_at=future_notify,
         last_client_reply_at=client_reply_at,
+        chat_id=config.group_chat_id,
     )
     bot = make_bot()
 
@@ -339,6 +346,7 @@ async def test_ticket_closed_deletes_topic(initialized_db):
         owner_id="me",
         owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
+        chat_id=config.group_chat_id,
     )
     bot = make_bot()
 
@@ -369,6 +377,7 @@ async def test_staff_reply_same_second_does_not_clear_pre_sla(initialized_db, mo
         hde_link="https://hde.example.com/tickets/1",
         pre_sla_notify_at=notify,
         last_client_reply_at=lcr,
+        chat_id=config.group_chat_id,
     )
     # Force the staff_reply utcnow() fallback to drift sub-second past lcr
     fake_now = datetime(2026, 5, 20, 11, 14, 19, 500000, tzinfo=_tz.utc)
@@ -393,6 +402,7 @@ async def test_staff_reply_autoreply_does_not_clear_pre_sla(initialized_db, monk
         owner_id="me", owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
         pre_sla_notify_at=notify, last_client_reply_at=lcr,
+        chat_id=config.group_chat_id,
     )
     monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
     monkeypatch.setattr(topic_manager.config, "hde_owner_id", "me")
@@ -419,6 +429,7 @@ async def test_staff_reply_operator_reply_clears_pre_sla(initialized_db, monkeyp
         owner_id="me", owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
         pre_sla_notify_at=notify, last_client_reply_at=lcr,
+        chat_id=config.group_chat_id,
     )
     monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
     monkeypatch.setattr(topic_manager.config, "hde_owner_id", "me")
@@ -446,6 +457,7 @@ async def test_staff_reply_legacy_clear_when_verify_disabled(initialized_db, mon
         owner_id="me", owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
         pre_sla_notify_at=notify, last_client_reply_at=lcr,
+        chat_id=config.group_chat_id,
     )
     monkeypatch.setattr(topic_manager.config, "presla_hde_verify", False)
     verify = AsyncMock(return_value=False)
@@ -583,6 +595,7 @@ async def test_schedule_pre_sla_resets_reassurance_flag(initialized_db):
         ticket_name="Broken printer", priority="high", status="open",
         owner_id="me", owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
+        chat_id=config.group_chat_id,
     )
     await db_module.update_topic("TKT-1", reassurance_sent_at=to_storage(utcnow()))
 
@@ -605,6 +618,7 @@ async def test_staff_reply_clear_resets_reassurance_flag(initialized_db, monkeyp
         owner_id="me", owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
         pre_sla_notify_at=notify, last_client_reply_at=lcr,
+        chat_id=config.group_chat_id,
     )
     await db_module.update_topic("TKT-1", reassurance_sent_at=to_storage(utcnow()))
     monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
@@ -635,6 +649,7 @@ async def test_ticket_closed_serialized_on_ticket_lock(initialized_db):
         ticket_name="Broken printer", priority="high", status="open",
         owner_id="me", owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
+        chat_id=config.group_chat_id,
     )
     bot = make_bot()
     lock = topic_manager._ticket_lock("TKT-1")
@@ -674,6 +689,7 @@ async def test_scheduler_sends_pre_sla_alert(initialized_db, monkeypatch):
         owner_name="Me",
         hde_link="https://hde.example.com/tickets/1",
         pre_sla_notify_at=to_storage(utcnow() - timedelta(minutes=1)),
+        chat_id=config.group_chat_id,
     )
     bot = make_bot()
 
@@ -704,6 +720,7 @@ async def test_scheduler_deletes_pending_topics(initialized_db, monkeypatch):
         hde_link="https://hde.example.com/tickets/1",
         topic_state="pending_delete",
         delete_after_at=to_storage(utcnow() - timedelta(minutes=1)),
+        chat_id=config.group_chat_id,
     )
     bot = make_bot()
 
@@ -736,6 +753,7 @@ async def test_scheduler_hde_verify_called_once_per_pass(initialized_db, monkeyp
         last_client_reply_at=to_storage(utcnow() - timedelta(minutes=20)),
         pre_sla_notify_at=to_storage(utcnow() - timedelta(minutes=9)),
         pre_sla_sent_at=to_storage(utcnow() - timedelta(minutes=2)),
+        chat_id=config.group_chat_id,
     )
     await db_module.update_topic("TKT-1", pre_sla_message_id=555)
     verify = AsyncMock(return_value=False)
@@ -953,6 +971,7 @@ async def _active_topic_with_button(msg_id: int = 555):
         "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
         ticket_name="Broken printer", priority="high", status="open",
         owner_id="me", owner_name="Me", hde_link="https://hde.example.com/tickets/1",
+        chat_id=config.group_chat_id,
     )
     await db_module.update_topic("TKT-1", topic_state="active", suggest_button_msg_id=msg_id)
 

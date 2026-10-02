@@ -5,6 +5,7 @@ from bot.agent.reconcile import (
     find_operator_reply_after,
     reconcile_one,
 )
+from bot.config import config
 
 
 def _post(pid, uid, text, is_comment=False, dc="00:00:00 01.01.2024"):
@@ -377,7 +378,7 @@ async def test_reconciliation_digest_groups_by_category():
 
     async def _sug(ticket):
         return await record_suggestion(
-            ticket_id=ticket, topic_id=1, trigger_source="first",
+            ticket_id=ticket, topic_id=1, chat_id=config.group_chat_id, trigger_source="first",
             context_until_post_id="1", pipeline_version="v0", prompt_version="legacy",
             ai_answer=f"черновик для {ticket}",
         )
@@ -415,7 +416,7 @@ async def test_reconciliation_digest_trend_is_seven_days_oldest_first():
         ("D4", "same_action", "accepted", 30),      # вне окна тренда
     ]:
         sid = await record_suggestion(
-            ticket_id=ticket, topic_id=1, trigger_source="first",
+            ticket_id=ticket, topic_id=1, chat_id=config.group_chat_id, trigger_source="first",
             context_until_post_id="1", pipeline_version="v0", prompt_version="legacy",
             ai_answer="черновик",
         )

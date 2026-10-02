@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from bot.hde_api import HDEAttachment
+from bot.config import config
 
 _INFO = SimpleNamespace(client_id=7)
 
@@ -89,7 +90,7 @@ async def test_no_client_photos_touches_nothing():
 async def test_append_photo_descriptions_records_hashes(initialized_db):
     import bot.db as db_module
 
-    await db_module.upsert_topic("T-PH", 1)
+    await db_module.upsert_topic("T-PH", 1, chat_id=config.group_chat_id)
     await db_module.append_photo_descriptions("T-PH", ["Ошибка 3807"], hashes=["h1"])
     await db_module.append_photo_descriptions("T-PH", [], hashes=["h2"])
 

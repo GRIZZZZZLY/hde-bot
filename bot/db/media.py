@@ -53,6 +53,7 @@ async def delete_reply_draft(topic_id: int) -> None:
 
 async def cache_topic_media(
     *,
+    chat_id: int,
     topic_id: int,
     message_id: int,
     media_group_id: Optional[str],
@@ -66,6 +67,7 @@ async def cache_topic_media(
         await db.execute(
             """
             INSERT INTO topic_media_cache (
+                chat_id,
                 topic_id,
                 message_id,
                 media_group_id,
@@ -76,8 +78,8 @@ async def cache_topic_media(
                 text,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-            ON CONFLICT(topic_id, message_id) DO UPDATE SET
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            ON CONFLICT(chat_id, topic_id, message_id) DO UPDATE SET
                 media_group_id = excluded.media_group_id,
                 attachment_kind = excluded.attachment_kind,
                 file_id = excluded.file_id,
@@ -86,6 +88,7 @@ async def cache_topic_media(
                 text = excluded.text
             """,
             (
+                chat_id,
                 topic_id,
                 message_id,
                 media_group_id,
@@ -99,27 +102,27 @@ async def cache_topic_media(
         await db.commit()
 
 
-async def list_cached_topic_media_group(topic_id: int, media_group_id: str) -> list[CachedTopicMedia]:
+async def list_cached_topic_media_group(chat_id: int, topic_id: int, media_group_id: str) -> list[CachedTopicMedia]:
     async with connect() as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
             """
             SELECT *
             FROM topic_media_cache
-            WHERE topic_id = ? AND media_group_id = ?
+            WHERE chat_id = ? AND topic_id = ? AND media_group_id = ?
             ORDER BY message_id ASC
             """,
-            (topic_id, media_group_id),
+            (chat_id, topic_id, media_group_id),
         ) as cursor:
             rows = await cursor.fetchall()
     return [_row_to_cached_topic_media(row) for row in rows]
 
 
-async def delete_topic_media_cache(topic_id: int) -> None:
+async def delete_topic_media_cache(chat_id: int, topic_id: int) -> None:
     async with connect() as db:
         await db.execute(
-            "DELETE FROM topic_media_cache WHERE topic_id = ?",
-            (topic_id,),
+            "DELETE FROM topic_media_cache WHERE chat_id = ? AND topic_id = ?",
+            (chat_id, topic_id),
         )
         await db.commit()
 
@@ -141,6 +144,7 @@ async def gc_stale_media_cache(hours: int = 1) -> int:
 
 
 async def save_sent_message(
+    chat_id: int,
     telegram_message_id: int,
     topic_id: int,
     ticket_id: str,
@@ -151,15 +155,16 @@ async def save_sent_message(
         await db.execute(
             """
             INSERT OR REPLACE INTO sent_hde_messages
-                (telegram_message_id, topic_id, ticket_id, hde_entity_id, entity_type)
-            VALUES (?, ?, ?, ?, ?)
+                (chat_id, telegram_message_id, topic_id, ticket_id, hde_entity_id, entity_type)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (telegram_message_id, topic_id, ticket_id, hde_entity_id, entity_type),
+            (chat_id, telegram_message_id, topic_id, ticket_id, hde_entity_id, entity_type),
         )
         await db.commit()
 
 
 async def get_sent_message(
+    chat_id: int,
     telegram_message_id: int,
     topic_id: int,
 ) -> Optional[SentHdeMessage]:
@@ -168,9 +173,9 @@ async def get_sent_message(
         async with db.execute(
             """
             SELECT * FROM sent_hde_messages
-            WHERE telegram_message_id = ? AND topic_id = ?
+            WHERE chat_id = ? AND telegram_message_id = ? AND topic_id = ?
             """,
-            (telegram_message_id, topic_id),
+            (chat_id, telegram_message_id, topic_id),
         ) as cursor:
             row = await cursor.fetchone()
     if row is None:
@@ -185,10 +190,10 @@ async def get_sent_message(
     )
 
 
-async def delete_sent_message(telegram_message_id: int, topic_id: int) -> None:
+async def delete_sent_message(chat_id: int, telegram_message_id: int, topic_id: int) -> None:
     async with connect() as db:
         await db.execute(
-            "DELETE FROM sent_hde_messages WHERE telegram_message_id = ? AND topic_id = ?",
-            (telegram_message_id, topic_id),
+            "DELETE FROM sent_hde_messages WHERE chat_id = ? AND telegram_message_id = ? AND topic_id = ?",
+            (chat_id, telegram_message_id, topic_id),
         )
         await db.commit()

@@ -107,6 +107,9 @@ TICKET_TOPIC_COLUMNS = {
     # и всплывают в чужих обращениях, а здесь это контекст одного тикета —
     # черновик и ночная сверка читают их только для него.
     "call_notes": "TEXT DEFAULT ''",
+    # Супергруппа, где живёт топик: номер топика уникален только внутри группы.
+    # Старые записи получают GROUP_CHAT_ID при старте (_backfill_chat_scope).
+    "chat_id": "INTEGER",
 }
 
 UPDATABLE_FIELDS = {
@@ -176,6 +179,8 @@ class TicketTopic:
     call_notes: str = ""
     # Telegram message_id последнего сообщения с кнопкой «💡 Предложить ответ»
     suggest_button_msg_id: Optional[int] = None
+    # Супергруппа инженера, где живёт топик
+    chat_id: int = 0
 
     @property
     def is_active(self) -> bool:
@@ -253,6 +258,7 @@ async def init_db() -> None:
         )
         await _ensure_ticket_topic_columns(db)
         await _migrate_legacy_ticket_topics(db)
+        await _scope_tables_by_chat(db)
 
         await db.execute(
             """
@@ -297,35 +303,8 @@ async def init_db() -> None:
             )
             """
         )
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS topic_media_cache (
-                topic_id        INTEGER NOT NULL,
-                message_id      INTEGER NOT NULL,
-                media_group_id  TEXT,
-                attachment_kind TEXT NOT NULL,
-                file_id         TEXT NOT NULL,
-                filename        TEXT DEFAULT '',
-                content_type    TEXT DEFAULT '',
-                text            TEXT DEFAULT '',
-                created_at      TEXT DEFAULT (datetime('now')),
-                PRIMARY KEY (topic_id, message_id)
-            )
-            """
-        )
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS sent_hde_messages (
-                telegram_message_id  INTEGER NOT NULL,
-                topic_id             INTEGER NOT NULL,
-                ticket_id            TEXT NOT NULL,
-                hde_entity_id        INTEGER NOT NULL,
-                entity_type          TEXT NOT NULL,
-                created_at           TEXT DEFAULT (datetime('now')),
-                PRIMARY KEY (telegram_message_id, topic_id)
-            )
-            """
-        )
+        await db.execute(_CHAT_SCOPED_DDL["topic_media_cache"])
+        await db.execute(_CHAT_SCOPED_DDL["sent_hde_messages"])
         await db.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_topic_state
@@ -347,7 +326,7 @@ async def init_db() -> None:
         await db.execute(
             """
             CREATE INDEX IF NOT EXISTS idx_topic_media_group
-            ON topic_media_cache(topic_id, media_group_id, message_id)
+            ON topic_media_cache(chat_id, topic_id, media_group_id, message_id)
             """
         )
         await db.execute(
@@ -451,19 +430,7 @@ async def init_db() -> None:
             """
         )
 
-        await db.execute(
-            """
-            CREATE TABLE IF NOT EXISTS ai_feedback_pending (
-                topic_id     INTEGER PRIMARY KEY,
-                ticket_id    TEXT NOT NULL,
-                history      TEXT NOT NULL,
-                title        TEXT NOT NULL DEFAULT '',
-                answer_text  TEXT NOT NULL DEFAULT '',
-                ai_full_text TEXT NOT NULL DEFAULT '',
-                expires_at   TEXT NOT NULL
-            )
-            """
-        )
+        await db.execute(_CHAT_SCOPED_DDL["ai_feedback_pending"])
         # Migration: add answer_text if missing in existing DBs
         await _add_column_if_missing(
             db, "ai_feedback_pending", "answer_text", "TEXT NOT NULL DEFAULT ''"
@@ -571,6 +538,7 @@ async def init_db() -> None:
         # Migration: reconciliation verdict category (same_action / bot_escalated /
         # bot_wrong_fact) — the morning digest groups by it
         await _add_column_if_missing(db, "ai_suggestions", "judge_category", "TEXT")
+        await _scope_suggestions_by_chat(db)
         # Knowledge-base candidates queued by reconciliation (bot_wrong_fact):
         # the judge is a model, so a human decides before anything reaches the KB.
         await db.execute(
@@ -720,6 +688,97 @@ async def _ensure_ticket_topic_columns(db: aiosqlite.Connection) -> None:
             await db.execute(f"ALTER TABLE ticket_topics ADD COLUMN {name} {ddl}")
 
 
+_CHAT_SCOPED_DDL = {
+    "topic_media_cache": """
+            CREATE TABLE IF NOT EXISTS topic_media_cache (
+                chat_id         INTEGER NOT NULL,
+                topic_id        INTEGER NOT NULL,
+                message_id      INTEGER NOT NULL,
+                media_group_id  TEXT,
+                attachment_kind TEXT NOT NULL,
+                file_id         TEXT NOT NULL,
+                filename        TEXT DEFAULT '',
+                content_type    TEXT DEFAULT '',
+                text            TEXT DEFAULT '',
+                created_at      TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (chat_id, topic_id, message_id)
+            )
+""",
+    "sent_hde_messages": """
+            CREATE TABLE IF NOT EXISTS sent_hde_messages (
+                chat_id              INTEGER NOT NULL,
+                telegram_message_id  INTEGER NOT NULL,
+                topic_id             INTEGER NOT NULL,
+                ticket_id            TEXT NOT NULL,
+                hde_entity_id        INTEGER NOT NULL,
+                entity_type          TEXT NOT NULL,
+                created_at           TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (chat_id, telegram_message_id, topic_id)
+            )
+""",
+    "ai_feedback_pending": """
+            CREATE TABLE IF NOT EXISTS ai_feedback_pending (
+                chat_id      INTEGER NOT NULL,
+                topic_id     INTEGER NOT NULL,
+                ticket_id    TEXT NOT NULL,
+                history      TEXT NOT NULL,
+                title        TEXT NOT NULL DEFAULT '',
+                answer_text  TEXT NOT NULL DEFAULT '',
+                ai_full_text TEXT NOT NULL DEFAULT '',
+                expires_at   TEXT NOT NULL,
+                PRIMARY KEY (chat_id, topic_id)
+            )
+""",
+}
+
+
+# Таблицы, где ключ — номер топика. Номер топика уникален только внутри
+# супергруппы, поэтому с несколькими инженерами ключ становится (чат, топик).
+_CHAT_SCOPED_TABLES = ("topic_media_cache", "sent_hde_messages", "ai_feedback_pending")
+
+
+async def _scope_tables_by_chat(db: aiosqlite.Connection) -> None:
+    """Старые записи принадлежат единственной до сих пор группе GROUP_CHAT_ID.
+
+    ticket_topics получает столбец chat_id (ai_suggestions — после своего
+    CREATE, см. _scope_suggestions_by_chat). У трёх таблиц из
+    _CHAT_SCOPED_TABLES chat_id входит в первичный ключ: в SQLite это
+    пересборка — старая таблица переименовывается, новая создаётся из того же
+    DDL, что и в init_db, данные копируются, старая удаляется.
+    """
+    from ..config import config
+
+    group = config.group_chat_id
+    await db.execute("UPDATE ticket_topics SET chat_id = ? WHERE chat_id IS NULL", (group,))
+    for table in _CHAT_SCOPED_TABLES:
+        if not await _table_exists(db, table):
+            continue
+        old_columns = await _table_columns(db, table)
+        if "chat_id" in old_columns:
+            continue
+        legacy = f"{table}_legacy"
+        await db.execute(f"ALTER TABLE {table} RENAME TO {legacy}")
+        await db.execute(_CHAT_SCOPED_DDL[table])
+        new_columns = await _table_columns(db, table)
+        copied = sorted((old_columns & new_columns) - {"chat_id"})
+        cols = ", ".join(copied)
+        cursor = await db.execute(
+            f"INSERT INTO {table} (chat_id, {cols}) SELECT ?, {cols} FROM {legacy}", (group,)
+        )
+        logger.info("Migration: %s scoped by chat, %d rows", table, cursor.rowcount)
+        await db.execute(f"DROP TABLE {legacy}")
+
+
+async def _scope_suggestions_by_chat(db: aiosqlite.Connection) -> None:
+    from ..config import config
+
+    await _add_column_if_missing(db, "ai_suggestions", "chat_id", "INTEGER")
+    await db.execute(
+        "UPDATE ai_suggestions SET chat_id = ? WHERE chat_id IS NULL AND topic_id IS NOT NULL",
+        (config.group_chat_id,),
+    )
+
+
 async def _table_exists(db: aiosqlite.Connection, table: str) -> bool:
     async with db.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
@@ -836,6 +895,7 @@ def _row_to_topic(row: aiosqlite.Row) -> TicketTopic:
         priority_option_id=row["priority_option_id"] if "priority_option_id" in row.keys() else None,
         type_option_id=row["type_option_id"] if "type_option_id" in row.keys() else None,
         call_notes=row["call_notes"] if "call_notes" in row.keys() else "",
+        chat_id=(row["chat_id"] or 0) if "chat_id" in row.keys() else 0,
     )
 
 

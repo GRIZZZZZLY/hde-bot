@@ -279,7 +279,7 @@ async def _ensure_active_topic(
 
     if record is None or record.is_deleted:
         topic_id = await _create_topic(bot, payload)
-        await db.upsert_topic(ticket_id, topic_id, topic_state="active", **metadata)
+        await db.upsert_topic(ticket_id, topic_id, chat_id=config.group_chat_id, topic_state="active", **metadata)
         await db.update_topic(ticket_id, last_assigned_at=to_storage(utcnow()))
         # Send assignment notification FIRST (before summary and history)
         if announce_assignment:
@@ -318,7 +318,7 @@ async def _ensure_active_topic(
                 return await _ensure_active_topic(bot, payload, announce_assignment=announce_assignment)
             logger.error("Failed to reopen topic %d for ticket %s: %s", record.topic_id, ticket_id, exc)
         await _rename_topic_if_needed(bot, record, payload)
-        await db.upsert_topic(ticket_id, record.topic_id, topic_state="active", delete_after_at=None, deleted_at=None, **metadata)
+        await db.upsert_topic(ticket_id, record.topic_id, chat_id=record.chat_id, topic_state="active", delete_after_at=None, deleted_at=None, **metadata)
         await db.update_topic(ticket_id, last_assigned_at=to_storage(utcnow()))
         should_announce_assignment = announce_assignment
         reassignment = True
@@ -394,7 +394,7 @@ async def _ensure_active_topic(
                 )
                 await db.mark_topic_deleted(ticket_id)
                 new_topic_id = await _create_topic(bot, payload)
-                await db.upsert_topic(ticket_id, new_topic_id, topic_state="active", **metadata)
+                await db.upsert_topic(ticket_id, new_topic_id, chat_id=config.group_chat_id, topic_state="active", **metadata)
                 await db.update_topic(ticket_id, last_assigned_at=to_storage(utcnow()))
                 try:
                     await _send_topic_message(bot, new_topic_id, text)

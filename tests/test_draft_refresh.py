@@ -220,7 +220,7 @@ async def test_list_stale_drafts_skips_sent_and_old():
 
     async def _add(ticket, *, trigger="first", delivery="not_sent", days_ago=0):
         sid = await db.record_suggestion(
-            ticket_id=ticket, topic_id=1, trigger_source=trigger,
+            ticket_id=ticket, topic_id=1, chat_id=config_module.config.group_chat_id, trigger_source=trigger,
             context_until_post_id="1", pipeline_version="v0", prompt_version="legacy",
             ai_answer="черновик",
         )
@@ -250,7 +250,7 @@ async def test_ticket_already_refreshed_detects_comment_trigger():
     import bot.db as db
     await db.init_db()
     await db.record_suggestion(
-        ticket_id="REF1", topic_id=1, trigger_source="comment",
+        ticket_id="REF1", topic_id=1, chat_id=config_module.config.group_chat_id, trigger_source="comment",
         context_until_post_id="1", pipeline_version="v0", prompt_version="legacy",
         ai_answer="обновлённый черновик",
     )

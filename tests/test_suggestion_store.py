@@ -6,6 +6,7 @@ from bot.db.suggestion_store import (
     get_suggestion,
     record_suggestion,
 )
+from bot.config import config
 
 
 async def _columns(table: str) -> set[str]:
@@ -38,7 +39,7 @@ async def test_ai_suggestions_table_created():
 async def test_record_suggestion_stores_draft_answer():
     await db_module.init_db()
     sid = await record_suggestion(
-        ticket_id="TDA1", topic_id=901, trigger_source="button",
+        ticket_id="TDA1", topic_id=901, chat_id=config.group_chat_id, trigger_source="button",
         context_until_post_id="1", pipeline_version="v1", prompt_version="p1",
         ai_answer="fallback-вопрос", draft_answer="исходный драфт",
     )
@@ -80,7 +81,7 @@ def test_derive_human_label_sent_dominates_last_event():
 async def test_record_and_read_suggestion():
     await db_module.init_db()
     sid = await record_suggestion(
-        ticket_id="T1", topic_id=555, trigger_source="first",
+        ticket_id="T1", topic_id=555, chat_id=config.group_chat_id, trigger_source="first",
         context_until_post_id="99", pipeline_version="v0", prompt_version="legacy",
         title="Тема", history="диалог", ai_full_text="Клиенту: ...",
     )
@@ -96,7 +97,7 @@ async def test_record_and_read_suggestion():
 async def test_record_suggestion_idempotent():
     await db_module.init_db()
     kw = dict(
-        ticket_id="T2", topic_id=1, trigger_source="first",
+        ticket_id="T2", topic_id=1, chat_id=config.group_chat_id, trigger_source="first",
         context_until_post_id="10", pipeline_version="v0", prompt_version="legacy",
     )
     first = await record_suggestion(**kw)
@@ -107,14 +108,14 @@ async def test_record_suggestion_idempotent():
 async def test_get_open_suggestion_returns_latest():
     await db_module.init_db()
     await record_suggestion(
-        ticket_id="T3", topic_id=7, trigger_source="first",
+        ticket_id="T3", topic_id=7, chat_id=config.group_chat_id, trigger_source="first",
         context_until_post_id="1", pipeline_version="v0", prompt_version="legacy",
     )
     second = await record_suggestion(
-        ticket_id="T3", topic_id=7, trigger_source="button",
+        ticket_id="T3", topic_id=7, chat_id=config.group_chat_id, trigger_source="button",
         context_until_post_id="2", pipeline_version="v0", prompt_version="legacy",
     )
-    row = await get_open_suggestion_by_topic(7)
+    row = await get_open_suggestion_by_topic(config.group_chat_id, 7)
     assert row["id"] == second
 
 
@@ -123,7 +124,7 @@ from bot.db.suggestion_store import record_suggestion_event
 
 async def _new_suggestion(topic_id=1, ctx="1") -> int:
     return await record_suggestion(
-        ticket_id="T", topic_id=topic_id, trigger_source="first",
+        ticket_id="T", topic_id=topic_id, chat_id=config.group_chat_id, trigger_source="first",
         context_until_post_id=ctx, pipeline_version="v0", prompt_version="legacy",
     )
 
@@ -166,7 +167,7 @@ async def test_event_send_failed_leaves_label_none():
 async def test_record_suggestion_stores_full_trace():
     await db_module.init_db()
     sid = await record_suggestion(
-        ticket_id="TA", topic_id=9, trigger_source="first",
+        ticket_id="TA", topic_id=9, chat_id=config.group_chat_id, trigger_source="first",
         context_until_post_id="50", pipeline_version="v1", prompt_version="legacy",
         model="llama-3.3-70b-versatile",
         action_type="ASK", self_check='{"status":"unsupported"}',

@@ -102,6 +102,7 @@ async def cmd_note(message: Message, command: CommandObject) -> None:
         context = await get_operator_topic_context(
             telegram_user_id=message.from_user.id,
             topic_id=message.message_thread_id,
+            chat_id=message.chat.id,
         )
         return await add_internal_note(
             bot=message.bot,
@@ -135,6 +136,7 @@ async def cmd_autofill(message: Message) -> None:
         context = await get_operator_topic_context(
             telegram_user_id=message.from_user.id,
             topic_id=message.message_thread_id,
+            chat_id=message.chat.id,
         )
         ticket_id = context.record.ticket_id
         client = HDEApiClient()
@@ -162,6 +164,7 @@ async def cmd_send(message: Message, command: CommandObject) -> None:
         context = await get_operator_topic_context(
             telegram_user_id=message.from_user.id,
             topic_id=message.message_thread_id,
+            chat_id=message.chat.id,
         )
         return await send_public_reply(
             bot=message.bot,
@@ -180,6 +183,7 @@ async def cmd_delete(message: Message) -> None:
         context = await get_operator_topic_context(
             telegram_user_id=message.from_user.id,
             topic_id=message.message_thread_id,
+            chat_id=message.chat.id,
         )
         reply = message.reply_to_message
         if reply is None:
@@ -528,6 +532,7 @@ async def on_edited_message(message: Message) -> None:
         context = await get_operator_topic_context(
             telegram_user_id=message.from_user.id,
             topic_id=message.message_thread_id,
+            chat_id=message.chat.id,
         )
         new_text = (message.text or message.caption or "").strip()
         return await edit_operator_message(

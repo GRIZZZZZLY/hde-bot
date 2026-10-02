@@ -18,6 +18,7 @@ async def _topic(ticket_id="CALL1", topic_id=555):
         ticket_id, topic_id, unique_id="U1", company_name="Компания",
         ticket_name="Тема", priority="Стандарт", status="open",
         owner_id="1", owner_name="Оператор",
+        chat_id=config_module.config.group_chat_id,
     )
     return ticket_id
 

@@ -131,6 +131,7 @@ def memo_feedback_kb() -> InlineKeyboardMarkup:
 
 
 async def register_feedback_pending(
+    chat_id: int,
     topic_id: int,
     ticket_id: str,
     history: str,
@@ -149,9 +150,9 @@ async def register_feedback_pending(
     ).isoformat()
     # новый черновик отменяет незаконченный ✏️ к прошлому: иначе следующее
     # сообщение оператора ушло бы в базу как исправление уже другого черновика
-    _awaiting_correction.discard(topic_id)
+    _awaiting_correction.discard((chat_id, topic_id))
     await save_ai_feedback_pending(
-        topic_id, ticket_id, history, title, expires_at, answer_text, ai_full_text
+        chat_id, topic_id, ticket_id, history, title, expires_at, answer_text, ai_full_text
     )
     try:
         from ..config import config
@@ -159,6 +160,7 @@ async def register_feedback_pending(
         await record_suggestion(
             ticket_id=ticket_id,
             topic_id=topic_id,
+            chat_id=chat_id,
             trigger_source=trigger_source,
             context_until_post_id=context_until_post_id,
             pipeline_version=config.agent_pipeline_version,
@@ -174,6 +176,7 @@ async def register_feedback_pending(
 
 
 async def _record_event(
+    chat_id: int,
     topic_id: int,
     event_type: str,
     *,
@@ -182,7 +185,7 @@ async def _record_event(
 ) -> None:
     """Non-fatal: attach an operator-action event to the topic's latest suggestion."""
     try:
-        suggestion = await get_open_suggestion_by_topic(topic_id)
+        suggestion = await get_open_suggestion_by_topic(chat_id, topic_id)
         if suggestion is None:
             return
         await record_suggestion_event(
@@ -196,7 +199,7 @@ async def _record_event_from_callback(callback: CallbackQuery, event_type: str) 
     """Достаёт topic_id из карточки и пишет событие (non-fatal)."""
     msg = callback.message
     if msg is not None and getattr(msg, "message_thread_id", None) is not None:
-        await _record_event(msg.message_thread_id, event_type)
+        await _record_event(msg.chat.id, msg.message_thread_id, event_type)
 
 
 # ── Callbacks ────────────────────────────────────────────────────────────────
@@ -204,7 +207,7 @@ async def _record_event_from_callback(callback: CallbackQuery, event_type: str) 
 # Топики, в которых прямо сейчас идёт генерация по кнопке — защита от двойного
 # клика (идемпотентность в БД спасает от дублей записи, но не от двойной
 # генерации и двойного поста).
-_suggest_in_flight: set[int] = set()
+_suggest_in_flight: set[str] = set()  # ticket ids: topic numbers repeat across groups
 
 
 @router.callback_query(F.data == "ai:suggest")
@@ -217,19 +220,19 @@ async def cb_ai_suggest(callback: CallbackQuery) -> None:
         await callback.answer()
         return
     topic_id = callback.message.message_thread_id
-    if topic_id in _suggest_in_flight:
-        await callback.answer("⏳ Уже генерирую подсказку", show_alert=False)
-        return
-    record = await _db_module.get_topic_by_topic_id(topic_id)
+    record = await _db_module.get_topic_by_topic_id(callback.message.chat.id, topic_id)
     if record is None:
         await callback.answer("⚠️ Тикет для этого топика не найден", show_alert=True)
         return
-    _suggest_in_flight.add(topic_id)
+    if record.ticket_id in _suggest_in_flight:
+        await callback.answer("⏳ Уже генерирую подсказку", show_alert=False)
+        return
+    _suggest_in_flight.add(record.ticket_id)
     await callback.answer("💡 Генерирую подсказку…", show_alert=False)
     try:
         await _generate_and_post_suggestion(callback.bot, record)
     finally:
-        _suggest_in_flight.discard(topic_id)
+        _suggest_in_flight.discard(record.ticket_id)
 
 
 async def _generate_and_post_suggestion(bot, record) -> None:
@@ -301,9 +304,10 @@ async def cb_ai_good(callback: CallbackQuery) -> None:
     if not callback.message or not hasattr(callback.message, "message_thread_id"):
         await callback.answer()
         return
+    chat_id = callback.message.chat.id
     topic_id = callback.message.message_thread_id
-    await _record_event(topic_id, "approved")
-    pending = await get_ai_feedback_pending(topic_id)
+    await _record_event(chat_id, topic_id, "approved")
+    pending = await get_ai_feedback_pending(chat_id, topic_id)
     await callback.answer("✅ Сохранено в базу знаний", show_alert=False)
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
@@ -311,7 +315,7 @@ async def cb_ai_good(callback: CallbackQuery) -> None:
         logger.debug("ai_feedback: reply markup cleanup failed: %s", exc)
     if pending is None:
         return
-    await delete_ai_feedback_pending(topic_id)
+    await delete_ai_feedback_pending(chat_id, topic_id)
     content = f"Тема: {pending['title']}\n\n{pending['history']}"
     await index_knowledge_item(
         source="feedback",
@@ -351,15 +355,16 @@ async def cb_ai_bad(callback: CallbackQuery) -> None:
     if not callback.message or not hasattr(callback.message, "message_thread_id"):
         await callback.answer()
         return
+    chat_id = callback.message.chat.id
     topic_id = callback.message.message_thread_id
-    await _record_event(topic_id, "rejected")
-    pending = await get_ai_feedback_pending(topic_id)
+    await _record_event(chat_id, topic_id, "rejected")
+    pending = await get_ai_feedback_pending(chat_id, topic_id)
     await callback.answer()
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception as exc:
         logger.debug("ai_feedback: reply markup cleanup failed: %s", exc)
-    await delete_ai_feedback_pending(topic_id)
+    await delete_ai_feedback_pending(chat_id, topic_id)
     logger.info("Marked summary as bad for topic %d", topic_id)
     # Save for prompt optimizer
     if pending:
@@ -382,9 +387,10 @@ async def cb_ai_edit(callback: CallbackQuery) -> None:
     if not callback.message or not hasattr(callback.message, "message_thread_id"):
         await callback.answer()
         return
+    chat_id = callback.message.chat.id
     topic_id = callback.message.message_thread_id
-    await _record_event(topic_id, "edit_started")
-    pending = await get_ai_feedback_pending(topic_id)
+    await _record_event(chat_id, topic_id, "edit_started")
+    pending = await get_ai_feedback_pending(chat_id, topic_id)
     await callback.answer()
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
@@ -392,7 +398,7 @@ async def cb_ai_edit(callback: CallbackQuery) -> None:
         logger.debug("ai_feedback: reply markup cleanup failed: %s", exc)
     if pending is None:
         return
-    _awaiting_correction.add(topic_id)
+    _awaiting_correction.add((chat_id, topic_id))
     await callback.message.answer(
         "✏️ <b>Введи правильный ответ клиенту</b> — я сохраню его как пример.\n"
         "<i>Следующее сообщение в этом топике будет сохранено.</i>",
@@ -405,7 +411,7 @@ async def cb_ai_edit(callback: CallbackQuery) -> None:
 # На v2 pending есть у каждого черновика, поэтому ждём исправление только там,
 # где нажали ✏️ — иначе любое сообщение оператора ушло бы в базу как пример.
 # ponytail: в памяти процесса — после рестарта ✏️ надо нажать заново.
-_awaiting_correction: set[int] = set()
+_awaiting_correction: set[tuple[int, int]] = set()
 
 
 class _HasPendingCorrection(BaseFilter):
@@ -417,9 +423,9 @@ class _HasPendingCorrection(BaseFilter):
         if message.from_user is None or message.from_user.is_bot:
             return False
         if (config.agent_voice_v2_enabled
-                and message.message_thread_id not in _awaiting_correction):
+                and (message.chat.id, message.message_thread_id) not in _awaiting_correction):
             return False
-        pending = await get_ai_feedback_pending(message.message_thread_id)
+        pending = await get_ai_feedback_pending(message.chat.id, message.message_thread_id)
         return pending is not None
 
 
@@ -471,8 +477,9 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
         await callback.answer("⚠️ Не удалось определить топик", show_alert=True)
         return
 
+    chat_id = callback.message.chat.id
     topic_id = callback.message.message_thread_id
-    pending = await get_ai_feedback_pending(topic_id)
+    pending = await get_ai_feedback_pending(chat_id, topic_id)
     if not pending:
         await callback.answer("⚠️ Данные устарели (24ч TTL)", show_alert=True)
         return
@@ -487,10 +494,10 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
     shown = callback.message.text or callback.message.caption or ""
     if " ".join(answer_text.split()) not in " ".join(shown.split()):
         await callback.answer("⚠️ Черновик устарел — нажми 🔄 для нового варианта", show_alert=True)
-        await _record_event(topic_id, "send_refused_stale")
+        await _record_event(chat_id, topic_id, "send_refused_stale")
         return
 
-    await _record_event(topic_id, "send_requested")
+    await _record_event(chat_id, topic_id, "send_requested")
     try:
         client = HDEApiClient()
         if callback.data == "ai:send_post":
@@ -500,12 +507,12 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
             await client.add_comment(pending["ticket_id"], answer_text)
             label = "как комментарий"
     except HDEApiError as exc:
-        await _record_event(topic_id, "send_failed", payload=str(exc))
+        await _record_event(chat_id, topic_id, "send_failed", payload=str(exc))
         await callback.answer(f"❌ Ошибка HDE: {exc}", show_alert=True)
         return
 
     await callback.answer(f"✅ Отправлено {label}", show_alert=False)
-    await _record_event(topic_id, "sent", payload=answer_text)
+    await _record_event(chat_id, topic_id, "sent", payload=answer_text)
     try:
         original = callback.message.html_text or callback.message.text or ""
         await callback.message.edit_text(
@@ -536,14 +543,15 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
 
 @router.message(_HasPendingCorrection(), F.text.is_not(None), _NOT_COMMAND)
 async def capture_correction(message: Message) -> None:
+    chat_id = message.chat.id
     topic_id = message.message_thread_id
-    _awaiting_correction.discard(topic_id)
-    pending = await get_ai_feedback_pending(topic_id)
+    _awaiting_correction.discard((chat_id, topic_id))
+    pending = await get_ai_feedback_pending(chat_id, topic_id)
     if pending is None:
         return
-    await delete_ai_feedback_pending(topic_id)
+    await delete_ai_feedback_pending(chat_id, topic_id)
     correction_text = message.text.strip()
-    await _record_event(topic_id, "edited", payload=correction_text)
+    await _record_event(chat_id, topic_id, "edited", payload=correction_text)
     content = (
         f"Тема: {pending['title']}\n\n"
         f"{pending['history']}\n\n"

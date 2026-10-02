@@ -1,6 +1,7 @@
 import pytest
 import aiosqlite
 from bot import db as _db
+from bot.config import config
 
 
 @pytest.fixture(autouse=True)
@@ -195,9 +196,9 @@ async def test_implicit_feedback_saves_accepted_sample():
     expires = (datetime.now(timezone.utc) + timedelta(hours=24)).isoformat()
     async with aiosqlite.connect(_db.DB_PATH) as db:
         await db.execute(
-            "INSERT INTO ai_feedback_pending (topic_id, ticket_id, title, history, answer_text, expires_at) "
-            "VALUES (?,?,?,?,?,?)",
-            (1, "T1", "Тест", "История тикета", "Нажмите кнопку обновить", expires),
+            "INSERT INTO ai_feedback_pending (chat_id, topic_id, ticket_id, title, history, answer_text, expires_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (config.group_chat_id, 1, "T1", "Тест", "История тикета", "Нажмите кнопку обновить", expires),
         )
         await db.commit()
 
@@ -210,6 +211,7 @@ async def test_implicit_feedback_saves_accepted_sample():
                     from bot.topic_manager import _implicit_feedback
                     record = MagicMock()
                     record.topic_id = 1
+                    record.chat_id = config.group_chat_id
                     await _implicit_feedback(record, "Нажмите кнопку обновления")
 
     samples = await _db.get_optimization_samples(days=1)
