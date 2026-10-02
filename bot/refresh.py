@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
-from . import db
+from . import db, operators
 from .config import config
 from .formatter import make_topic_name
 from .hde_api import HDEApiClient, HDEApiError, HDETicket
@@ -28,7 +28,7 @@ class RefreshResult:
     active_after: int = 0
 
 
-def _ticket_to_payload(ticket: HDETicket, existing: db.TicketTopic | None) -> dict:
+def _ticket_to_payload(ticket: HDETicket, existing: db.TicketTopic | None, owner_name: str) -> dict:
     """Build a normalised payload dict from an HDETicket for use in topic_manager."""
     priority = (existing.priority if existing and existing.priority else None) or "medium"
     return {
@@ -39,7 +39,7 @@ def _ticket_to_payload(ticket: HDETicket, existing: db.TicketTopic | None) -> di
         "priority": priority,
         "status": "open",
         "owner_id": ticket.owner_id,
-        "owner_name": config.hde_owner_name,
+        "owner_name": owner_name,
         "link": ticket.hde_link,
         "department": "",
         "date_update": "",
@@ -69,7 +69,14 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
     active_before = len(active_topics)
 
     client = HDEApiClient()
-    hde_tickets = await client.get_my_open_tickets()
+    hde_tickets: list[HDETicket] = []
+    owner_names: dict[str, str] = {}
+    for operator in operators.all_operators():
+        if not operator.hde_id:
+            continue
+        for ticket in await client.get_my_open_tickets(operator.hde_id):
+            hde_tickets.append(ticket)
+            owner_names[ticket.ticket_id] = operator.name
     hde_count = len(hde_tickets)
 
     # Build lookup from HDE (by ticket_id and unique_id)
@@ -155,7 +162,7 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
             will_rename = old_name != new_name
 
         try:
-            await sync_ticket_topic(bot, _ticket_to_payload(ticket, existing))
+            await sync_ticket_topic(bot, _ticket_to_payload(ticket, existing, owner_names[ticket.ticket_id]))
         except Exception as exc:
             logger.error("refresh: failed to sync ticket %s: %s", ticket.ticket_id, exc)
             continue

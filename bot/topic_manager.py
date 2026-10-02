@@ -88,11 +88,16 @@ def _chunked(items: list, size: int) -> list[list]:
     return [items[index:index + size] for index in range(0, len(items), size)]
 
 
-def _effective_owner_match(payload: dict) -> bool:
-    return config.matches_owner(
+def _owner_operator(payload: dict) -> operators.Operator | None:
+    return operators.by_owner(
         _payload_value(payload, "owner_id"),
         _payload_value(payload, "owner_name"),
     )
+
+
+def _effective_owner_match(payload: dict) -> bool:
+    """The ticket belongs to one of the engineers the bot serves."""
+    return _owner_operator(payload) is not None
 
 
 def _relative_date(date_str: str | None) -> str | None:
@@ -160,8 +165,8 @@ async def _strip_prev_suggest_button(bot: Bot, chat_id: int, msg_id: int | None)
 
 
 def _chat_for_new_topic(payload: dict) -> int:
-    # stage 5 picks the ticket owner's group here
-    return operators.primary().chat_id
+    """The supergroup of the engineer who owns the ticket."""
+    return (_owner_operator(payload) or operators.primary()).chat_id
 
 
 async def _create_topic(bot: Bot, chat_id: int, payload: dict) -> int:
@@ -272,6 +277,20 @@ async def _generate_summary_with_retry(
     return None
 
 
+async def _remove_topic_of_previous_owner(bot: Bot, record: db.TicketTopic) -> None:
+    """Delete the topic from the previous engineer's group; the history stays in HDE."""
+    await _try_delete_pre_sla_message(bot, record)
+    try:
+        await bot.delete_forum_topic(chat_id=record.chat_id, message_thread_id=record.topic_id)
+    except TelegramAPIError as exc:
+        logger.warning("Could not delete topic %d of the previous owner: %s", record.topic_id, exc)
+    await db.mark_topic_deleted(record.ticket_id)
+    logger.info(
+        "Ticket %s handed over: removed topic %d from chat %d",
+        record.ticket_id, record.topic_id, record.chat_id,
+    )
+
+
 async def _ensure_active_topic(
     bot: Bot,
     payload: dict,
@@ -283,6 +302,17 @@ async def _ensure_active_topic(
     metadata = _topic_metadata(payload)
     should_announce_assignment = False
     reassignment = False
+
+    new_owner = _owner_operator(payload)
+    if (
+        record is not None and not record.is_deleted
+        and new_owner is not None and record.chat_id != new_owner.chat_id
+    ):
+        # Handed over to another engineer: the topic moves to their group.
+        # Only on a known owner: HDE sometimes sends an empty owner, and that
+        # must not drag a colleague's topic into the primary group.
+        await _remove_topic_of_previous_owner(bot, record)
+        record = await db.get_topic(ticket_id)
 
     if record is None or record.is_deleted:
         chat_id = _chat_for_new_topic(payload)
@@ -933,7 +963,10 @@ async def _hde_staff_replied_since(ticket_id: str, since_storage: Optional[str])
     owner_id_str = config.hde_owner_id.strip()
     if not owner_id_str:
         return False
-    static_staff = {owner_id_str, *(uid for uid in config.agent_staff_user_ids if uid)}
+    static_staff = {
+        *(o.hde_id for o in operators.all_operators() if o.hde_id),
+        *(uid for uid in config.agent_staff_user_ids if uid),
+    }
 
     since_dt = parse_datetime(since_storage)
 

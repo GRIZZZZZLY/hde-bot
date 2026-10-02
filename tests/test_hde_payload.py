@@ -238,7 +238,7 @@ async def test_paginated_hde_fetch_borrows_one_shared_connector(monkeypatch):
     monkeypatch.setattr("bot.hde_api.aiohttp.ClientSession", FakeSession)
 
     client = HDEApiClient()
-    tickets = await client.get_my_open_tickets()
+    tickets = await client.get_my_open_tickets("me")
 
     assert [ticket.ticket_id for ticket in tickets] == ["1", "2", "3"]
     assert session_count == 3
@@ -478,7 +478,7 @@ async def test_open_tickets_pages_fetched_concurrently(monkeypatch):
     monkeypatch.setattr("bot.hde_api.aiohttp.ClientSession", FakeSession)
 
     client = HDEApiClient()
-    tickets = await client.get_my_open_tickets()
+    tickets = await client.get_my_open_tickets("me")
 
     assert [t.ticket_id for t in tickets] == ["1", "2", "3", "4"]
     # Page 1 is fetched alone (it carries total_pages); pages 2-4 must overlap.

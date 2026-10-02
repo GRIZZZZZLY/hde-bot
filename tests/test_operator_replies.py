@@ -566,7 +566,7 @@ async def test_get_my_open_tickets_returns_list(monkeypatch):
 
     monkeypatch.setattr("aiohttp.ClientSession", lambda **kwargs: FakeSession())
     client = HDEApiClient()
-    tickets = await client.get_my_open_tickets()
+    tickets = await client.get_my_open_tickets(config.hde_owner_id)
     assert len(tickets) == 1
     assert tickets[0].unique_id == "ABC-010"
     assert tickets[0].title == "Test ticket"
@@ -576,7 +576,7 @@ async def test_get_my_open_tickets_returns_list(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_send_morning_digest_sends_message(initialized_db, monkeypatch):
-    async def fake_get_tickets(self):
+    async def fake_get_tickets(self, owner_id):
         return []
 
     monkeypatch.setattr("bot.hde_api.HDEApiClient.get_my_open_tickets", fake_get_tickets)
@@ -600,7 +600,7 @@ async def test_refresh_marks_stale_topic_deleted(initialized_db, monkeypatch):
         chat_id=config.group_chat_id,
     )
 
-    async def fake_get_tickets(self):
+    async def fake_get_tickets(self, owner_id):
         return []
 
     monkeypatch.setattr("bot.hde_api.HDEApiClient.get_my_open_tickets", fake_get_tickets)

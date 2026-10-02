@@ -1093,12 +1093,15 @@ async def test_client_reply_goes_to_the_records_group_not_the_config_group(initi
     """Multi-operator: an existing topic is addressed in the group it lives in."""
     other_group = -100222
     assert other_group != config.group_chat_id
+    _add_colleague(monkeypatch, other_group)
     monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
     monkeypatch.setattr(topic_manager.config, "agent_voice_v2_enabled", False)
+    # the same topic number also exists in the primary group, for another ticket
+    await db_module.upsert_topic("TKT-IGOR", 999, chat_id=config.group_chat_id, owner_id="me")
     await db_module.upsert_topic(
         "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
         ticket_name="Broken printer", priority="high", status="open",
-        owner_id="me", owner_name="Me", hde_link="https://hde.example.com/tickets/1",
+        owner_id="102", owner_name="Максим Яницкий", hde_link="https://hde.example.com/tickets/1",
         chat_id=other_group,
     )
     await db_module.update_topic("TKT-1", topic_state="active", suggest_button_msg_id=555)
@@ -1112,6 +1115,7 @@ async def test_client_reply_goes_to_the_records_group_not_the_config_group(initi
     bot.edit_message_reply_markup = AsyncMock()
 
     await handle_client_reply(bot, make_payload(
+        owner_id="102", owner_name="Максим",
         attachments=[MagicMock(url="https://files.example.com/photo.jpg", filename="photo.jpg", content_type="image/jpeg")]
     ))
 
@@ -1134,3 +1138,66 @@ async def test_new_topic_is_stored_with_the_group_it_was_created_in(initialized_
     assert bot.send_message.call_args.kwargs["chat_id"] == -100333
     record = await db_module.get_topic("TKT-1")
     assert record.chat_id == -100333
+
+
+def _add_colleague(monkeypatch, chat_id: int):
+    from bot import operators
+    maxim = operators.Operator("102", "Максим Яницкий", 1220214456, chat_id)
+    monkeypatch.setattr(operators, "COLLEAGUES", (maxim,))
+    return maxim
+
+
+@pytest.mark.asyncio
+async def test_colleagues_ticket_opens_in_their_group(initialized_db, monkeypatch):
+    _add_colleague(monkeypatch, -100222)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    bot = make_bot()
+
+    await handle_assigned_on_create(bot, make_payload(owner_id="102", owner_name="Максим"))
+
+    assert bot.create_forum_topic.call_args.kwargs["chat_id"] == -100222
+    assert (await db_module.get_topic("TKT-1")).chat_id == -100222
+
+
+@pytest.mark.asyncio
+async def test_ticket_of_someone_outside_the_registry_gets_no_topic(initialized_db, monkeypatch):
+    _add_colleague(monkeypatch, -100222)
+    bot = make_bot()
+
+    await handle_assigned_on_create(bot, make_payload(owner_id="61", owner_name="Юрий"))
+
+    bot.create_forum_topic.assert_not_called()
+    assert await db_module.get_topic("TKT-1") is None
+
+
+@pytest.mark.asyncio
+async def test_handover_moves_the_topic_to_the_new_owners_group(initialized_db, monkeypatch):
+    _add_colleague(monkeypatch, -100222)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    bot = make_bot()
+    await handle_assigned_on_create(bot, make_payload())  # Igor's ticket, primary group
+    assert (await db_module.get_topic("TKT-1")).chat_id == config.group_chat_id
+    bot.create_forum_topic.reset_mock()
+
+    await handle_owner_changed(bot, make_payload(owner_id="102", owner_name="Максим"))
+
+    bot.delete_forum_topic.assert_awaited_once_with(chat_id=config.group_chat_id, message_thread_id=999)
+    assert bot.create_forum_topic.call_args.kwargs["chat_id"] == -100222
+    record = await db_module.get_topic("TKT-1")
+    assert record.chat_id == -100222 and record.is_active
+    assert record.owner_id == "102"
+
+
+@pytest.mark.asyncio
+async def test_payload_without_owner_never_moves_a_colleagues_topic(initialized_db, monkeypatch):
+    _add_colleague(monkeypatch, -100222)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager.config, "agent_voice_v2_enabled", False)
+    await db_module.upsert_topic("TKT-1", 999, chat_id=-100222, owner_id="102", owner_name="Максим Яницкий")
+    bot = make_bot()
+
+    await handle_client_reply(bot, make_payload(owner_id="", owner_name=""))
+
+    bot.delete_forum_topic.assert_not_called()
+    bot.create_forum_topic.assert_not_called()
+    assert (await db_module.get_topic("TKT-1")).chat_id == -100222

@@ -489,14 +489,14 @@ class HDEApiClient:
         comments.reverse()  # oldest first for display
         return comments
 
-    async def get_my_open_tickets(self) -> list[HDETicket]:
-        """Return all open/in-progress tickets assigned to me, paginated.
+    async def get_my_open_tickets(self, owner_id: str) -> list[HDETicket]:
+        """Return all open/in-progress tickets assigned to *owner_id*, paginated.
 
         Page 1 reveals total_pages; remaining pages are fetched concurrently.
         """
         url = f"{self.base_url}/tickets/"
         base_params = {
-            "owner_list": config.hde_owner_id,
+            "owner_list": owner_id,
             "status_list": "open,process",
         }
 

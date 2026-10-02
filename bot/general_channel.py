@@ -19,11 +19,11 @@ from .config import config
 _currently_posting: set[str] = set()
 
 def _is_our_operator(payload: dict) -> bool:
-    """Return True if the current owner in this payload is our operator."""
-    return config.matches_owner(
+    """Return True if the ticket is owned by one of our engineers (they have a topic for it)."""
+    return operators.by_owner(
         _payload_str(payload, "owner_id"),
         _payload_str(payload, "owner_name"),
-    )
+    ) is not None
 
 logger = logging.getLogger(__name__)
 
