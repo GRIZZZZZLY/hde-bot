@@ -61,7 +61,11 @@ def _build_dispatcher(bot: Bot) -> Dispatcher:
 
     @dp.update.outer_middleware()
     async def log_update(handler, event: Update, data: dict):
-        logger.info("⬇ Update id=%s type=%s", event.update_id, event.event_type)
+        chat = data.get("event_chat")
+        logger.info(
+            "⬇ Update id=%s type=%s chat=%s", event.update_id, event.event_type,
+            chat.id if chat else "-",
+        )
         result = await handler(event, data)
         logger.info("✓ Update id=%s done", event.update_id)
         return result
