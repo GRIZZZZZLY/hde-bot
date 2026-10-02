@@ -58,3 +58,15 @@ def test_lookups(monkeypatch):
     assert config.is_operator_allowed(777)
     assert config.is_known_chat(-100222)
     assert not config.is_known_chat(-100999)
+
+
+def test_hde_client_uses_the_acting_operators_key(monkeypatch):
+    from bot.hde_api import HDEApiClient
+    maxim = operators.Operator("102", "Максим Яницкий", 777, -100222, api_auth="maxim@example.com:k:with:colons")
+    monkeypatch.setattr(operators, "COLLEAGUES", (maxim,))
+    own = HDEApiClient(auth=operators.hde_auth_for_user(777)).auth
+    assert (own.login, own.password) == ("maxim@example.com", "k:with:colons")
+    assert operators.hde_auth_for_owner("102") == maxim.api_auth
+    shared = HDEApiClient(auth=operators.hde_auth_for_user(config.personal_chat_id)).auth
+    assert (shared.login, shared.password) == (config.hde_api_email, config.hde_api_key)
+    assert HDEApiClient(auth="broken").auth.login == config.hde_api_email

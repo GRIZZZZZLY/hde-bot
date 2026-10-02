@@ -70,15 +70,22 @@ class _FakeApi:
         self.posts.append((ticket_id, text))
 
 
-def _callback(data: str):
+def _callback(data: str, user_id: int | None = None):
     message = SimpleNamespace(text="🆕 Неприсвоенный тикет", edit_reply_markup=AsyncMock(), edit_text=AsyncMock())
-    return SimpleNamespace(data=data, message=message, answer=AsyncMock())
+    user = SimpleNamespace(id=config.personal_chat_id if user_id is None else user_id)
+    return SimpleNamespace(data=data, message=message, answer=AsyncMock(), from_user=user)
 
 
 @pytest.fixture
 def api(monkeypatch, initialized_db):
     fake = _FakeApi()
-    monkeypatch.setattr(hde_api, "HDEApiClient", lambda: fake)
+    fake.auths = []
+
+    def _client(auth=""):
+        fake.auths.append(auth)
+        return fake
+
+    monkeypatch.setattr(hde_api, "HDEApiClient", _client)
     monkeypatch.setattr(config, "hde_owner_id", "98")
     monkeypatch.setattr(config, "hde_owner_name", "Игорь Кравцов")
     monkeypatch.setattr(config, "public_reply_enabled", True)
@@ -132,3 +139,24 @@ async def test_taketimes_command_saves_and_rejects(monkeypatch, initialized_db):
     await cmd_taketimes(msg(1), SimpleNamespace(args="9-1"))
     await cmd_taketimes(msg(2), SimpleNamespace(args="5"))  # not an operator
     assert await db.get_setting(TAKE_HOURS_SETTING) == "1-2 3 6"
+
+
+@pytest.mark.asyncio
+async def test_colleague_takes_ticket_with_own_name_and_key(api, monkeypatch):
+    from bot import operators
+    maxim = operators.Operator("102", "Максим Яницкий", 1220214456, -100222, api_auth="m@x:key")
+    monkeypatch.setattr(operators, "COLLEAGUES", (maxim,))
+    cb = _callback("take:555:now", user_id=1220214456)
+    await cb_take_ticket(cb)
+    assert api.assigned == [("555", "102")]
+    assert api.posts == [("555", take_greeting("Максим", "now"))]
+    assert set(api.auths) == {"m@x:key"}  # both the assignment and the greeting use his key
+    assert "Забрал Максим Яницкий" in cb.message.edit_text.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_stranger_cannot_take(api):
+    cb = _callback("take:555:now", user_id=999)
+    await cb_take_ticket(cb)
+    assert api.assigned == [] and api.posts == []
+    cb.message.edit_reply_markup.assert_not_awaited()  # buttons stay for the engineers

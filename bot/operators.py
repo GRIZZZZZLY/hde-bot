@@ -99,3 +99,15 @@ def by_tg_user(user_id: int) -> Operator | None:
 
 def by_chat(chat_id: int) -> Operator | None:
     return next((o for o in all_operators() if o.chat_id == chat_id), None)
+
+
+def hde_auth_for_user(tg_user_id: int) -> str:
+    """HDE credentials of whoever pressed the button; "" (shared key) for the primary operator."""
+    operator = by_tg_user(tg_user_id)
+    return operator.api_auth if operator else ""
+
+
+def hde_auth_for_owner(owner_id: str) -> str:
+    """HDE credentials of the ticket owner, for messages the bot sends on their behalf."""
+    operator = by_owner(owner_id)
+    return operator.api_auth if operator else ""

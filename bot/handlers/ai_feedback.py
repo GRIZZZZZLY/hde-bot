@@ -501,7 +501,8 @@ async def cb_send_to_hde(callback: CallbackQuery) -> None:
 
     await _record_event(chat_id, topic_id, "send_requested")
     try:
-        client = HDEApiClient()
+        from ..operators import hde_auth_for_user
+        client = HDEApiClient(auth=hde_auth_for_user(callback.from_user.id))
         if callback.data == "ai:send_post":
             await client.add_post(pending["ticket_id"], answer_text)
             label = "клиенту"

@@ -17,6 +17,7 @@ from .formatter import (
     format_message_deleted,
 )
 from .hde_api import HDEApiClient, HDEApiError, HDEAttachment
+from .operators import hde_auth_for_user
 
 
 def _extract_hde_id(result: Any) -> Optional[int]:
@@ -249,7 +250,7 @@ async def add_internal_note(
         "Укажите текст заметки после команды или ответьте командой на сообщение с текстом или медиа",
     )
 
-    client = HDEApiClient()
+    client = HDEApiClient(auth=hde_auth_for_user(context.telegram_user_id))
     try:
         result = await client.add_comment(
             context.record.ticket_id,
@@ -293,7 +294,7 @@ async def send_public_reply(
         "Укажите текст после /send или ответьте командой на сообщение с текстом или медиа",
     )
 
-    client = HDEApiClient()
+    client = HDEApiClient(auth=hde_auth_for_user(context.telegram_user_id))
     try:
         result = await client.add_post(
             context.record.ticket_id,
@@ -339,7 +340,7 @@ async def edit_operator_message(
     if not new_text.strip():
         raise OperatorReplyError("Текст не может быть пустым")
 
-    client = HDEApiClient()
+    client = HDEApiClient(auth=hde_auth_for_user(context.telegram_user_id))
     try:
         if record.entity_type == "post":
             await client.update_post(record.ticket_id, record.hde_entity_id, new_text)
@@ -363,7 +364,7 @@ async def delete_operator_message(
     if record is None:
         raise OperatorReplyError("Это сообщение не связано с HDE")
 
-    client = HDEApiClient()
+    client = HDEApiClient(auth=hde_auth_for_user(context.telegram_user_id))
     try:
         if record.entity_type == "post":
             await client.delete_post(record.ticket_id, record.hde_entity_id)

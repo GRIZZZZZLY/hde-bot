@@ -167,11 +167,16 @@ class HDETicket:
 
 
 class HDEApiClient:
-    def __init__(self) -> None:
+    def __init__(self, auth: str = "") -> None:
+        """auth: "email:api_key" of the operator who acts, so posts are authored by them;
+        "" = the shared key from .env (reads and background jobs)."""
         if not config.has_hde_api_credentials():
             raise HDEApiError("HDE API не настроен")
         self.base_url = config.hde_api_base_url.rstrip("/")
-        self.auth = aiohttp.BasicAuth(config.hde_api_email, config.hde_api_key)
+        email, _, key = auth.partition(":")
+        if not (email and key):
+            email, key = config.hde_api_email, config.hde_api_key
+        self.auth = aiohttp.BasicAuth(email, key)
 
     def _make_session(self) -> aiohttp.ClientSession:
         return aiohttp.ClientSession(

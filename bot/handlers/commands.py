@@ -224,8 +224,9 @@ async def cmd_taketimes(message: Message, command: CommandObject) -> None:
     )
 
 
-async def _send_take_greeting(ticket_id: str, mode: str) -> str:
-    """Post the greeting to the client; return a status suffix for the General message.
+async def _send_take_greeting(ticket_id: str, mode: str, operator) -> str:
+    """Post the greeting to the client from the engineer who took the ticket;
+    return a status suffix for the General message.
 
     The ticket is already assigned at this point, so a failure here is reported,
     not rolled back: the engineer writes the greeting by hand.
@@ -235,11 +236,11 @@ async def _send_take_greeting(ticket_id: str, mode: str) -> str:
     from ..hde_api import HDEApiClient, HDEApiError
 
     promise = "вернусь через 5 мин" if mode == "now" else f"вернусь в течение {hours_label(mode)} ч"
-    first_name = (config.hde_owner_name.split() or [""])[0]
+    first_name = operator.first_name
     if not config.public_reply_enabled or not first_name:
-        return f"\n⚠️ Клиенту не написал (публичные ответы выключены или нет HDE_OWNER_NAME): «{promise}»"
+        return f"\n⚠️ Клиенту не написал (публичные ответы выключены или нет имени инженера): «{promise}»"
     try:
-        await HDEApiClient().add_post(ticket_id, text=take_greeting(first_name, mode))
+        await HDEApiClient(auth=operator.api_auth).add_post(ticket_id, text=take_greeting(first_name, mode))
     except HDEApiError as exc:
         logger.error("take_ticket: greeting for ticket %s failed: %s", ticket_id, exc)
         return f"\n⚠️ Клиенту не ушло ({exc}), напиши сам: «{promise}»"
@@ -249,10 +250,11 @@ async def _send_take_greeting(ticket_id: str, mode: str) -> str:
 
 @router.callback_query(F.data.startswith("take:"))
 async def cb_take_ticket(callback: CallbackQuery) -> None:
-    """Inline button: assign unassigned ticket to me."""
+    """Inline button: assign the unassigned ticket to the engineer who pressed it."""
     from ..hde_api import HDEApiClient, HDEApiError
     from ..config import config
     from .. import db
+    from .. import operators
 
     # take:{id} (old messages) | take:{id}:now | take:{id}:{hours}
     _, ticket_id, *rest = callback.data.split(":")
@@ -263,19 +265,22 @@ async def cb_take_ticket(callback: CallbackQuery) -> None:
         await callback.answer("Неизвестная кнопка", show_alert=True)
         return
 
+    operator = operators.by_tg_user(callback.from_user.id)
+    if operator is None and config.is_operator_allowed(callback.from_user.id):
+        operator = operators.primary()  # extra admin ids from OPERATOR_TELEGRAM_USER_IDS
+    if operator is None or not operator.hde_id:
+        await callback.answer("Ты не в списке инженеров бота", show_alert=True)
+        return
+
     # Prevent double-tap: remove button immediately
     try:
         await callback.message.edit_reply_markup(reply_markup=None)
     except Exception as exc:
         logger.debug("take_ticket: reply markup cleanup failed: %s", exc)
 
-    if not config.hde_owner_id:
-        await callback.answer("HDE_OWNER_ID не задан", show_alert=True)
-        return
-
     try:
-        api = HDEApiClient()
-        await api.assign_ticket(ticket_id, config.hde_owner_id)
+        api = HDEApiClient(auth=operator.api_auth)
+        await api.assign_ticket(ticket_id, operator.hde_id)
     except HDEApiError as exc:
         await callback.answer(f"Ошибка HDE: {exc}", show_alert=True)
         # Restore button on failure
@@ -286,10 +291,9 @@ async def cb_take_ticket(callback: CallbackQuery) -> None:
             logger.debug("take_ticket: button restore failed: %s", restore_exc)
         return
 
-    owner_name = config.hde_owner_name or "Оператор"
-    status_line = f"✅ <b>Забрал {owner_name}</b>"
+    status_line = f"✅ <b>Забрал {operator.name or 'Оператор'}</b>"
     if mode:
-        status_line += await _send_take_greeting(ticket_id, mode)
+        status_line += await _send_take_greeting(ticket_id, mode, operator)
     try:
         await callback.message.edit_text(
             f"{status_line}\n\n{callback.message.text or ''}",

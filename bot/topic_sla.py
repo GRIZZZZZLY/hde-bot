@@ -124,7 +124,8 @@ async def send_reassurance_to_client(bot: Bot, record: db.TicketTopic) -> None:
     from . import topic_manager as _tm
     from .hde_api import HDEApiClient, HDEApiError
     try:
-        client = HDEApiClient()
+        from .operators import hde_auth_for_owner
+        client = HDEApiClient(auth=hde_auth_for_owner(record.owner_id))
         await client.add_post(record.ticket_id, _tm.config.reassurance_text)
     except HDEApiError as exc:
         logger.warning("Reassurance post failed for ticket %s: %s", record.ticket_id, exc)
