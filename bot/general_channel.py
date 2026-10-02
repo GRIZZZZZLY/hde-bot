@@ -6,6 +6,7 @@ Enabled only when GENERAL_TOPIC_ID is set in config.
 from __future__ import annotations
 
 import logging
+import re
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -53,17 +54,50 @@ def _format_general_message(display_id: str, ticket_name: str, link: str) -> str
     return "\n".join(parts)
 
 
-def _take_keyboard(ticket_id: str) -> InlineKeyboardMarkup:
+TAKE_HOURS_SETTING = "take_busy_hours"
+_DEFAULT_TAKE_HOURS = "1 1-2 2 4"
+_BUSY_OPTION = re.compile(r"(\d{1,2})(?:-(\d{1,2}))?")
+
+
+def is_busy_option(mode: str) -> bool:
+    """«2» or «1-2»: hours, 1..72, range ascending."""
+    m = _BUSY_OPTION.fullmatch(mode)
+    if not m:
+        return False
+    low, high = int(m[1]), int(m[2] or m[1])
+    return 1 <= low <= high <= 72 and (m[2] is None or low < high)
+
+
+def parse_busy_options(text: str) -> list[str] | None:
+    """«1 1-2 2 4» → ['1', '1-2', '2', '4']; None if any option is invalid or the count is off."""
+    options = text.replace(",", " ").replace("–", "-").split()
+    if not 1 <= len(options) <= 6 or not all(is_busy_option(o) for o in options):
+        return None
+    return options
+
+
+async def busy_options() -> list[str]:
+    raw = await db.get_setting(TAKE_HOURS_SETTING, _DEFAULT_TAKE_HOURS)
+    return parse_busy_options(raw) or parse_busy_options(_DEFAULT_TAKE_HOURS)
+
+
+def hours_label(mode: str) -> str:
+    """«1-2» → «1–2» for display."""
+    return mode.replace("-", "–")
+
+
+async def _take_keyboard(ticket_id: str) -> InlineKeyboardMarkup:
     """take:{id}:now → «ready» greeting, take:{id}:{hours} → «busy» greeting.
 
-    Plain take:{id} (messages posted before the greeting buttons) still assigns
-    without writing to the client — see cb_take_ticket.
+    Hour options come from bot_settings (/taketimes). Plain take:{id} (messages
+    posted before the greeting buttons) still assigns without writing to the
+    client — see cb_take_ticket.
     """
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🤙 Беру сейчас", callback_data=f"take:{ticket_id}:now")],
         [
-            InlineKeyboardButton(text=f"⏳ {h} ч", callback_data=f"take:{ticket_id}:{h}")
-            for h in config.take_busy_hours
+            InlineKeyboardButton(text=f"⏳ {hours_label(h)} ч", callback_data=f"take:{ticket_id}:{h}")
+            for h in await busy_options()
         ],
     ])
 
@@ -80,12 +114,12 @@ def take_greeting(first_name: str, mode: str) -> str:
             f"Здравствуйте, меня зовут {first_name}, инженер по оборудованию. "
             "Изучаю информацию по вашему обращению, вернусь через 5 минут."
         )
-    hours = int(mode)
+    upper = int(mode.split("-")[-1])  # «в течение 1–2 часов»: the word agrees with the upper bound
     return (
         f"Здравствуйте! Меня зовут {first_name}, инженер по оборудованию. "
         "Сейчас у нас большое количество обращений, поэтому решение вашего запроса "
         "займёт немного больше времени. "
-        f"Вернусь к вам с ответом в течение {hours} {_hours_genitive(hours)}."
+        f"Вернусь к вам с ответом в течение {hours_label(mode)} {_hours_genitive(upper)}."
     )
 
 
@@ -101,7 +135,7 @@ async def _send(bot: Bot, text: str, ticket_id: str) -> int | None:
             text=text,
             parse_mode="HTML",
             disable_web_page_preview=True,
-            reply_markup=_take_keyboard(ticket_id),
+            reply_markup=await _take_keyboard(ticket_id),
         )
         if config.general_topic_id != 1:
             kwargs["message_thread_id"] = config.general_topic_id
@@ -121,7 +155,7 @@ async def _edit(bot: Bot, message_id: int, text: str, ticket_id: str) -> None:
             text=text,
             parse_mode="HTML",
             disable_web_page_preview=True,
-            reply_markup=_take_keyboard(ticket_id),
+            reply_markup=await _take_keyboard(ticket_id),
         )
     except TelegramAPIError as exc:
         logger.error("Failed to edit General notification %d: %s", message_id, exc)

@@ -63,7 +63,6 @@ class Config:
     agent_v2_llm_model: str
     general_topic_id: int | None
     unassigned_department: str
-    take_busy_hours: tuple[int, ...]
     work_days: tuple[int, ...]
     work_hour_start: int
     work_hour_end: int
@@ -173,9 +172,6 @@ class Config:
             agent_v2_llm_model=os.getenv("AGENT_V2_LLM_MODEL", "").strip(),
             general_topic_id=_parse_optional_int(os.getenv("GENERAL_TOPIC_ID")),
             unassigned_department=os.getenv("UNASSIGNED_DEPARTMENT", "").strip(),
-            take_busy_hours=tuple(
-                int(h) for h in _parse_csv(os.getenv("TAKE_BUSY_HOURS", "1,2,4"))
-            ),
             work_days=tuple(
                 int(d) for d in _parse_csv(os.getenv("WORK_DAYS", "0,1,2,3,6"))
             ),

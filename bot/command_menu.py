@@ -26,6 +26,7 @@ DM_COMMANDS: list[BotCommand] = [
     BotCommand(command="weekly",   description="Сводка за прошлую рабочую неделю"),
     BotCommand(command="digest",   description="Вызвать утреннюю сводку"),
     BotCommand(command="aisummary", description="Вкл/выкл AI саммари тикета"),
+    BotCommand(command="taketimes", description="Часы на кнопках нового тикета"),
 ]
 
 # Operator group / topic menu

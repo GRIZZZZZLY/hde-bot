@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from bot import hde_api
+from bot import db, hde_api
 from bot.config import config
-from bot.general_channel import _take_keyboard, take_greeting
+from bot.general_channel import TAKE_HOURS_SETTING, _take_keyboard, parse_busy_options, take_greeting
 from bot.handlers.commands import cb_take_ticket
 
 
@@ -24,13 +24,35 @@ def test_greeting_busy_hours_grammar(hours, tail):
     assert text.endswith(f"в течение {tail}")
 
 
-def test_keyboard_callbacks(monkeypatch):
-    monkeypatch.setattr(config, "take_busy_hours", (1, 2, 4))
-    rows = _take_keyboard("555").inline_keyboard
+def test_greeting_busy_range():
+    assert take_greeting("Игорь", "1-2").endswith("в течение 1–2 часов.")
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("1 1-2 2 4", ["1", "1-2", "2", "4"]),
+    ("1, 1–2, 3", ["1", "1-2", "3"]),
+    ("", None), ("2-1", None), ("2-2", None), ("0", None), ("73", None),
+    ("1 2 3 4 5 6 7", None), ("abc", None),
+])
+def test_parse_busy_options(text, expected):
+    assert parse_busy_options(text) == expected
+
+
+@pytest.mark.asyncio
+async def test_keyboard_uses_saved_options(initialized_db):
+    await db.set_setting(TAKE_HOURS_SETTING, "1-2 3")
+    rows = (await _take_keyboard("555")).inline_keyboard
     assert [[b.callback_data for b in row] for row in rows] == [
         ["take:555:now"],
-        ["take:555:1", "take:555:2", "take:555:4"],
+        ["take:555:1-2", "take:555:3"],
     ]
+    assert rows[1][0].text == "⏳ 1–2 ч"
+
+
+@pytest.mark.asyncio
+async def test_keyboard_default_options(initialized_db):
+    rows = (await _take_keyboard("555")).inline_keyboard
+    assert [b.callback_data for b in rows[1]] == ["take:555:1", "take:555:1-2", "take:555:2", "take:555:4"]
 
 
 class _FakeApi:
@@ -65,11 +87,11 @@ def api(monkeypatch, initialized_db):
 
 @pytest.mark.asyncio
 async def test_busy_button_assigns_then_greets(api):
-    cb = _callback("take:555:2")
+    cb = _callback("take:555:1-2")
     await cb_take_ticket(cb)
     assert api.assigned == [("555", "98")]
-    assert api.posts == [("555", take_greeting("Игорь", "2"))]
-    assert "вернусь в течение 2 ч" in cb.message.edit_text.call_args.args[0]
+    assert api.posts == [("555", take_greeting("Игорь", "1-2"))]
+    assert "вернусь в течение 1–2 ч" in cb.message.edit_text.call_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -92,3 +114,21 @@ async def test_greeting_failure_keeps_assignment_and_says_so(api):
 async def test_forged_mode_rejected(api):
     await cb_take_ticket(_callback("take:555:rm"))
     assert api.assigned == [] and api.posts == []
+
+
+@pytest.mark.asyncio
+async def test_taketimes_command_saves_and_rejects(monkeypatch, initialized_db):
+    from bot.handlers.commands import cmd_taketimes
+    monkeypatch.setattr(config, "operator_telegram_user_ids", (1,))
+
+    def msg(user_id):
+        return SimpleNamespace(from_user=SimpleNamespace(id=user_id), answer=AsyncMock())
+
+    ok = msg(1)
+    await cmd_taketimes(ok, SimpleNamespace(args="1-2 3 6"))
+    assert await db.get_setting(TAKE_HOURS_SETTING) == "1-2 3 6"
+    assert "1–2 ч · 3 ч · 6 ч" in ok.answer.call_args.args[0]
+
+    await cmd_taketimes(msg(1), SimpleNamespace(args="9-1"))
+    await cmd_taketimes(msg(2), SimpleNamespace(args="5"))  # not an operator
+    assert await db.get_setting(TAKE_HOURS_SETTING) == "1-2 3 6"

@@ -16,7 +16,7 @@ def test_command_sets_partitioned():
     grp = {c.command for c in GROUP_COMMANDS}
     assert dm == {
         "menu", "help", "status", "refresh", "vacation",
-        "workon", "report", "weekly", "digest", "aisummary",
+        "workon", "report", "weekly", "digest", "aisummary", "taketimes",
     }
     assert grp == {"note", "send", "delete", "autofill", "help"}
     # Regression guard: this redesign removes /start and the /aistatus

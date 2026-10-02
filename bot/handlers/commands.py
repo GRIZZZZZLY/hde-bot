@@ -192,6 +192,34 @@ async def cmd_delete(message: Message) -> None:
     await _run_operator_command(message, action)
 
 
+@router.message(Command("taketimes"))
+async def cmd_taketimes(message: Message, command: CommandObject) -> None:
+    """/taketimes — show, /taketimes 1 1-2 2 4 — set the «busy» hour buttons in General."""
+    from ..config import config
+    from ..general_channel import TAKE_HOURS_SETTING, busy_options, hours_label, parse_busy_options
+
+    if not message.from_user or not config.is_operator_allowed(message.from_user.id):
+        return
+    args = (command.args or "").strip()
+    if args:
+        options = parse_busy_options(args)
+        if options is None:
+            await message.answer(
+                "Не понял. От 1 до 6 вариантов через пробел, часы от 1 до 72, "
+                "диапазон через дефис: <code>/taketimes 1 1-2 2 4</code>",
+                parse_mode="HTML",
+            )
+            return
+        await db.set_setting(TAKE_HOURS_SETTING, " ".join(options))
+    current = " · ".join(f"{hours_label(o)} ч" for o in await busy_options())
+    await message.answer(
+        f"⏳ Кнопки под новым тикетом: <b>{current}</b>\n"
+        "Новые сообщения получат их сразу, уже отправленные — нет.\n"
+        "Изменить: <code>/taketimes 1 1-2 2 4</code>",
+        parse_mode="HTML",
+    )
+
+
 async def _send_take_greeting(ticket_id: str, mode: str) -> str:
     """Post the greeting to the client; return a status suffix for the General message.
 
@@ -199,10 +227,10 @@ async def _send_take_greeting(ticket_id: str, mode: str) -> str:
     not rolled back: the engineer writes the greeting by hand.
     """
     from ..config import config
-    from ..general_channel import take_greeting
+    from ..general_channel import hours_label, take_greeting
     from ..hde_api import HDEApiClient, HDEApiError
 
-    promise = "вернусь через 5 мин" if mode == "now" else f"вернусь в течение {mode} ч"
+    promise = "вернусь через 5 мин" if mode == "now" else f"вернусь в течение {hours_label(mode)} ч"
     first_name = (config.hde_owner_name.split() or [""])[0]
     if not config.public_reply_enabled or not first_name:
         return f"\n⚠️ Клиенту не написал (публичные ответы выключены или нет HDE_OWNER_NAME): «{promise}»"
@@ -225,7 +253,9 @@ async def cb_take_ticket(callback: CallbackQuery) -> None:
     # take:{id} (old messages) | take:{id}:now | take:{id}:{hours}
     _, ticket_id, *rest = callback.data.split(":")
     mode = rest[0] if rest else ""
-    if mode and mode != "now" and not mode.isdigit():
+    from ..general_channel import is_busy_option
+
+    if mode and mode != "now" and not is_busy_option(mode):
         await callback.answer("Неизвестная кнопка", show_alert=True)
         return
 
@@ -247,7 +277,7 @@ async def cb_take_ticket(callback: CallbackQuery) -> None:
         # Restore button on failure
         from ..general_channel import _take_keyboard
         try:
-            await callback.message.edit_reply_markup(reply_markup=_take_keyboard(ticket_id))
+            await callback.message.edit_reply_markup(reply_markup=await _take_keyboard(ticket_id))
         except Exception as restore_exc:
             logger.debug("take_ticket: button restore failed: %s", restore_exc)
         return
