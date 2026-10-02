@@ -27,6 +27,8 @@ class Operator:
     chat_id: int
     api_auth: str = ""  # "email:api_key"; "" = the shared key from .env
     ai_enabled: bool = False
+    # «Я про вас не забыл…» to the client shortly before the SLA, sent as this engineer
+    auto_reassurance: bool = False
 
     @property
     def first_name(self) -> str:
@@ -40,6 +42,7 @@ def _primary() -> Operator:
         tg_user_id=config.personal_chat_id,
         chat_id=config.group_chat_id,
         ai_enabled=True,
+        auto_reassurance=True,
     )
 
 
@@ -56,6 +59,7 @@ def _load_extra(path: str) -> list[Operator]:
             chat_id=int(entry["chat_id"]),
             api_auth=Path(key_file).read_text(encoding="utf-8").strip() if key_file else "",
             ai_enabled=bool(entry.get("ai_enabled", False)),
+            auto_reassurance=bool(entry.get("auto_reassurance", False)),
         ))
     return extra
 

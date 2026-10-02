@@ -1201,3 +1201,32 @@ async def test_payload_without_owner_never_moves_a_colleagues_topic(initialized_
     bot.delete_forum_topic.assert_not_called()
     bot.create_forum_topic.assert_not_called()
     assert (await db_module.get_topic("TKT-1")).chat_id == -100222
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chat_is_colleague,expect_sent", [(False, True), (True, False)])
+async def test_reassurance_only_for_engineers_who_agreed(initialized_db, monkeypatch, chat_is_colleague, expect_sent):
+    """The «не забыл» auto-post goes to clients as the engineer — colleagues opt in."""
+    import bot.scheduler as scheduler
+    import bot.work_schedule as work_schedule
+    monkeypatch.setattr(work_schedule, "is_work_time", lambda: True)
+    monkeypatch.setattr(work_schedule, "is_work_day", lambda: True)
+    monkeypatch.setattr(work_schedule, "was_yesterday_work_day", lambda: False)
+    _add_colleague(monkeypatch, -100222)
+    await db_module.upsert_topic(
+        "TKT-1", 999, owner_id="102" if chat_is_colleague else "me",
+        last_client_reply_at=to_storage(utcnow() - timedelta(minutes=20)),
+        pre_sla_notify_at=to_storage(utcnow() - timedelta(minutes=9)),
+        pre_sla_sent_at=to_storage(utcnow() - timedelta(minutes=2)),
+        chat_id=-100222 if chat_is_colleague else config.group_chat_id,
+        status="open",
+    )
+    await db_module.update_topic("TKT-1", pre_sla_message_id=555)
+    monkeypatch.setattr(scheduler, "_hde_staff_replied_since", AsyncMock(return_value=False))
+    monkeypatch.setattr(scheduler, "update_pre_sla_alert", AsyncMock())
+    reassure = AsyncMock()
+    monkeypatch.setattr(scheduler, "send_reassurance_to_client", reassure)
+
+    await process_scheduled_actions(make_bot())
+
+    assert reassure.await_count == (1 if expect_sent else 0)

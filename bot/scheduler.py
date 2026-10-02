@@ -12,7 +12,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from . import db
+from . import db, operators
 from .config import config
 from .time_utils import to_storage, utcnow, parse_datetime
 from .topic_manager import (
@@ -786,6 +786,9 @@ async def _process_due_timers(bot: Bot) -> None:
     for record in active_pre_sla:
         if record.reassurance_sent_at is not None:
             continue
+        owner = operators.by_chat(record.chat_id)
+        if owner is None or not owner.auto_reassurance:
+            continue  # nobody agreed to automatic messages to this engineer's clients
         deadline = parse_datetime(record.pre_sla_notify_at)
         if deadline is None:
             continue
