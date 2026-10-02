@@ -192,6 +192,29 @@ async def cmd_delete(message: Message) -> None:
     await _run_operator_command(message, action)
 
 
+async def _send_take_greeting(ticket_id: str, mode: str) -> str:
+    """Post the greeting to the client; return a status suffix for the General message.
+
+    The ticket is already assigned at this point, so a failure here is reported,
+    not rolled back: the engineer writes the greeting by hand.
+    """
+    from ..config import config
+    from ..general_channel import take_greeting
+    from ..hde_api import HDEApiClient, HDEApiError
+
+    promise = "вернусь через 5 мин" if mode == "now" else f"вернусь в течение {mode} ч"
+    first_name = (config.hde_owner_name.split() or [""])[0]
+    if not config.public_reply_enabled or not first_name:
+        return f"\n⚠️ Клиенту не написал (публичные ответы выключены или нет HDE_OWNER_NAME): «{promise}»"
+    try:
+        await HDEApiClient().add_post(ticket_id, text=take_greeting(first_name, mode))
+    except HDEApiError as exc:
+        logger.error("take_ticket: greeting for ticket %s failed: %s", ticket_id, exc)
+        return f"\n⚠️ Клиенту не ушло ({exc}), напиши сам: «{promise}»"
+    logger.info("take_ticket: greeting sent to ticket %s (mode=%s)", ticket_id, mode)
+    return f"\n💬 Клиенту: «{promise}»"
+
+
 @router.callback_query(F.data.startswith("take:"))
 async def cb_take_ticket(callback: CallbackQuery) -> None:
     """Inline button: assign unassigned ticket to me."""
@@ -199,7 +222,12 @@ async def cb_take_ticket(callback: CallbackQuery) -> None:
     from ..config import config
     from .. import db
 
-    ticket_id = callback.data.split(":", 1)[1]
+    # take:{id} (old messages) | take:{id}:now | take:{id}:{hours}
+    _, ticket_id, *rest = callback.data.split(":")
+    mode = rest[0] if rest else ""
+    if mode and mode != "now" and not mode.isdigit():
+        await callback.answer("Неизвестная кнопка", show_alert=True)
+        return
 
     # Prevent double-tap: remove button immediately
     try:
@@ -225,9 +253,12 @@ async def cb_take_ticket(callback: CallbackQuery) -> None:
         return
 
     owner_name = config.hde_owner_name or "Оператор"
+    status_line = f"✅ <b>Забрал {owner_name}</b>"
+    if mode:
+        status_line += await _send_take_greeting(ticket_id, mode)
     try:
         await callback.message.edit_text(
-            f"✅ <b>Забрал {owner_name}</b>\n\n{callback.message.text or ''}",
+            f"{status_line}\n\n{callback.message.text or ''}",
             parse_mode="HTML",
             disable_web_page_preview=True,
         )

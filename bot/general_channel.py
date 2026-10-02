@@ -54,9 +54,39 @@ def _format_general_message(display_id: str, ticket_name: str, link: str) -> str
 
 
 def _take_keyboard(ticket_id: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🤙 Забрать", callback_data=f"take:{ticket_id}"),
-    ]])
+    """take:{id}:now → «ready» greeting, take:{id}:{hours} → «busy» greeting.
+
+    Plain take:{id} (messages posted before the greeting buttons) still assigns
+    without writing to the client — see cb_take_ticket.
+    """
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🤙 Беру сейчас", callback_data=f"take:{ticket_id}:now")],
+        [
+            InlineKeyboardButton(text=f"⏳ {h} ч", callback_data=f"take:{ticket_id}:{h}")
+            for h in config.take_busy_hours
+        ],
+    ])
+
+
+def _hours_genitive(hours: int) -> str:
+    """«в течение 1 часа / 21 часа», «в течение 2 / 4 / 11 часов»."""
+    return "часа" if hours % 10 == 1 and hours % 100 != 11 else "часов"
+
+
+def take_greeting(first_name: str, mode: str) -> str:
+    """First public message to the client when an engineer takes the ticket from General."""
+    if mode == "now":
+        return (
+            f"Здравствуйте, меня зовут {first_name}, инженер по оборудованию. "
+            "Изучаю информацию по вашему обращению, вернусь через 5 минут."
+        )
+    hours = int(mode)
+    return (
+        f"Здравствуйте! Меня зовут {first_name}, инженер по оборудованию. "
+        "Сейчас у нас большое количество обращений, поэтому решение вашего запроса "
+        "займёт немного больше времени. "
+        f"Вернусь к вам с ответом в течение {hours} {_hours_genitive(hours)}."
+    )
 
 
 async def _send(bot: Bot, text: str, ticket_id: str) -> int | None:
