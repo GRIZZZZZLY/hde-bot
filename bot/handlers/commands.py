@@ -13,6 +13,7 @@ from ..db import (
 )
 from .. import db
 from .. import metrics
+from .. import operators
 from ..ai_summary import _build_history_text
 from ..digest import send_morning_digest
 from ..formatter import format_refresh_result
@@ -139,6 +140,8 @@ async def cmd_autofill(message: Message) -> None:
             chat_id=message.chat.id,
         )
         ticket_id = context.record.ticket_id
+        if not operators.ai_enabled_for(chat_id=message.chat.id):
+            return _format_autofill_result(AutofillResult(updated=False, error=operators.AI_OFF_NOTE))
         client = HDEApiClient()
         info = await client.get_ticket_info(ticket_id)
         posts = await client.get_ticket_posts(ticket_id)

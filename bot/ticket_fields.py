@@ -362,6 +362,10 @@ async def apply_ticket_fields(
     Never raises — any failure is logged so the summary flow is unaffected.
     Returns an AutofillResult; the auto-trigger hook ignores it.
     """
+    from . import operators
+    if not operators.ai_enabled_for(chat_id=chat_id):
+        logger.info("apply_ticket_fields: ticket %s skipped, AI is off for chat %s", ticket_id, chat_id)
+        return AutofillResult(updated=False, error=operators.AI_OFF_NOTE)
     try:
         client = HDEApiClient()
     except Exception as exc:
@@ -480,6 +484,10 @@ async def retry_env_classification(bot: Bot, ticket_id: str, chat_id: int, topic
     (экономия Deepgram; поздние сообщения почти всегда текстовые).
     Never raises.
     """
+    from . import operators
+    if not operators.ai_enabled_for(chat_id=chat_id):
+        logger.info("retry_env_classification: ticket %s skipped, AI is off for chat %s", ticket_id, chat_id)
+        return
     try:
         from . import db as _db
         from .ai_summary import _build_history_text

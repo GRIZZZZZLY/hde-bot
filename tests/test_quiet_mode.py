@@ -80,6 +80,7 @@ async def test_suggest_button_still_generates_when_auto_off(monkeypatch):
         result = await topic_manager._generate_summary_with_retry(
             [SimpleNamespace(user_id=1, text="q", post_id=1)],
             SimpleNamespace(client_id=1), ticket_id="T2", trigger_source="button",
+            chat_id=config.group_chat_id,
         )
     assert result == ("с", "к", "п", 70)
     legacy.assert_awaited()

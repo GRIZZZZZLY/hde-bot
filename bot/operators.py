@@ -101,6 +101,17 @@ def by_chat(chat_id: int) -> Operator | None:
     return next((o for o in all_operators() if o.chat_id == chat_id), None)
 
 
+AI_OFF_NOTE = "ИИ для этой группы выключен"
+
+
+def ai_enabled_for(*, chat_id: int | None = None, owner_id: str | None = None) -> bool:
+    """May this ticket spend the shared model quota? Chat wins over owner when both are known."""
+    operator = (by_chat(chat_id) if chat_id is not None else None) or (
+        by_owner(owner_id) if owner_id else None
+    )
+    return operator.ai_enabled if operator is not None else False
+
+
 def hde_auth_for_user(tg_user_id: int) -> str:
     """HDE credentials of whoever pressed the button; "" (shared key) for the primary operator."""
     operator = by_tg_user(tg_user_id)

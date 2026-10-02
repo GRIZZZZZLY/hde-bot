@@ -55,7 +55,7 @@ async def test_generate_with_retry_agent_branch_and_fallback(monkeypatch):
         "bot.topic_manager.generate_ticket_summary", new=AsyncMock()
     ) as old:
         result = await tm._generate_summary_with_retry(
-            posts, info, ticket_title="t", ticket_id="T3", topic_id=7,
+            posts, info, ticket_title="t", ticket_id="T3", topic_id=7, chat_id=config_module.config.group_chat_id,
         )
     assert result == ("суть", "клиенту", "памятка", 88)
     ok_agent.assert_awaited()
@@ -69,7 +69,7 @@ async def test_generate_with_retry_agent_branch_and_fallback(monkeypatch):
         return_value=("с", "к", "п", 50)
     )) as old2:
         result = await tm._generate_summary_with_retry(
-            posts, info, ticket_title="t", ticket_id="T4", topic_id=7,
+            posts, info, ticket_title="t", ticket_id="T4", topic_id=7, chat_id=config_module.config.group_chat_id,
         )
     assert result == ("с", "к", "п", 50)
     old2.assert_awaited()
@@ -86,7 +86,7 @@ async def test_agent_enabled_but_auto_first_disabled_uses_legacy(monkeypatch):
     ):
         result = await tm._generate_summary_with_retry(
             [SimpleNamespace(user_id=1, text="q", post_id=1)],
-            SimpleNamespace(client_id=1), ticket_title="t", ticket_id="T5",
+            SimpleNamespace(client_id=1), ticket_title="t", ticket_id="T5", chat_id=config_module.config.group_chat_id,
         )
     assert result == ("с", "к", "п", 50)
     agent.assert_not_awaited()
@@ -106,7 +106,7 @@ async def test_v2_first_message_goes_through_agent_without_auto_first_flag(monke
     ) as legacy:
         result = await tm._generate_summary_with_retry(
             [SimpleNamespace(user_id=1, text="q", post_id=1)],
-            SimpleNamespace(client_id=1), ticket_title="t", ticket_id="T6",
+            SimpleNamespace(client_id=1), ticket_title="t", ticket_id="T6", chat_id=config_module.config.group_chat_id,
             trigger_source="first",
         )
     assert result == ("с", "к", "п", 80)

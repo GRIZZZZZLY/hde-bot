@@ -9,7 +9,7 @@ from io import BytesIO
 from aiogram import F, Router
 from aiogram.types import Message
 
-from .. import db
+from .. import db, operators
 from ..operator_replies import cache_incoming_topic_media
 from ..transcription import extract_audio_meta, process_call_note, process_call_recording
 
@@ -37,6 +37,10 @@ async def handle_topic_voice_note(message: Message) -> None:
         return
     record = await db.get_topic_by_topic_id(message.chat.id, message.message_thread_id)
     if record is None or record.is_deleted:
+        return
+    if not operators.ai_enabled_for(chat_id=record.chat_id):
+        logger.info("Call transcription skipped for ticket %s: AI is off for chat %s", record.ticket_id, record.chat_id)
+        await message.reply(operators.AI_OFF_NOTE)
         return
 
     buffer = BytesIO()
@@ -82,6 +86,10 @@ async def handle_topic_call_recording(message: Message) -> None:
         return
     record = await db.get_topic_by_topic_id(message.chat.id, message.message_thread_id)
     if record is None or record.is_deleted:
+        return
+    if not operators.ai_enabled_for(chat_id=record.chat_id):
+        logger.info("Call transcription skipped for ticket %s: AI is off for chat %s", record.ticket_id, record.chat_id)
+        await message.reply(operators.AI_OFF_NOTE)
         return
 
     file_id, mime_type = meta

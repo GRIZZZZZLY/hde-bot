@@ -16,6 +16,7 @@ from ..db import (
     record_suggestion_event,
     save_ai_feedback_pending,
 )
+from .. import operators
 from ..knowledge.indexer import index_knowledge_item
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,10 @@ async def cb_ai_suggest(callback: CallbackQuery) -> None:
     if record is None:
         await callback.answer("⚠️ Тикет для этого топика не найден", show_alert=True)
         return
+    if not operators.ai_enabled_for(chat_id=record.chat_id):
+        logger.info("ai:suggest: ticket %s skipped, AI is off for chat %s", record.ticket_id, record.chat_id)
+        await callback.answer(operators.AI_OFF_NOTE, show_alert=False)
+        return
     if record.ticket_id in _suggest_in_flight:
         await callback.answer("⏳ Уже генерирую подсказку", show_alert=False)
         return
@@ -391,6 +396,10 @@ async def cb_ai_edit(callback: CallbackQuery) -> None:
         return
     chat_id = callback.message.chat.id
     topic_id = callback.message.message_thread_id
+    if not operators.ai_enabled_for(chat_id=chat_id):
+        logger.info("ai:edit: topic %s skipped, AI is off for chat %s", topic_id, chat_id)
+        await callback.answer(operators.AI_OFF_NOTE, show_alert=False)
+        return
     await _record_event(chat_id, topic_id, "edit_started")
     pending = await get_ai_feedback_pending(chat_id, topic_id)
     await callback.answer()

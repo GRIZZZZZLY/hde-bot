@@ -178,7 +178,7 @@ async def test_generate_with_retry_threads_trigger_source(monkeypatch):
         await tm._generate_summary_with_retry(
             [SimpleNamespace(user_id=1, text="q", post_id=1)],
             SimpleNamespace(client_id=1),
-            ticket_title="t", ticket_id="T-B", topic_id=3,
+            ticket_title="t", ticket_id="T-B", topic_id=3, chat_id=config_module.config.group_chat_id,
             trigger_source="button",
         )
     assert agent.await_args.kwargs["trigger_source"] == "button"

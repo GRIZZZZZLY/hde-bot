@@ -237,6 +237,9 @@ async def _generate_summary_with_retry(
     # Кнопка 💡 приходит с trigger_source="button" и флагом не гасится.
     if trigger_source == "first" and not config.ai_suggestion_auto_enabled:
         return None
+    if not operators.ai_enabled_for(chat_id=chat_id):
+        logger.info("AI skipped for ticket %s (%s): AI is off for chat %s", ticket_id, trigger_source, chat_id)
+        return None
     agent_allowed = config.agent_enabled and (
         config.agent_auto_first_suggestion_enabled
         or trigger_source != "first"
@@ -644,8 +647,12 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
         else:
             logger.error("Failed to send client reply to topic %d: %s", record.topic_id, exc)
 
+    ai_on = operators.ai_enabled_for(chat_id=record.chat_id)
+    if not ai_on:
+        logger.info("AI skipped for client reply in ticket %s: AI is off for chat %s", ticket_id, record.chat_id)
     if (
-        sent is not None
+        ai_on
+        and sent is not None
         and config.agent_voice_v2_enabled
         and config.agent_reply_drafts_enabled
     ):
@@ -683,7 +690,7 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
 
     # Реклассификация «Окружения»: прошлая попытка дала «не определено» —
     # новое сообщение клиента может содержать недостающий контекст.
-    if record.env_option_id == "":
+    if ai_on and record.env_option_id == "":
         from .ticket_fields import retry_env_classification
         asyncio.create_task(retry_env_classification(bot, record.ticket_id, record.chat_id, record.topic_id))
 

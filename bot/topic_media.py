@@ -108,6 +108,9 @@ async def _describe_and_post_photos(
     from . import topic_manager as _tm
     from .vision import describe_image  # local import: keep vision lazy
 
+    if not _tm.operators.ai_enabled_for(chat_id=chat_id):
+        logger.info("vision: skipped for ticket %s, AI is off for chat %s", _tm._payload_value(payload, "ticket_id"), chat_id)
+        return
     tasks = [describe_image(content, filename) for content, filename in photos]
     try:
         results = await asyncio.gather(*tasks, return_exceptions=True)

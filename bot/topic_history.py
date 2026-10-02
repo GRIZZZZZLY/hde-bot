@@ -14,6 +14,7 @@ import logging
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
+from . import operators
 from .time_utils import to_storage
 
 logger = logging.getLogger(__name__)
@@ -252,6 +253,9 @@ async def retry_missing_ai_summaries(bot: Bot) -> int:
     for record in records:
         ticket_id = record.ticket_id
         topic_id = record.topic_id
+        if not operators.ai_enabled_for(chat_id=record.chat_id):
+            logger.info("retry_missing_ai_summaries: ticket %s skipped, AI is off for chat %s", ticket_id, record.chat_id)
+            continue
         try:
             info = await client.get_ticket_info(ticket_id)
             posts = await client.get_ticket_posts(ticket_id)
@@ -343,16 +347,20 @@ async def _post_ticket_history(
 
     # Start AI generation immediately — runs in parallel with history posting
     from .ai_summary import generate_ticket_summary, _build_history_text
-    gen_task = asyncio.create_task(
-        _tm._generate_summary_with_retry(
-            all_posts, info,
-            ticket_title=ticket_title,
-            ticket_id=ticket_id,
-            company_id=company_id,
-            topic_id=topic_id,
-            chat_id=chat_id,
+    gen_task = None
+    if operators.ai_enabled_for(chat_id=chat_id):
+        gen_task = asyncio.create_task(
+            _tm._generate_summary_with_retry(
+                all_posts, info,
+                ticket_title=ticket_title,
+                ticket_id=ticket_id,
+                company_id=company_id,
+                topic_id=topic_id,
+                chat_id=chat_id,
+            )
         )
-    )
+    else:
+        logger.info("AI skipped for ticket %s: AI is off for chat %s", ticket_id, chat_id)
 
     # Post history while generation runs in background
     if _tm.config.ticket_history_post_enabled:
@@ -370,6 +378,9 @@ async def _post_ticket_history(
             except TelegramAPIError as exc:
                 logger.warning("Failed to post history message to topic %d: %s", topic_id, exc)
                 break
+
+    if gen_task is None:
+        return  # no draft, no 💡 prompt, no LLM autofill
 
     # Await generation result (was running during history posting)
     result = await gen_task

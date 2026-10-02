@@ -252,6 +252,7 @@ def _topic_record(ticket_id="987", ticket_name="Не печатает чек"):
     rec.ticket_id = ticket_id
     rec.ticket_name = ticket_name
     rec.is_deleted = False
+    rec.chat_id = _config.group_chat_id
     return rec
 
 
