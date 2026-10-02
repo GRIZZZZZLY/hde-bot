@@ -90,3 +90,23 @@ async def test_unassigned_ticket_is_announced_in_every_group(initialized_db, mon
     deleted_in = sorted(c.kwargs["chat_id"] for c in bot.delete_message.call_args_list)
     assert deleted_in == sorted([config.group_chat_id, -100222])
     assert await db_module.list_general_messages_for("T9") == []
+
+
+@pytest.mark.asyncio
+async def test_renamed_unassigned_ticket_updates_its_general_post(initialized_db, monkeypatch):
+    from unittest.mock import AsyncMock, MagicMock
+    from bot import general_channel
+    from bot.config import config
+    monkeypatch.setattr(config, "general_topic_id", 1)
+    monkeypatch.setattr("bot.work_schedule.is_work_time", lambda: True)
+    bot = AsyncMock()
+    bot.send_message = AsyncMock(return_value=MagicMock(message_id=5))
+    base = {"ticket_id": "T7", "unique_id": "T7", "owner_name": "", "department": "Оборудование"}
+
+    await general_channel.on_ticket_updated(bot, {**base, "ticket_name": "Старое название"})
+    await general_channel.on_ticket_updated(bot, {**base, "ticket_name": "Новое название"})
+
+    assert bot.send_message.await_count == 1  # posted once, not again
+    edit = bot.edit_message_text.call_args.kwargs
+    assert edit["message_id"] == 5 and "Новое название" in edit["text"]
+    assert (await db_module.get_general_message("T7"))["ticket_name"] == "Новое название"

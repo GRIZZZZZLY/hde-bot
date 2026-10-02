@@ -338,6 +338,10 @@ async def on_ticket_updated(bot: Bot, payload: dict) -> None:
 
     # New unassigned ticket arriving via ticket_updated (HDE doesn't send assigned_on_create)
     if not _is_our_operator(payload) and _is_unassigned(owner_name, department, config.unassigned_department):
+        posted = await db.get_general_message(ticket_id)
+        if posted is not None:
+            await _rename_if_changed(bot, payload, posted)
+            return
         if ticket_id not in _currently_posting:
             _currently_posting.add(ticket_id)
             try:
@@ -382,8 +386,14 @@ async def on_ticket_updated(bot: Bot, payload: dict) -> None:
         )
         return
 
+    await _rename_if_changed(bot, payload, existing)
+
+
+async def _rename_if_changed(bot: Bot, payload: dict, posted: dict) -> None:
+    """The ticket was renamed in HDE: update its General post in every group."""
+    ticket_id = _payload_str(payload, "ticket_id")
     new_name = _payload_str(payload, "ticket_name")
-    if existing["ticket_name"] == new_name:
+    if not new_name or posted["ticket_name"] == new_name:
         return
     text = _format_general_message(
         display_id=_display_id(payload),
