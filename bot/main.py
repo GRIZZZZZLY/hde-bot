@@ -178,7 +178,7 @@ async def _main_async() -> None:
     await bot.delete_webhook(drop_pending_updates=False)
 
     await bot.delete_my_commands()
-    for entry in build_command_scopes(operators.primary().chat_id):
+    for entry in build_command_scopes([o.chat_id for o in operators.all_operators()]):
         await bot.set_my_commands(entry["commands"], scope=entry["scope"])
 
     # Канарейка моделей: снятый провайдером id иначе всплывёт только на первом

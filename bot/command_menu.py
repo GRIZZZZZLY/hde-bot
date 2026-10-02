@@ -45,17 +45,17 @@ HIDDEN_COMMANDS: list[str] = [
 ]
 
 
-def build_command_scopes(chat_id: int) -> list[dict]:
-    """Return [{scope, commands}] for bot.set_my_commands per scope."""
+def build_command_scopes(chat_ids: list[int]) -> list[dict]:
+    """Return [{scope, commands}] for bot.set_my_commands: private chats + every engineer's group."""
     return [
         {
             "scope": BotCommandScopeAllPrivateChats(),
             "commands": DM_COMMANDS,
         },
-        {
-            "scope": BotCommandScopeChat(chat_id=chat_id),
-            "commands": GROUP_COMMANDS,
-        },
+        *(
+            {"scope": BotCommandScopeChat(chat_id=chat_id), "commands": GROUP_COMMANDS}
+            for chat_id in chat_ids
+        ),
     ]
 
 
