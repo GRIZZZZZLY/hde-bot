@@ -124,8 +124,10 @@ def take_greeting(first_name: str, mode: str) -> str:
 
 
 def _general_chats() -> list[int]:
-    """Every engineer's group gets the General notification."""
-    return list(dict.fromkeys(o.chat_id for o in operators.all_operators()))
+    """Groups of the engineers at work now get the General notification; the others
+    get it from the periodic reconcile once their working hours start."""
+    from .work_schedule import is_work_time_for
+    return list(dict.fromkeys(o.chat_id for o in operators.all_operators() if is_work_time_for(o)))
 
 
 async def _send(bot: Bot, text: str, ticket_id: str, ticket_name: str) -> int:
@@ -199,7 +201,7 @@ def _display_id(payload: dict) -> str:
 async def on_assigned_on_create(bot: Bot, payload: dict) -> None:
     if config.general_topic_id is None:
         return
-    from .work_schedule import is_work_time
+    from .work_schedule import anyone_at_work as is_work_time
     # If this ticket is assigned to our operator — they have a personal topic, no General needed
     if _is_our_operator(payload):
         return
@@ -240,7 +242,7 @@ async def on_assigned_on_create(bot: Bot, payload: dict) -> None:
 async def on_owner_changed(bot: Bot, payload: dict) -> None:
     if config.general_topic_id is None:
         return
-    from .work_schedule import is_work_time
+    from .work_schedule import anyone_at_work as is_work_time
     ticket_id = _payload_str(payload, "ticket_id")
     owner_name = _payload_str(payload, "owner_name")
     department = _payload_str(payload, "department")
@@ -325,7 +327,7 @@ async def on_owner_changed(bot: Bot, payload: dict) -> None:
 async def on_ticket_updated(bot: Bot, payload: dict) -> None:
     if config.general_topic_id is None:
         return
-    from .work_schedule import is_work_time
+    from .work_schedule import anyone_at_work as is_work_time
     ticket_id = _payload_str(payload, "ticket_id")
     owner_name = _payload_str(payload, "owner_name")
     department = _payload_str(payload, "department")

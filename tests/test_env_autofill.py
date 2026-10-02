@@ -302,7 +302,7 @@ async def test_client_reply_schedules_env_retry_when_undetermined(monkeypatch):
     await _db.upsert_topic("TKT-1", 999, ticket_name="Касса", company_name="ACME", chat_id=config.group_chat_id)
     await _db.update_topic("TKT-1", env_option_id="")
 
-    monkeypatch.setattr(tm, "_is_work_time", lambda: True)
+    monkeypatch.setattr(tm, "_is_work_time", lambda *a, **k: True)
     retry = AsyncMock()
     monkeypatch.setattr(tf, "retry_env_classification", retry)
 
@@ -325,7 +325,7 @@ async def test_client_reply_no_retry_when_env_already_set(monkeypatch):
     await _db.upsert_topic("TKT-1", 999, ticket_name="Касса", company_name="ACME", chat_id=config.group_chat_id)
     await _db.update_topic("TKT-1", env_option_id="146")
 
-    monkeypatch.setattr(tm, "_is_work_time", lambda: True)
+    monkeypatch.setattr(tm, "_is_work_time", lambda *a, **k: True)
     retry = AsyncMock()
     monkeypatch.setattr(tf, "retry_env_classification", retry)
 

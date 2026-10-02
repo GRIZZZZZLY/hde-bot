@@ -175,7 +175,7 @@ async def test_append_photo_descriptions_accumulates(initialized_db):
     }
     import bot.topic_manager as tm
     monkey_was = tm._is_work_time
-    tm._is_work_time = lambda: True
+    tm._is_work_time = lambda *a, **k: True
     try:
         await handle_assigned_on_create(bot, payload)
     finally:
@@ -226,7 +226,7 @@ async def test_index_knowledge_item_appends_photo_descriptions(initialized_db, m
         "sla_remaining_minutes": "30", "link": "https://hde.example.com/t/2",
     }
     orig = tm._is_work_time
-    tm._is_work_time = lambda: True
+    tm._is_work_time = lambda *a, **k: True
     try:
         await handle_assigned_on_create(bot, payload)
     finally:
@@ -281,7 +281,7 @@ async def test_index_knowledge_item_without_photos_unchanged(initialized_db, mon
         "sla_remaining_minutes": "30", "link": "https://hde.example.com/t/3",
     }
     orig = tm._is_work_time
-    tm._is_work_time = lambda: True
+    tm._is_work_time = lambda *a, **k: True
     try:
         await handle_assigned_on_create(bot, payload)
     finally:

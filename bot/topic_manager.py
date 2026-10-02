@@ -482,9 +482,13 @@ async def handle_owner_changed(bot: Bot, payload: dict) -> None:
         await _handle_owner_changed_locked(bot, payload, ticket_id)
 
 
-def _is_work_time() -> bool:
-    from .work_schedule import is_work_time
-    return is_work_time()
+def _is_work_time(payload: dict | None = None, record: db.TicketTopic | None = None) -> bool:
+    """Working hours of the ticket's engineer (owner in the payload, else the topic's group)."""
+    from .work_schedule import is_work_time_for
+    operator = (_owner_operator(payload) if payload else None) or (
+        operators.by_chat(record.chat_id) if record is not None else None
+    )
+    return is_work_time_for(operator)
 
 
 async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) -> None:
@@ -497,7 +501,7 @@ async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) 
 
     if _effective_owner_match(payload):
         # Announce assignment only during work hours
-        await _ensure_active_topic(bot, payload, announce_assignment=_is_work_time())
+        await _ensure_active_topic(bot, payload, announce_assignment=_is_work_time(payload))
         return
 
     if record is None:
@@ -524,7 +528,7 @@ async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) 
         return
 
     delete_after = to_storage(utcnow() + timedelta(minutes=10))
-    if _is_work_time():
+    if _is_work_time(record=record):
         try:
             await _send_topic_message(
                 bot,
@@ -570,7 +574,7 @@ async def handle_assigned_on_create(bot: Bot, payload: dict) -> None:
         return
 
     async with _ticket_lock(ticket_id):
-        await _ensure_active_topic(bot, payload, announce_assignment=_is_work_time())
+        await _ensure_active_topic(bot, payload, announce_assignment=_is_work_time(payload))
 
 
 async def handle_ticket_updated(bot: Bot, payload: dict) -> None:
@@ -606,10 +610,10 @@ async def handle_client_reply(bot: Bot, payload: dict) -> None:
 
 
 async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -> None:
-    if not _is_work_time():
+    _existing = await db.get_topic(ticket_id)
+    if not _is_work_time(payload, _existing):
         return
 
-    _existing = await db.get_topic(ticket_id)
     if _existing is not None and _existing.is_deleted:
         logger.info("Ignoring client_reply for deleted ticket %s", ticket_id)
         return

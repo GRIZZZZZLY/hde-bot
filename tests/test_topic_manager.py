@@ -61,7 +61,7 @@ def make_bot():
 
 @pytest.mark.asyncio
 async def test_assigned_on_create_creates_topic(initialized_db, monkeypatch):
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     bot = make_bot()
 
     await handle_assigned_on_create(bot, make_payload())
@@ -76,7 +76,7 @@ async def test_assigned_on_create_creates_topic(initialized_db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_owner_changed_creates_topic(initialized_db, monkeypatch):
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     bot = make_bot()
 
     await handle_owner_changed(bot, make_payload())
@@ -174,7 +174,7 @@ async def test_ticket_updated_renames_topic(initialized_db):
 
 @pytest.mark.asyncio
 async def test_client_reply_creates_topic_and_schedules_pre_sla(initialized_db, monkeypatch):
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     bot = make_bot()
 
     await handle_client_reply(bot, make_payload())
@@ -192,7 +192,7 @@ async def test_client_reply_creates_topic_and_schedules_pre_sla(initialized_db, 
 @pytest.mark.asyncio
 async def test_client_reply_message_has_suggest_button(initialized_db, monkeypatch):
     """Phase 3: под сообщением клиента — кнопка «💡 Предложить ответ»."""
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     await db_module.upsert_topic(
         "TKT-1",
         999,
@@ -219,7 +219,7 @@ async def test_client_reply_message_has_suggest_button(initialized_db, monkeypat
 
 @pytest.mark.asyncio
 async def test_client_reply_sends_photo_attachment(initialized_db, monkeypatch):
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     bot = make_bot()
 
     async def fake_download(ref):
@@ -245,7 +245,7 @@ async def test_client_reply_sends_photo_attachment(initialized_db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_client_reply_sends_voice_attachment(initialized_db, monkeypatch):
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     bot = make_bot()
 
     async def fake_download(ref):
@@ -1017,7 +1017,7 @@ async def test_client_reply_starts_reply_draft_only_when_enabled_and_sent(
     флагах и только если сообщение клиента реально ушло в топик."""
     from aiogram.exceptions import TelegramAPIError
 
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     monkeypatch.setattr(topic_manager.config, "agent_voice_v2_enabled", v2)
     monkeypatch.setattr(topic_manager.config, "agent_reply_drafts_enabled", drafts)
     await _active_topic_with_button(None)
@@ -1094,7 +1094,7 @@ async def test_client_reply_goes_to_the_records_group_not_the_config_group(initi
     other_group = -100222
     assert other_group != config.group_chat_id
     _add_colleague(monkeypatch, other_group)
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     monkeypatch.setattr(topic_manager.config, "agent_voice_v2_enabled", False)
     # the same topic number also exists in the primary group, for another ticket
     await db_module.upsert_topic("TKT-IGOR", 999, chat_id=config.group_chat_id, owner_id="me")
@@ -1128,7 +1128,7 @@ async def test_client_reply_goes_to_the_records_group_not_the_config_group(initi
 
 @pytest.mark.asyncio
 async def test_new_topic_is_stored_with_the_group_it_was_created_in(initialized_db, monkeypatch):
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     monkeypatch.setattr(topic_manager, "_chat_for_new_topic", lambda payload: -100333)
     bot = make_bot()
 
@@ -1150,7 +1150,7 @@ def _add_colleague(monkeypatch, chat_id: int):
 @pytest.mark.asyncio
 async def test_colleagues_ticket_opens_in_their_group(initialized_db, monkeypatch):
     _add_colleague(monkeypatch, -100222)
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     bot = make_bot()
 
     await handle_assigned_on_create(bot, make_payload(owner_id="102", owner_name="Максим"))
@@ -1173,7 +1173,7 @@ async def test_ticket_of_someone_outside_the_registry_gets_no_topic(initialized_
 @pytest.mark.asyncio
 async def test_handover_moves_the_topic_to_the_new_owners_group(initialized_db, monkeypatch):
     _add_colleague(monkeypatch, -100222)
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     bot = make_bot()
     await handle_assigned_on_create(bot, make_payload())  # Igor's ticket, primary group
     assert (await db_module.get_topic("TKT-1")).chat_id == config.group_chat_id
@@ -1191,7 +1191,7 @@ async def test_handover_moves_the_topic_to_the_new_owners_group(initialized_db, 
 @pytest.mark.asyncio
 async def test_payload_without_owner_never_moves_a_colleagues_topic(initialized_db, monkeypatch):
     _add_colleague(monkeypatch, -100222)
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     monkeypatch.setattr(topic_manager.config, "agent_voice_v2_enabled", False)
     await db_module.upsert_topic("TKT-1", 999, chat_id=-100222, owner_id="102", owner_name="Максим Яницкий")
     bot = make_bot()

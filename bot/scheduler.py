@@ -132,8 +132,8 @@ async def _maybe_reconcile_general(bot: Bot) -> None:
     global _last_general_reconcile_at
     if config.general_topic_id is None:
         return
-    from .work_schedule import is_work_time
-    if not is_work_time():
+    from .work_schedule import anyone_at_work
+    if not anyone_at_work():
         return
     now = datetime.now(timezone.utc)
     if (
@@ -721,7 +721,8 @@ async def process_scheduled_actions(bot: Bot) -> None:
     # Вынесены в отдельный джоб под таймаутом: это самая чувствительная к
     # задержке часть прохода, и повиснуть она не должна ни на HDE-сверке, ни на
     # Telegram.
-    if not is_work_time():
+    from .work_schedule import anyone_at_work
+    if not anyone_at_work():
         return
     await _run_job(
         "due_timers", _process_due_timers(bot), timeout=_TIMERS_TIMEOUT_SECONDS
@@ -736,6 +737,11 @@ async def _process_due_timers(bot: Bot) -> None:
     # may ask about the same ticket. Cache lives only within this pass.
     verify_cache: dict[tuple[str, Optional[str]], bool] = {}
 
+    from .work_schedule import is_work_time_for
+
+    def _at_work(record) -> bool:
+        return is_work_time_for(operators.by_chat(record.chat_id))
+
     async def _staff_replied(record) -> bool:
         key = (record.ticket_id, record.last_client_reply_at)
         if key not in verify_cache:
@@ -745,6 +751,8 @@ async def _process_due_timers(bot: Bot) -> None:
         return verify_cache[key]
 
     for record in await db.list_due_pre_sla(now_value):
+        if not _at_work(record):
+            continue
         if await _staff_replied(record):
             logger.info(
                 "pre-SLA skipped for ticket %s: operator already replied in HDE (self-heal)",
@@ -760,6 +768,8 @@ async def _process_due_timers(bot: Bot) -> None:
     active_pre_sla = await db.list_active_pre_sla()
 
     for record in active_pre_sla:
+        if not _at_work(record):
+            continue
         if record.pre_sla_sent_at:
             last_update = parse_datetime(record.pre_sla_sent_at)
             if last_update and (utcnow() - last_update).total_seconds() < 55:
@@ -787,7 +797,7 @@ async def _process_due_timers(bot: Bot) -> None:
         if record.reassurance_sent_at is not None:
             continue
         owner = operators.by_chat(record.chat_id)
-        if owner is None or not owner.auto_reassurance:
+        if owner is None or not owner.auto_reassurance or not _at_work(record):
             continue  # nobody agreed to automatic messages to this engineer's clients
         deadline = parse_datetime(record.pre_sla_notify_at)
         if deadline is None:

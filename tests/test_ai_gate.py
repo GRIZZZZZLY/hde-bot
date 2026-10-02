@@ -57,7 +57,7 @@ def models(monkeypatch, initialized_db):
                  "agent_reply_drafts_enabled", "agent_draft_refresh_enabled"):
         monkeypatch.setattr(config, flag, True)
     monkeypatch.setattr(config, "has_hde_api_credentials", lambda: True)
-    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
     monkeypatch.setattr(topic_manager, "_post_client_history", AsyncMock())
     client = _hde_client()
     monkeypatch.setattr(hde_api, "HDEApiClient", lambda *a, **k: client)

@@ -77,6 +77,20 @@ def is_work_time() -> bool:
     return config.work_hour_start <= now_msk.hour < config.work_hour_end
 
 
+def is_work_time_for(operator) -> bool:
+    """Is this engineer at work now? No operator or no own schedule = the .env schedule."""
+    if operator is None or not operator.work_days:
+        return is_work_time()
+    now_msk = datetime.now(_UTC).astimezone(_MSK)
+    start, end = operator.work_hours
+    return now_msk.weekday() in operator.work_days and start <= now_msk.hour < end
+
+
+def anyone_at_work() -> bool:
+    from .operators import all_operators
+    return any(is_work_time_for(o) for o in all_operators())
+
+
 def set_vacation(until: datetime | None) -> None:
     """Enable vacation mode until *until* (UTC-aware) or disable if None."""
     global _vacation_until

@@ -29,6 +29,10 @@ class Operator:
     ai_enabled: bool = False
     # «Я про вас не забыл…» to the client shortly before the SLA, sent as this engineer
     auto_reassurance: bool = False
+    # Own schedule, MSK: weekdays 0=Mon…6=Sun and [start, end) hours. Empty = WORK_DAYS/
+    # WORK_HOUR_* from .env (the primary engineer, who also owns /vacation).
+    work_days: tuple[int, ...] = ()
+    work_hours: tuple[int, int] = (0, 0)
 
     @property
     def first_name(self) -> str:
@@ -60,6 +64,8 @@ def _load_extra(path: str) -> list[Operator]:
             api_auth=Path(key_file).read_text(encoding="utf-8").strip() if key_file else "",
             ai_enabled=bool(entry.get("ai_enabled", False)),
             auto_reassurance=bool(entry.get("auto_reassurance", False)),
+            work_days=tuple(int(d) for d in entry.get("work_days", ())),
+            work_hours=tuple(int(h) for h in entry.get("work_hours", (0, 0))),
         ))
     return extra
 

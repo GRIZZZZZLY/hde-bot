@@ -136,7 +136,7 @@ async def test_button_stays_only_under_latest_client_reply(monkeypatch):
 
     await db_module.init_db()
     await db_module.upsert_topic("TKT-B", 777, ticket_name="Касса", company_name="ACME", chat_id=config_module.config.group_chat_id)
-    monkeypatch.setattr(tm, "_is_work_time", lambda: True)
+    monkeypatch.setattr(tm, "_is_work_time", lambda *a, **k: True)
 
     bot = AsyncMock()
     bot.send_message = AsyncMock(side_effect=[
