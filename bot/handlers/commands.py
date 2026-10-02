@@ -149,7 +149,7 @@ async def cmd_autofill(message: Message) -> None:
         all_posts = sorted(posts + comments, key=post_sort_key)
         history = _build_history_text(all_posts, info)
         result = await apply_ticket_fields(
-            message.bot, ticket_id, context.topic_id, history,
+            message.bot, ticket_id, message.chat.id, context.topic_id, history,
             ticket_title=context.record.ticket_name or "",
             posts=all_posts,
         )

@@ -216,7 +216,7 @@ async def test_apply_sets_priority_and_type(monkeypatch):
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: касса встала")
+    res = await tf.apply_ticket_fields(bot, "T1", config.group_chat_id, 555, "Клиент: касса встала")
 
     assert res.priority_id == "1"
     assert res.type_id == "3"
@@ -241,7 +241,7 @@ async def test_apply_pt_undetermined_warns_and_skips_fields(monkeypatch):
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: привет")
+    res = await tf.apply_ticket_fields(bot, "T1", config.group_chat_id, 555, "Клиент: привет")
 
     assert res.priority_id is None and res.type_id is None
     kwargs = fake_client.update_ticket_fields.await_args.kwargs
@@ -266,7 +266,7 @@ async def test_apply_pt_type_vopros_zero_reaches_put(monkeypatch):
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: как сделать X?")
+    res = await tf.apply_ticket_fields(bot, "T1", config.group_chat_id, 555, "Клиент: как сделать X?")
 
     # «Вопрос» = "0" не должен потеряться из-за falsy-проверок
     assert res.type_id == "0"

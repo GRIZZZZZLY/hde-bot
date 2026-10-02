@@ -97,10 +97,10 @@ def _pre_sla_destination(record: "db.TicketTopic") -> tuple[int, int | None]:
     from . import topic_manager as _tm
     has_owner = bool(record.owner_id.strip())
     if has_owner:
-        return _tm.config.group_chat_id, record.topic_id
+        return record.chat_id, record.topic_id
     if _tm.config.general_topic_id is not None:
-        return _tm.config.group_chat_id, _tm.config.general_topic_id
-    return _tm.config.group_chat_id, record.topic_id
+        return record.chat_id, _tm.config.general_topic_id
+    return record.chat_id, record.topic_id
 
 
 def _pre_sla_text(record: "db.TicketTopic", minutes_left: int) -> str:
@@ -134,7 +134,7 @@ async def send_reassurance_to_client(bot: Bot, record: db.TicketTopic) -> None:
 
     try:
         await bot.send_message(
-            chat_id=_tm.config.group_chat_id,
+            chat_id=record.chat_id,
             message_thread_id=record.topic_id,
             text=(
                 "🤖 <b>Автоответ клиенту отправлен</b>\n"

@@ -33,6 +33,7 @@ async def run_agent(
     ticket_title: str,
     ticket_id: str,
     topic_id: int | None = None,
+    chat_id: int | None = None,
     company_id: str = "",
     trigger_source: str = "first",
     _context_fn=None,
@@ -77,7 +78,7 @@ async def run_agent(
         )
         await _record_nonfatal(
             _record_fn, anchor=original_anchor, info=info, ticket_id=ticket_id,
-            topic_id=topic_id, trigger_source=trigger_source,
+            topic_id=topic_id, chat_id=chat_id, trigger_source=trigger_source,
             ticket_title=ticket_title, history="",
             client_text=client_text_quick, client="", suit="", memo=memo,
             action="ESCALATE", self_status="n/a", evidence=[],
@@ -198,7 +199,7 @@ async def run_agent(
     trace_refs = context["evidence"] + context.get("demos", [])
     await _record_nonfatal(
         _record_fn, anchor=original_anchor, info=info, ticket_id=ticket_id, topic_id=topic_id,
-        trigger_source=trigger_source,
+        chat_id=chat_id, trigger_source=trigger_source,
         ticket_title=ticket_title, history=context["history"],
         client_text=context["client_text"], client=client, suit=suit, memo=memo,
         draft_client=draft_client,
@@ -211,7 +212,7 @@ async def run_agent(
 
 
 async def _record_nonfatal(
-    record_fn, *, anchor, info, ticket_id, topic_id, trigger_source, ticket_title,
+    record_fn, *, anchor, info, ticket_id, topic_id, chat_id, trigger_source, ticket_title,
     history, client_text, client, suit, memo, action, self_status, evidence,
     retrieval_query, confidence, confidence_reason, started, draft_client="",
     self_check_json: str | None = None,
@@ -222,8 +223,8 @@ async def _record_nonfatal(
         await record_fn(
             ticket_id=ticket_id,
             topic_id=topic_id,
-            # черновик постится в group_chat_id — там же его ищут кнопки фидбэка
-            chat_id=config.group_chat_id if topic_id is not None else None,
+            # черновик постится в группу топика — там же его ищут кнопки фидбэка
+            chat_id=chat_id if topic_id is not None else None,
             trigger_source=trigger_source,
             context_until_post_id=anchor,
             client_id=str(getattr(info, "client_id", "") or "") or None,

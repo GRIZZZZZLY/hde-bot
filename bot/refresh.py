@@ -118,7 +118,7 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
             )
         try:
             await bot.edit_forum_topic(
-                chat_id=config.group_chat_id,
+                chat_id=topic.chat_id,
                 message_thread_id=topic.topic_id,
                 name=probe_name,
             )
@@ -197,7 +197,7 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
             )
             try:
                 await bot.delete_forum_topic(
-                    chat_id=config.group_chat_id,
+                    chat_id=topic.chat_id,
                     message_thread_id=topic.topic_id,
                 )
             except TelegramAPIError as exc:
@@ -214,7 +214,7 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
             continue
         try:
             await bot.delete_forum_topic(
-                chat_id=config.group_chat_id,
+                chat_id=topic.chat_id,
                 message_thread_id=topic.topic_id,
             )
             cleaned_pending += 1
@@ -233,7 +233,7 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
     for topic in deleted_db_topics:
         try:
             await bot.delete_forum_topic(
-                chat_id=config.group_chat_id,
+                chat_id=topic.chat_id,
                 message_thread_id=topic.topic_id,
             )
             purged_orphans += 1

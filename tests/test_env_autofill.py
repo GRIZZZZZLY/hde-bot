@@ -145,7 +145,7 @@ async def test_apply_enriches_history_and_stores_env(monkeypatch):
     bot.send_message = AsyncMock()
 
     res = await tf.apply_ticket_fields(
-        bot, "T1", 555, "Клиент: касса зависла", ticket_title="Зависла касса"
+        bot, "T1", config.group_chat_id, 555, "Клиент: касса зависла", ticket_title="Зависла касса"
     )
 
     assert res.env_id == "146"
@@ -174,7 +174,7 @@ async def test_apply_stores_empty_env_when_undetermined(monkeypatch):
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: привет")
+    res = await tf.apply_ticket_fields(bot, "T1", config.group_chat_id, 555, "Клиент: привет")
     assert res.env_id is None
     update_topic.assert_any_await("T1", env_option_id="")
 
@@ -206,7 +206,7 @@ async def test_apply_appends_audio_transcripts(monkeypatch):
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: голосовое", posts=[MagicMock()])
+    await tf.apply_ticket_fields(bot, "T1", config.group_chat_id, 555, "Клиент: голосовое", posts=[MagicMock()])
 
     history_arg = classify.await_args.args[0]
     assert "[Голосовое сообщение клиента: алло, у нас касса атол]" in history_arg
@@ -238,7 +238,7 @@ async def test_retry_env_classification_success(monkeypatch):
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    await tf.retry_env_classification(bot, "T1", 555)
+    await tf.retry_env_classification(bot, "T1", config.group_chat_id, 555)
 
     fake_client.update_ticket_fields.assert_awaited_once_with("T1", {"2": "145"})
     update_topic.assert_awaited_once_with("T1", env_option_id="145")
@@ -264,7 +264,7 @@ async def test_retry_env_classification_still_undetermined_is_silent(monkeypatch
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    await tf.retry_env_classification(bot, "T1", 555)
+    await tf.retry_env_classification(bot, "T1", config.group_chat_id, 555)
 
     fake_client.update_ticket_fields.assert_not_awaited()
     bot.send_message.assert_not_awaited()

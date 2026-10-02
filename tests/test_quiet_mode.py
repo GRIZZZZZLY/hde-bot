@@ -46,7 +46,7 @@ async def test_history_dump_off_but_autofill_still_runs(monkeypatch):
         gen.return_value = None
         mock_db.update_topic = AsyncMock()
 
-        await topic_manager._post_ticket_history(_bot(), "TKT-1", 555, ticket_title="T")
+        await topic_manager._post_ticket_history(_bot(), "TKT-1", config.group_chat_id, 555, ticket_title="T")
 
     format_mock.assert_not_called()
     apply_mock.assert_awaited_once()

@@ -31,7 +31,7 @@ def test_command_sets_partitioned():
 
 
 def test_build_command_scopes_shape():
-    scopes = build_command_scopes(group_chat_id=-100123)
+    scopes = build_command_scopes(chat_id=-100123)
     kinds = {s["scope"].type for s in scopes}
     assert "all_private_chats" in kinds
     assert "chat" in kinds

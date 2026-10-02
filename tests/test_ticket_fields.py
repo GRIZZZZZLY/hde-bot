@@ -281,7 +281,7 @@ async def test_apply_env_found_role_empty(monkeypatch):
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: касса POS не печатает")
+    res = await tf.apply_ticket_fields(bot, "T1", -100, 555, "Клиент: касса POS не печатает")
 
     fake_client.update_ticket_fields.assert_awaited_once_with(
         "T1", {"3": "20", "24": "197", "2": "11"}, priority_id=None, type_id=None
@@ -307,7 +307,7 @@ async def test_apply_env_undetermined_warns(monkeypatch):
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: здравствуйте")
+    res = await tf.apply_ticket_fields(bot, "T1", -100, 555, "Клиент: здравствуйте")
 
     fake_client.update_ticket_fields.assert_awaited_once_with(
         "T1", {"3": "20"}, priority_id=None, type_id=None
@@ -334,7 +334,7 @@ async def test_apply_role_unknown_state_skipped(monkeypatch):
     bot = MagicMock()
     bot.send_message = AsyncMock()
 
-    res = await tf.apply_ticket_fields(bot, "T1", 555, "Эвотор завис")
+    res = await tf.apply_ticket_fields(bot, "T1", -100, 555, "Эвотор завис")
 
     fake_client.update_ticket_fields.assert_awaited_once_with(
         "T1", {"3": "20", "2": "146"}, priority_id=None, type_id=None
@@ -356,7 +356,7 @@ async def test_apply_update_failure_skips_warning(monkeypatch):
     bot.send_message = AsyncMock()
 
     # Must not raise even though update_ticket_fields raised
-    res = await tf.apply_ticket_fields(bot, "T1", 555, "Клиент: текст")
+    res = await tf.apply_ticket_fields(bot, "T1", -100, 555, "Клиент: текст")
 
     fake_client.update_ticket_fields.assert_awaited_once()
     bot.send_message.assert_not_called()

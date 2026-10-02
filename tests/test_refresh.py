@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 import bot.db as db_module
+from bot.config import config
 from bot.refresh import refresh_topics
 
 
@@ -53,6 +54,7 @@ def make_topic(**kwargs):
         deleted_at=None,
         last_assigned_at=None,
         ai_summary_sent_at=None,
+        chat_id=config.group_chat_id,
     )
     defaults.update(kwargs)
     return db_module.TicketTopic(**defaults)

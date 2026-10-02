@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 async def post_suggestion_messages(
     bot: Bot,
     *,
+    chat_id: int,
     topic_id: int,
     ticket_id: str,
     suit_line: str,
@@ -53,10 +54,10 @@ async def post_suggestion_messages(
                 return True                                   # NO_ACTION — молчим
             record = await _tm.db.get_topic(ticket_id)
             await _tm._strip_prev_suggest_button(
-                bot, record.suggest_button_msg_id if record else None
+                bot, chat_id, record.suggest_button_msg_id if record else None
             )
             sent = await bot.send_message(
-                chat_id=_tm.config.group_chat_id,
+                chat_id=chat_id,
                 message_thread_id=topic_id,
                 text=format_draft_block(
                     client_line, memo_line,
@@ -78,7 +79,7 @@ async def post_suggestion_messages(
                     else "🧠 <b>Суть:</b>"
                 )
                 await bot.send_message(
-                    chat_id=_tm.config.group_chat_id,
+                    chat_id=chat_id,
                     message_thread_id=topic_id,
                     text=f"{suit_label} {_html_escape(suit_line)}",
                     parse_mode="HTML",
@@ -88,7 +89,7 @@ async def post_suggestion_messages(
                 )
             if client_line:
                 await bot.send_message(
-                    chat_id=_tm.config.group_chat_id,
+                    chat_id=chat_id,
                     message_thread_id=topic_id,
                     text=(
                         f"💬 <b>Ответ клиенту:</b>\n"
@@ -101,7 +102,7 @@ async def post_suggestion_messages(
                 )
             if memo_line and not answer_only:
                 await bot.send_message(
-                    chat_id=_tm.config.group_chat_id,
+                    chat_id=chat_id,
                     message_thread_id=topic_id,
                     text=(
                         f"📋 <b>Памятка:</b>\n"
@@ -119,7 +120,7 @@ async def post_suggestion_messages(
             f"Памятка: {memo_line or '—'}"
         )
         await register_feedback_pending(
-            chat_id=_tm.config.group_chat_id,
+            chat_id=chat_id,
             topic_id=topic_id,
             ticket_id=ticket_id,
             history=plain_history,
@@ -143,6 +144,7 @@ async def append_draft_to_reply(
     bot: Bot,
     *,
     ticket_id: str,
+    chat_id: int,
     topic_id: int,
     message_id: int,
     reply_html: str,
@@ -176,7 +178,7 @@ async def append_draft_to_reply(
         anchor = str(max((p.post_id for p in all_posts), default="")) or None
         result = await _tm._generate_summary_with_retry(
             all_posts, info, ticket_title=ticket_title, ticket_id=ticket_id,
-            company_id="", topic_id=topic_id, trigger_source="reply",
+            company_id="", topic_id=topic_id, chat_id=chat_id, trigger_source="reply",
         )
         if result is None:
             return False
@@ -195,9 +197,9 @@ async def append_draft_to_reply(
                     # Кнопка была на сообщении клиента (is_latest) — снимаем её
                     # ДО отправки новой, иначе оба сообщения на миг несут живой
                     # 📤 и оба шлют клиенту один и тот же черновик.
-                    await _tm._strip_prev_suggest_button(bot, message_id)
+                    await _tm._strip_prev_suggest_button(bot, chat_id, message_id)
                 sent = await bot.send_message(
-                    chat_id=_tm.config.group_chat_id, message_thread_id=topic_id,
+                    chat_id=chat_id, message_thread_id=topic_id,
                     text=block.lstrip("\n─"), parse_mode="HTML",
                     disable_web_page_preview=True, disable_notification=True,
                     reply_markup=markup,
@@ -206,7 +208,7 @@ async def append_draft_to_reply(
                     await _tm.db.update_topic(ticket_id, suggest_button_msg_id=sent.message_id)
             else:
                 await bot.edit_message_text(
-                    chat_id=_tm.config.group_chat_id, message_id=message_id,
+                    chat_id=chat_id, message_id=message_id,
                     text=reply_html + block, parse_mode="HTML",
                     disable_web_page_preview=True, reply_markup=markup,
                 )
@@ -216,7 +218,7 @@ async def append_draft_to_reply(
 
         if markup is not None and client_line:
             await register_feedback_pending(
-                chat_id=_tm.config.group_chat_id,
+                chat_id=chat_id,
                 topic_id=topic_id, ticket_id=ticket_id,
                 history=_build_history_text(all_posts, info), title=ticket_title,
                 answer_text=client_line,
@@ -272,6 +274,7 @@ async def retry_missing_ai_summaries(bot: Bot) -> int:
             ticket_id=ticket_id,
             company_id="",
             topic_id=topic_id,
+            chat_id=record.chat_id,
         )
         if result is None:
             continue
@@ -279,6 +282,7 @@ async def retry_missing_ai_summaries(bot: Bot) -> int:
         suit_line, client_line, memo_line, confidence_pct = result
         ok = await post_suggestion_messages(
             bot,
+            chat_id=record.chat_id,
             topic_id=topic_id,
             ticket_id=ticket_id,
             suit_line=suit_line,
@@ -299,6 +303,7 @@ async def retry_missing_ai_summaries(bot: Bot) -> int:
 async def _post_ticket_history(
     bot: Bot,
     ticket_id: str,
+    chat_id: int,
     topic_id: int,
     ticket_title: str = "",
     company_id: str = "",
@@ -330,7 +335,7 @@ async def _post_ticket_history(
     all_posts = sorted(posts + comments, key=post_sort_key)
     anchor = str(max((p.post_id for p in all_posts), default="")) or None
 
-    await _tm._post_client_history(bot, topic_id, ticket_id, client=client, info=info)
+    await _tm._post_client_history(bot, chat_id, topic_id, ticket_id, client=client, info=info)
 
     if not all_posts:
         logger.info("No posts for ticket %s, skipping history+summary", ticket_id)
@@ -345,6 +350,7 @@ async def _post_ticket_history(
             ticket_id=ticket_id,
             company_id=company_id,
             topic_id=topic_id,
+            chat_id=chat_id,
         )
     )
 
@@ -354,7 +360,7 @@ async def _post_ticket_history(
         for text in messages:
             try:
                 await bot.send_message(
-                    chat_id=_tm.config.group_chat_id,
+                    chat_id=chat_id,
                     message_thread_id=topic_id,
                     text=text,
                     parse_mode="HTML",
@@ -376,7 +382,7 @@ async def _post_ticket_history(
             from .handlers.ai_feedback import suggest_button_kb
             try:
                 await bot.send_message(
-                    chat_id=_tm.config.group_chat_id, message_thread_id=topic_id,
+                    chat_id=chat_id, message_thread_id=topic_id,
                     text="💡 Черновик по первому сообщению — по кнопке",
                     disable_notification=True, reply_markup=suggest_button_kb(),
                 )
@@ -386,6 +392,7 @@ async def _post_ticket_history(
         suit_line, client_line, memo_line, confidence_pct = result
         await post_suggestion_messages(
             bot,
+            chat_id=chat_id,
             topic_id=topic_id,
             ticket_id=ticket_id,
             suit_line=suit_line,
@@ -402,7 +409,7 @@ async def _post_ticket_history(
         from .ticket_fields import apply_ticket_fields
         autofill_history = _build_history_text(all_posts, info)
         await apply_ticket_fields(
-            bot, ticket_id, topic_id, autofill_history,
+            bot, ticket_id, chat_id, topic_id, autofill_history,
             ticket_title=ticket_title, posts=all_posts,
         )
     except Exception as exc:

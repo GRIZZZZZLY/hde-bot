@@ -18,7 +18,7 @@ from .client_media import detect_telegram_media_kind
 logger = logging.getLogger(__name__)
 
 
-async def _send_client_attachments(bot: Bot, topic_id: int, payload: dict) -> None:
+async def _send_client_attachments(bot: Bot, chat_id: int, topic_id: int, payload: dict) -> None:
     from . import topic_manager as _tm
     attachment_refs = list(payload.get("attachments") or [])
     if not attachment_refs:
@@ -49,13 +49,13 @@ async def _send_client_attachments(bot: Bot, topic_id: int, payload: dict) -> No
             kind, media = chunk[0]
             if kind == "photo":
                 await bot.send_photo(
-                    chat_id=_tm.config.group_chat_id,
+                    chat_id=chat_id,
                     message_thread_id=topic_id,
                     photo=media,
                 )
             else:
                 await bot.send_video(
-                    chat_id=_tm.config.group_chat_id,
+                    chat_id=chat_id,
                     message_thread_id=topic_id,
                     video=media,
                 )
@@ -68,7 +68,7 @@ async def _send_client_attachments(bot: Bot, topic_id: int, payload: dict) -> No
             else:
                 media_group.append(InputMediaVideo(media=media))
         await bot.send_media_group(
-            chat_id=_tm.config.group_chat_id,
+            chat_id=chat_id,
             message_thread_id=topic_id,
             media=media_group,
         )
@@ -76,29 +76,30 @@ async def _send_client_attachments(bot: Bot, topic_id: int, payload: dict) -> No
     for kind, media in single_items:
         if kind == "voice":
             await bot.send_voice(
-                chat_id=_tm.config.group_chat_id,
+                chat_id=chat_id,
                 message_thread_id=topic_id,
                 voice=media,
             )
         elif kind == "audio":
             await bot.send_audio(
-                chat_id=_tm.config.group_chat_id,
+                chat_id=chat_id,
                 message_thread_id=topic_id,
                 audio=media,
             )
         else:
             await bot.send_document(
-                chat_id=_tm.config.group_chat_id,
+                chat_id=chat_id,
                 message_thread_id=topic_id,
                 document=media,
             )
 
     if photo_blobs:
-        await _describe_and_post_photos(bot, topic_id, photo_blobs, payload)
+        await _describe_and_post_photos(bot, chat_id, topic_id, photo_blobs, payload)
 
 
 async def _describe_and_post_photos(
     bot: Bot,
+    chat_id: int,
     topic_id: int,
     photos: list[tuple[bytes, str]],
     payload: dict,
@@ -136,6 +137,6 @@ async def _describe_and_post_photos(
         text = f"🔍 На фото:\n{lines}"
 
     try:
-        await _tm._send_topic_message(bot, topic_id, text)
+        await _tm._send_topic_message(bot, chat_id, topic_id, text)
     except Exception as exc:
         logger.warning("vision: failed to post description for ticket %s: %s", ticket_id, exc)

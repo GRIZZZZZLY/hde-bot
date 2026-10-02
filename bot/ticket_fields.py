@@ -349,6 +349,7 @@ async def _company_prior_hint(record, ticket_id: str) -> str:
 async def apply_ticket_fields(
     bot: Bot,
     ticket_id: str,
+    chat_id: int,
     topic_id: int,
     history: str,
     ticket_title: str = "",
@@ -441,7 +442,7 @@ async def apply_ticket_fields(
     if env_id is None:
         try:
             await bot.send_message(
-                chat_id=config.group_chat_id,
+                chat_id=chat_id,
                 message_thread_id=topic_id,
                 text=ENV_UNDETERMINED_MSG,
                 disable_notification=True,
@@ -455,7 +456,7 @@ async def apply_ticket_fields(
     if pt is None:
         try:
             await bot.send_message(
-                chat_id=config.group_chat_id,
+                chat_id=chat_id,
                 message_thread_id=topic_id,
                 text=PT_UNDETERMINED_MSG,
                 disable_notification=True,
@@ -470,7 +471,7 @@ async def apply_ticket_fields(
                           priority_id=priority_id, type_id=type_id)
 
 
-async def retry_env_classification(bot: Bot, ticket_id: str, topic_id: int) -> None:
+async def retry_env_classification(bot: Bot, ticket_id: str, chat_id: int, topic_id: int) -> None:
     """Повторная классификация «Окружения» после нового сообщения клиента.
 
     Вызывается только когда прошлая попытка дала «не определено»
@@ -508,7 +509,7 @@ async def retry_env_classification(bot: Bot, ticket_id: str, topic_id: int) -> N
         logger.info("retry_env_classification: ticket %s env=%s", ticket_id, env_id)
         try:
             await bot.send_message(
-                chat_id=config.group_chat_id,
+                chat_id=chat_id,
                 message_thread_id=topic_id,
                 text=f"🧩 Окружение определено по новым сообщениям: {OKRUZHENIE_OPTIONS[env_id]}",
                 disable_notification=True,

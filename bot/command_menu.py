@@ -45,7 +45,7 @@ HIDDEN_COMMANDS: list[str] = [
 ]
 
 
-def build_command_scopes(group_chat_id: int) -> list[dict]:
+def build_command_scopes(chat_id: int) -> list[dict]:
     """Return [{scope, commands}] for bot.set_my_commands per scope."""
     return [
         {
@@ -53,7 +53,7 @@ def build_command_scopes(group_chat_id: int) -> list[dict]:
             "commands": DM_COMMANDS,
         },
         {
-            "scope": BotCommandScopeChat(chat_id=group_chat_id),
+            "scope": BotCommandScopeChat(chat_id=chat_id),
             "commands": GROUP_COMMANDS,
         },
     ]

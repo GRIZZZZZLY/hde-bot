@@ -246,7 +246,7 @@ async def _generate_and_post_suggestion(bot, record) -> None:
     async def _notify_failure() -> None:
         try:
             await bot.send_message(
-                chat_id=_tm.config.group_chat_id,
+                chat_id=record.chat_id,
                 message_thread_id=topic_id,
                 text="⚠️ Не удалось сгенерировать подсказку — попробуй ещё раз.",
                 disable_notification=True,
@@ -276,6 +276,7 @@ async def _generate_and_post_suggestion(bot, record) -> None:
         ticket_id=ticket_id,
         company_id="",
         topic_id=topic_id,
+        chat_id=record.chat_id,
         trigger_source="button",
     )
     if result is None:
@@ -285,6 +286,7 @@ async def _generate_and_post_suggestion(bot, record) -> None:
     suit_line, client_line, memo_line, confidence_pct = result
     await post_suggestion_messages(
         bot,
+        chat_id=record.chat_id,
         topic_id=topic_id,
         ticket_id=ticket_id,
         suit_line=suit_line,

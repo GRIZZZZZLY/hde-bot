@@ -6,7 +6,7 @@ import logging
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
-from . import db
+from . import db, operators
 from .config import config
 from .formatter import format_morning_digest
 
@@ -22,7 +22,7 @@ async def send_morning_digest(bot: Bot) -> None:
 
     try:
         await bot.send_message(
-            chat_id=config.group_chat_id,
+            chat_id=operators.primary().chat_id,
             text=text,
             parse_mode="HTML",
             disable_web_page_preview=True,

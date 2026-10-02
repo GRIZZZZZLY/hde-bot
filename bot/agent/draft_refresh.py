@@ -152,13 +152,16 @@ async def regenerate_draft(bot, *, ticket_id: str, topic_id, reason: str):
     anchor = str(max((p.post_id for p in all_posts), default="")) or None
 
     record = await _tm.db.get_topic(ticket_id)
-    ticket_title = (record.ticket_name if record else "") or ""
+    if record is None:
+        return None  # no record, no group to post the draft to
+    ticket_title = record.ticket_name or ""
     result = await _tm._generate_summary_with_retry(
         all_posts, info,
         ticket_title=ticket_title,
         ticket_id=ticket_id,
         company_id="",
         topic_id=topic_id,
+        chat_id=record.chat_id,
         trigger_source="comment",
     )
     if result is None:
@@ -166,7 +169,7 @@ async def regenerate_draft(bot, *, ticket_id: str, topic_id, reason: str):
     suit_line, client_line, memo_line, confidence_pct = result
     try:
         await bot.send_message(
-            chat_id=_tm.config.group_chat_id,
+            chat_id=record.chat_id,
             message_thread_id=topic_id,
             text="🔄 Черновик обновлён: коллега дописал комментарий в тикете.",
         )
@@ -174,6 +177,7 @@ async def regenerate_draft(bot, *, ticket_id: str, topic_id, reason: str):
         logger.debug("draft refresh: notice not delivered for %s: %s", ticket_id, exc)
     await post_suggestion_messages(
         bot,
+        chat_id=record.chat_id,
         topic_id=topic_id,
         ticket_id=ticket_id,
         suit_line=suit_line,

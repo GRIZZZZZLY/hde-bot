@@ -12,7 +12,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from . import db
+from . import db, operators
 from .config import config
 
 # Prevents duplicate General notifications when ticket_updated + owner_changed arrive concurrently
@@ -131,7 +131,7 @@ async def _send(bot: Bot, text: str, ticket_id: str) -> int | None:
         # when the group was created without explicit topics; omit it so the message
         # falls through to the main (General) thread automatically.
         kwargs: dict = dict(
-            chat_id=config.group_chat_id,
+            chat_id=operators.primary().chat_id,
             text=text,
             parse_mode="HTML",
             disable_web_page_preview=True,
@@ -150,7 +150,7 @@ async def _edit(bot: Bot, message_id: int, text: str, ticket_id: str) -> None:
     assert config.general_topic_id is not None
     try:
         await bot.edit_message_text(
-            chat_id=config.group_chat_id,
+            chat_id=operators.primary().chat_id,
             message_id=message_id,
             text=text,
             parse_mode="HTML",
@@ -164,7 +164,7 @@ async def _edit(bot: Bot, message_id: int, text: str, ticket_id: str) -> None:
 async def _delete(bot: Bot, message_id: int) -> None:
     try:
         await bot.delete_message(
-            chat_id=config.group_chat_id,
+            chat_id=operators.primary().chat_id,
             message_id=message_id,
         )
     except TelegramAPIError as exc:

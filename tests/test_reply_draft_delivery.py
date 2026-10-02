@@ -50,7 +50,8 @@ async def _run(monkeypatch, *, latest_msg_id, reply_html="👤 <b>Клиент</
             return_value=SimpleNamespace(suggest_button_msg_id=latest_msg_id))
         db.update_topic = AsyncMock()
         ok = await topic_history.append_draft_to_reply(
-            bot, ticket_id="T", topic_id=10, message_id=77, reply_html=reply_html, ticket_title="t")
+            bot, ticket_id="T", chat_id=config.group_chat_id, topic_id=10, message_id=77,
+            reply_html=reply_html, ticket_title="t")
     return ok, bot, reg, db
 
 
@@ -126,7 +127,7 @@ async def test_v2_escalate_message_carries_suggest_button(monkeypatch):
         db.update_topic = AsyncMock()
         db.get_topic = AsyncMock(return_value=None)
         ok = await topic_history.post_suggestion_messages(
-            bot, topic_id=1, ticket_id="T", suit_line="Возврат",
+            bot, chat_id=config.group_chat_id, topic_id=1, ticket_id="T", suit_line="Возврат",
             client_line="", memo_line="Эскалация: возврат денег", confidence_pct=0,
             all_posts=[], info=SimpleNamespace(client_id=1), ticket_title="t", anchor="5",
         )
@@ -155,7 +156,7 @@ async def test_v2_single_message_instead_of_three(monkeypatch):
         db.update_topic = AsyncMock()
         db.get_topic = AsyncMock(return_value=None)
         ok = await topic_history.post_suggestion_messages(
-            bot, topic_id=1, ticket_id="T", suit_line="Атол не печатает",
+            bot, chat_id=config.group_chat_id, topic_id=1, ticket_id="T", suit_line="Атол не печатает",
             client_line="Перезагрузите кассу.", memo_line="—", confidence_pct=90,
             all_posts=[], info=SimpleNamespace(client_id=1), ticket_title="t", anchor="5",
         )
@@ -179,7 +180,7 @@ async def test_v2_strips_old_button_and_tracks_new_one(monkeypatch):
         db.update_topic = AsyncMock()
         db.get_topic = AsyncMock(return_value=SimpleNamespace(suggest_button_msg_id=55))
         ok = await topic_history.post_suggestion_messages(
-            bot, topic_id=1, ticket_id="T", suit_line="Атол не печатает",
+            bot, chat_id=config.group_chat_id, topic_id=1, ticket_id="T", suit_line="Атол не печатает",
             client_line="Перезагрузите кассу.", memo_line="—", confidence_pct=90,
             all_posts=[], info=SimpleNamespace(client_id=1), ticket_title="t", anchor="5",
         )
@@ -203,7 +204,7 @@ async def test_v2_no_action_marks_summary_sent(monkeypatch):
     ):
         db.update_topic = AsyncMock()
         ok = await topic_history.post_suggestion_messages(
-            bot, topic_id=1, ticket_id="T", suit_line="Атол не печатает",
+            bot, chat_id=config.group_chat_id, topic_id=1, ticket_id="T", suit_line="Атол не печатает",
             client_line="", memo_line="—", confidence_pct=90,
             all_posts=[], info=SimpleNamespace(client_id=1), ticket_title="t", anchor="5",
         )

@@ -125,7 +125,7 @@ async def test_post_client_history_sends_message():
 
     with patch("bot.hde_api.HDEApiClient", return_value=mock_client):
         from bot.topic_manager import _post_client_history
-        await _post_client_history(mock_bot, topic_id=101, ticket_id="999")
+        await _post_client_history(mock_bot, chat_id=-100, topic_id=101, ticket_id="999")
 
     mock_bot.send_message.assert_called_once()
     call_kwargs = mock_bot.send_message.call_args.kwargs
@@ -151,7 +151,7 @@ async def test_post_client_history_skips_when_no_past_tickets():
 
     with patch("bot.hde_api.HDEApiClient", return_value=mock_client):
         from bot.topic_manager import _post_client_history
-        await _post_client_history(mock_bot, topic_id=101, ticket_id="999")
+        await _post_client_history(mock_bot, chat_id=-100, topic_id=101, ticket_id="999")
 
     mock_bot.send_message.assert_not_called()
 
@@ -167,7 +167,7 @@ async def test_post_client_history_swallows_api_error():
 
     with patch("bot.hde_api.HDEApiClient", return_value=mock_client):
         from bot.topic_manager import _post_client_history
-        await _post_client_history(mock_bot, topic_id=101, ticket_id="999")  # must not raise
+        await _post_client_history(mock_bot, chat_id=-100, topic_id=101, ticket_id="999")  # must not raise
 
     mock_bot.send_message.assert_not_called()
 
@@ -192,6 +192,6 @@ async def test_post_ticket_history_calls_client_history():
         mock_api.get_ticket_comments = AsyncMock(return_value=[])
         mock_api_cls.return_value = mock_api
 
-        await tm._post_ticket_history(mock_bot, ticket_id="123", topic_id=101)
+        await tm._post_ticket_history(mock_bot, ticket_id="123", chat_id=-100, topic_id=101)
 
-    mock_ch.assert_called_once_with(mock_bot, 101, "123", client=mock_api, info=mock_info)
+    mock_ch.assert_called_once_with(mock_bot, -100, 101, "123", client=mock_api, info=mock_info)

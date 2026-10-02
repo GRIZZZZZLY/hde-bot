@@ -813,14 +813,15 @@ async def test_post_ticket_history_autofill_called(monkeypatch):
         mock_gen.return_value = ("суть", "клиенту", "памятка", 80)
         mock_db.update_topic = AsyncMock()
 
-        await topic_manager._post_ticket_history(bot, "TKT-9", 999, ticket_title="T", company_id="")
+        await topic_manager._post_ticket_history(bot, "TKT-9", config.group_chat_id, 999, ticket_title="T", company_id="")
 
     apply_mock.assert_awaited_once()
     call_args = apply_mock.await_args.args
     assert call_args[0] is bot
     assert call_args[1] == "TKT-9"
-    assert call_args[2] == 999
-    assert isinstance(call_args[3], str)
+    assert call_args[2] == config.group_chat_id
+    assert call_args[3] == 999
+    assert isinstance(call_args[4], str)
 
 
 @pytest.mark.asyncio
@@ -858,7 +859,7 @@ async def test_post_ticket_history_reuses_hde_client_for_client_history(monkeypa
     monkeypatch.setattr(topic_manager.config, "has_hde_api_credentials", lambda: True)
     monkeypatch.setattr("bot.hde_api.HDEApiClient", FakeClient)
 
-    await topic_manager._post_ticket_history(bot, "TKT-9", 999, ticket_title="T")
+    await topic_manager._post_ticket_history(bot, "TKT-9", config.group_chat_id, 999, ticket_title="T")
 
     assert len(instances) == 1
     assert instances[0].ticket_info_calls == 1
@@ -922,6 +923,7 @@ async def test_retry_missing_ai_summaries_reuses_one_hde_client(monkeypatch):
             deleted_at=None,
             last_assigned_at=None,
             ai_summary_sent_at=None,
+            chat_id=config.group_chat_id,
         ),
         db_module.TicketTopic(
             ticket_id="TKT-2",
@@ -947,6 +949,7 @@ async def test_retry_missing_ai_summaries_reuses_one_hde_client(monkeypatch):
             deleted_at=None,
             last_assigned_at=None,
             ai_summary_sent_at=None,
+            chat_id=config.group_chat_id,
         ),
     ]
 
@@ -990,7 +993,8 @@ async def test_staff_reply_strips_stale_draft_button_on_v2(initialized_db, monke
 
     if v2:
         strip.assert_awaited_once()
-        assert strip.await_args.args[1] == 555
+        assert strip.await_args.args[1] == config.group_chat_id
+        assert strip.await_args.args[2] == 555
     else:
         strip.assert_not_awaited()
     # Residual R25: id тоже обнуляется — иначе черновик, который ещё генерируется,
@@ -1054,7 +1058,7 @@ async def test_first_message_without_draft_gets_suggest_button_on_v2(monkeypatch
             HDEPost(post_id=1, user_id=1, text="касса не печатает",
                     date_created="10:00:00 01.01.2026")])
         instance.get_ticket_comments = AsyncMock(return_value=[])
-        await topic_manager._post_ticket_history(bot, "TKT-1", 999, ticket_title="T")
+        await topic_manager._post_ticket_history(bot, "TKT-1", config.group_chat_id, 999, ticket_title="T")
 
     texts = [c.kwargs.get("text", "") for c in bot.send_message.await_args_list]
     button_msgs = [c for c in bot.send_message.await_args_list
@@ -1082,3 +1086,51 @@ async def test_staff_reply_older_than_client_keeps_fresh_draft_button(initialize
     await handle_staff_reply(make_bot(), make_payload(user_name="Support"))
 
     strip.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_client_reply_goes_to_the_records_group_not_the_config_group(initialized_db, monkeypatch):
+    """Multi-operator: an existing topic is addressed in the group it lives in."""
+    other_group = -100222
+    assert other_group != config.group_chat_id
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager.config, "agent_voice_v2_enabled", False)
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Broken printer", priority="high", status="open",
+        owner_id="me", owner_name="Me", hde_link="https://hde.example.com/tickets/1",
+        chat_id=other_group,
+    )
+    await db_module.update_topic("TKT-1", topic_state="active", suggest_button_msg_id=555)
+
+    async def fake_download(ref):
+        from bot.hde_api import HDEAttachment
+        return HDEAttachment(filename="photo.jpg", content=b"image", content_type="image/jpeg")
+
+    monkeypatch.setattr(topic_manager, "download_client_attachment", fake_download)
+    bot = make_bot()
+    bot.edit_message_reply_markup = AsyncMock()
+
+    await handle_client_reply(bot, make_payload(
+        attachments=[MagicMock(url="https://files.example.com/photo.jpg", filename="photo.jpg", content_type="image/jpeg")]
+    ))
+
+    bot.create_forum_topic.assert_not_called()
+    assert bot.send_message.call_args.kwargs["chat_id"] == other_group
+    assert bot.send_message.call_args.kwargs["message_thread_id"] == 999
+    assert bot.edit_message_reply_markup.call_args.kwargs["chat_id"] == other_group
+    assert bot.send_photo.call_args.kwargs["chat_id"] == other_group
+
+
+@pytest.mark.asyncio
+async def test_new_topic_is_stored_with_the_group_it_was_created_in(initialized_db, monkeypatch):
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda: True)
+    monkeypatch.setattr(topic_manager, "_chat_for_new_topic", lambda payload: -100333)
+    bot = make_bot()
+
+    await handle_assigned_on_create(bot, make_payload())
+
+    assert bot.create_forum_topic.call_args.kwargs["chat_id"] == -100333
+    assert bot.send_message.call_args.kwargs["chat_id"] == -100333
+    record = await db_module.get_topic("TKT-1")
+    assert record.chat_id == -100333

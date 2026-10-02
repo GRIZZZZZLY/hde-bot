@@ -22,7 +22,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile, InputMediaPhoto, InputMediaVideo
 
-from . import db
+from . import db, operators
 from .agent.pipeline import run_agent
 from .ai_summary import generate_ticket_summary
 from .client_media import detect_telegram_media_kind, download_client_attachment
@@ -133,9 +133,9 @@ def _now_storage() -> str:
     return to_storage(utcnow())
 
 
-async def _send_topic_message(bot: Bot, topic_id: int, text: str, reply_markup=None):
+async def _send_topic_message(bot: Bot, chat_id: int, topic_id: int, text: str, reply_markup=None):
     return await bot.send_message(
-        chat_id=config.group_chat_id,
+        chat_id=chat_id,
         message_thread_id=topic_id,
         text=text,
         parse_mode="HTML",
@@ -144,14 +144,14 @@ async def _send_topic_message(bot: Bot, topic_id: int, text: str, reply_markup=N
     )
 
 
-async def _strip_prev_suggest_button(bot: Bot, msg_id: int | None) -> None:
+async def _strip_prev_suggest_button(bot: Bot, chat_id: int, msg_id: int | None) -> None:
     """Remove the 💡 button from the previously-tagged message so it stays only
     under the latest client reply. No-op if there's nothing to strip / it's gone."""
     if not msg_id:
         return
     try:
         await bot.edit_message_reply_markup(
-            chat_id=config.group_chat_id,
+            chat_id=chat_id,
             message_id=msg_id,
             reply_markup=None,
         )
@@ -159,9 +159,14 @@ async def _strip_prev_suggest_button(bot: Bot, msg_id: int | None) -> None:
         pass
 
 
-async def _create_topic(bot: Bot, payload: dict) -> int:
+def _chat_for_new_topic(payload: dict) -> int:
+    # stage 5 picks the ticket owner's group here
+    return operators.primary().chat_id
+
+
+async def _create_topic(bot: Bot, chat_id: int, payload: dict) -> int:
     forum_topic = await bot.create_forum_topic(
-        chat_id=config.group_chat_id,
+        chat_id=chat_id,
         name=_build_topic_name(payload),
         icon_color=_priority_color(_payload_value(payload, "priority")),
     )
@@ -188,7 +193,7 @@ async def _rename_topic_if_needed(
 
     try:
         await bot.edit_forum_topic(
-            chat_id=config.group_chat_id,
+            chat_id=record.chat_id,
             message_thread_id=record.topic_id,
             name=target_name,
         )
@@ -200,6 +205,7 @@ async def _rename_topic_if_needed(
         try:
             await _send_topic_message(
                 bot,
+                record.chat_id,
                 record.topic_id,
                 format_ticket_renamed(record.ticket_name, _payload_value(payload, "ticket_name")),
             )
@@ -215,6 +221,7 @@ async def _generate_summary_with_retry(
     ticket_id: str = "",
     company_id: str = "",
     topic_id: int | None = None,
+    chat_id: int | None = None,
     attempts: int = 3,
     pause: float = 30.0,
     trigger_source: str = "first",
@@ -234,7 +241,7 @@ async def _generate_summary_with_retry(
         try:
             result = await run_agent(
                 posts, info, ticket_title=ticket_title, ticket_id=ticket_id,
-                topic_id=topic_id, company_id=company_id,
+                topic_id=topic_id, chat_id=chat_id, company_id=company_id,
                 trigger_source=trigger_source,
             )
             if result is not None:
@@ -278,8 +285,9 @@ async def _ensure_active_topic(
     reassignment = False
 
     if record is None or record.is_deleted:
-        topic_id = await _create_topic(bot, payload)
-        await db.upsert_topic(ticket_id, topic_id, chat_id=config.group_chat_id, topic_state="active", **metadata)
+        chat_id = _chat_for_new_topic(payload)
+        topic_id = await _create_topic(bot, chat_id, payload)
+        await db.upsert_topic(ticket_id, topic_id, chat_id=chat_id, topic_state="active", **metadata)
         await db.update_topic(ticket_id, last_assigned_at=to_storage(utcnow()))
         # Send assignment notification FIRST (before summary and history)
         if announce_assignment:
@@ -293,11 +301,11 @@ async def _ensure_active_topic(
                 is_reassignment=False,
             )
             try:
-                await _send_topic_message(bot, topic_id, notif_text)
+                await _send_topic_message(bot, chat_id, topic_id, notif_text)
             except TelegramAPIError as exc:
                 logger.error("Failed to send assignment message to topic %d: %s", topic_id, exc)
         await _post_ticket_history(
-            bot, ticket_id, topic_id,
+            bot, ticket_id, chat_id, topic_id,
             ticket_title=_payload_value(payload, "ticket_name"),
             company_id=_payload_value(payload, "company_id"),
         )
@@ -305,7 +313,7 @@ async def _ensure_active_topic(
     elif record.is_pending_delete:
         try:
             await bot.reopen_forum_topic(
-                chat_id=config.group_chat_id,
+                chat_id=record.chat_id,
                 message_thread_id=record.topic_id,
             )
         except TelegramAPIError as exc:
@@ -330,7 +338,7 @@ async def _ensure_active_topic(
         if announce_assignment:
             try:
                 await bot.edit_forum_topic(
-                    chat_id=config.group_chat_id,
+                    chat_id=record.chat_id,
                     message_thread_id=record.topic_id,
                     name=_build_topic_name(payload),
                 )
@@ -383,7 +391,7 @@ async def _ensure_active_topic(
             is_reassignment=reassignment,
         )
         try:
-            await _send_topic_message(bot, record.topic_id, text)
+            await _send_topic_message(bot, record.chat_id, record.topic_id, text)
         except TelegramAPIError as exc:
             err = str(exc).lower()
             if "thread not found" in err or "topic_deleted" in err or "not found" in err:
@@ -393,15 +401,16 @@ async def _ensure_active_topic(
                     record.topic_id, ticket_id,
                 )
                 await db.mark_topic_deleted(ticket_id)
-                new_topic_id = await _create_topic(bot, payload)
-                await db.upsert_topic(ticket_id, new_topic_id, chat_id=config.group_chat_id, topic_state="active", **metadata)
+                new_chat_id = _chat_for_new_topic(payload)
+                new_topic_id = await _create_topic(bot, new_chat_id, payload)
+                await db.upsert_topic(ticket_id, new_topic_id, chat_id=new_chat_id, topic_state="active", **metadata)
                 await db.update_topic(ticket_id, last_assigned_at=to_storage(utcnow()))
                 try:
-                    await _send_topic_message(bot, new_topic_id, text)
+                    await _send_topic_message(bot, new_chat_id, new_topic_id, text)
                 except TelegramAPIError as exc2:
                     logger.error("Failed to send to recreated topic %d: %s", new_topic_id, exc2)
                 await _post_ticket_history(
-                    bot, ticket_id, new_topic_id,
+                    bot, ticket_id, new_chat_id, new_topic_id,
                     ticket_title=record.ticket_name,
                 )
                 record = await db.get_topic(ticket_id)
@@ -414,7 +423,7 @@ async def _ensure_active_topic(
 async def _delete_topic_now(bot: Bot, record: db.TicketTopic) -> bool:
     try:
         await bot.delete_forum_topic(
-            chat_id=config.group_chat_id,
+            chat_id=record.chat_id,
             message_thread_id=record.topic_id,
         )
     except TelegramAPIError as exc:
@@ -486,6 +495,7 @@ async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) 
         try:
             await _send_topic_message(
                 bot,
+                record.chat_id,
                 record.topic_id,
                 format_unassigned_message(record.unique_id, _payload_value(payload, "link")),
             )
@@ -494,7 +504,7 @@ async def _handle_owner_changed_locked(bot: Bot, payload: dict, ticket_id: str) 
 
     try:
         await bot.close_forum_topic(
-            chat_id=config.group_chat_id,
+            chat_id=record.chat_id,
             message_thread_id=record.topic_id,
         )
     except TelegramAPIError as exc:
@@ -582,10 +592,10 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
     from .handlers.ai_feedback import suggest_button_kb
     # Keep the 💡 button only under the latest client reply: strip it off the
     # previous one before posting the new message.
-    await _strip_prev_suggest_button(bot, record.suggest_button_msg_id)
+    await _strip_prev_suggest_button(bot, record.chat_id, record.suggest_button_msg_id)
     sent = None
     try:
-        sent = await _send_topic_message(bot, record.topic_id, reply_text, reply_markup=suggest_button_kb())
+        sent = await _send_topic_message(bot, record.chat_id, record.topic_id, reply_text, reply_markup=suggest_button_kb())
         await db.update_topic(ticket_id, suggest_button_msg_id=sent.message_id)
     except TelegramAPIError as exc:
         err_lower = str(exc).lower()
@@ -597,7 +607,7 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
             await db.mark_topic_deleted(ticket_id)
             record = await _ensure_active_topic(bot, payload, announce_assignment=True)
             try:
-                sent = await _send_topic_message(bot, record.topic_id, reply_text, reply_markup=suggest_button_kb())
+                sent = await _send_topic_message(bot, record.chat_id, record.topic_id, reply_text, reply_markup=suggest_button_kb())
                 await db.update_topic(ticket_id, suggest_button_msg_id=sent.message_id)
             except TelegramAPIError as exc2:
                 logger.error("Failed to resend client reply to recreated topic %d: %s", record.topic_id, exc2)
@@ -611,7 +621,7 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
     ):
         from .topic_history import append_draft_to_reply
         task = asyncio.create_task(append_draft_to_reply(
-            bot, ticket_id=record.ticket_id, topic_id=record.topic_id,
+            bot, ticket_id=record.ticket_id, chat_id=record.chat_id, topic_id=record.topic_id,
             message_id=sent.message_id, reply_html=reply_text,
             ticket_title=record.ticket_name or "",
         ))
@@ -619,7 +629,7 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
         task.add_done_callback(_reply_draft_tasks.discard)
 
     try:
-        await _send_client_attachments(bot, record.topic_id, payload)
+        await _send_client_attachments(bot, record.chat_id, record.topic_id, payload)
     except TelegramAPIError as exc:
         logger.error("Failed to send client attachments to topic %d: %s", record.topic_id, exc)
 
@@ -645,7 +655,7 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
     # новое сообщение клиента может содержать недостающий контекст.
     if record.env_option_id == "":
         from .ticket_fields import retry_env_classification
-        asyncio.create_task(retry_env_classification(bot, record.ticket_id, record.topic_id))
+        asyncio.create_task(retry_env_classification(bot, record.ticket_id, record.chat_id, record.topic_id))
 
 
 async def _maybe_update_pattern(title: str, staff_text: str, ticket_id: str) -> None:
@@ -758,7 +768,7 @@ async def _handle_staff_reply_locked(bot: Bot, payload: dict, ticket_id: str) ->
         await _try_delete_pre_sla_message(bot, record)
         if config.agent_voice_v2_enabled:
             # оператор уже ответил в HDE — черновик устарел, его 📤 не нужен
-            await _strip_prev_suggest_button(bot, record.suggest_button_msg_id)
+            await _strip_prev_suggest_button(bot, record.chat_id, record.suggest_button_msg_id)
     pre_sla_clear = (
         {
             "pre_sla_notify_at": None,
@@ -966,6 +976,7 @@ async def sync_ticket_topic(bot: Bot, payload: dict) -> db.TicketTopic:
 
 async def _post_client_history(
     bot: Bot,
+    chat_id: int,
     topic_id: int,
     ticket_id: str,
     *,
@@ -998,7 +1009,7 @@ async def _post_client_history(
         )
         if text:
             await bot.send_message(
-                chat_id=config.group_chat_id,
+                chat_id=chat_id,
                 message_thread_id=topic_id,
                 text=text,
                 parse_mode="HTML",
