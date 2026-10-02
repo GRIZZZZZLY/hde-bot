@@ -54,6 +54,15 @@ def reset_webhook_background_tasks():
 
 
 @pytest.fixture(autouse=True)
+def no_auto_refresh(monkeypatch):
+    """Scheduler passes in tests must not start a real background /refresh."""
+    from datetime import datetime, timezone
+    import bot.scheduler as scheduler_module
+    monkeypatch.setattr(scheduler_module, "_last_auto_refresh_at", datetime(9999, 1, 1, tzinfo=timezone.utc))
+    monkeypatch.setattr(scheduler_module, "_auto_refresh_task", None)
+
+
+@pytest.fixture(autouse=True)
 def set_test_db(tmp_path, monkeypatch):
     test_db = str(tmp_path / "test.db")
     monkeypatch.setattr(db_module, "DB_PATH", test_db)

@@ -41,6 +41,11 @@ _last_value_report_date: Optional[str] = None   # daily AI-value report
 _last_general_flush_date: Optional[str] = None  # "YYYY-MM-DD" UTC date
 _last_general_reconcile_at: Optional[datetime] = None  # last in-hours reconcile time
 _GENERAL_RECONCILE_INTERVAL_SEC = 7 * 60
+# Safety net for lost webhooks, hand-deleted topics and reassignments made around
+# the dispatcher rules: the same sync as /refresh, silent, while anyone is at work.
+_AUTO_REFRESH_INTERVAL_SEC = 30 * 60
+_last_auto_refresh_at: Optional[datetime] = None
+_auto_refresh_task: Optional[asyncio.Task] = None
 _last_db_backup_date: Optional[str] = None  # "YYYY-MM-DD" UTC — суточный снапшот базы
 _last_report_date: Optional[str] = None         # "YYYY-MM-DD" UTC date — set when report runs
 _report_button_sent: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when button is sent
@@ -467,6 +472,38 @@ async def _maybe_reconcile_answers(bot) -> None:
         logger.warning("Auto-rule archival failed: %s", exc)
 
 
+async def _maybe_auto_refresh(bot: Bot) -> None:
+    """Start the topic sync every 30 min in working hours, in the background so the
+    pre-SLA timers in this pass never wait for it; skip while the previous one runs."""
+    global _last_auto_refresh_at, _auto_refresh_task
+    from .work_schedule import anyone_at_work
+    if not anyone_at_work():
+        return
+    now = datetime.now(timezone.utc)
+    if (
+        _last_auto_refresh_at is not None
+        and (now - _last_auto_refresh_at).total_seconds() < _AUTO_REFRESH_INTERVAL_SEC
+    ):
+        return
+    if _auto_refresh_task is not None and not _auto_refresh_task.done():
+        return
+    _last_auto_refresh_at = now
+    _auto_refresh_task = asyncio.create_task(_auto_refresh(bot))
+
+
+async def _auto_refresh(bot: Bot) -> None:
+    from .refresh import refresh_topics
+    try:
+        result = await refresh_topics(bot)
+    except Exception as exc:
+        logger.exception("Auto refresh failed: %s", exc)
+        return
+    logger.info(
+        "Auto refresh: HDE open=%d created=%d renamed=%d deleted=%d",
+        result.hde_count, len(result.created), len(result.renamed), len(result.deleted),
+    )
+
+
 async def _maybe_refresh_stale_drafts(bot: Bot) -> None:
     """Пересборка черновиков, устаревших из-за комментария коллеги.
 
@@ -636,6 +673,7 @@ async def process_scheduled_actions(bot: Bot) -> None:
     # assignments when HDE doesn't fire a usable webhook (or sends one with
     # empty owner_name). Cheap: 1 list call + delta-only edits every ~7 min.
     await _run_job("reconcile_general", _maybe_reconcile_general(bot))
+    await _run_job("auto_refresh", _maybe_auto_refresh(bot))
 
     # Report schedule:
     #   Mon–Thu 8:30 MSK  → reminder button for previous work day

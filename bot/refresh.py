@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
@@ -11,7 +12,7 @@ from . import db, operators
 from .config import config
 from .formatter import make_topic_name
 from .hde_api import HDEApiClient, HDEApiError, HDETicket
-from .time_utils import to_storage, utcnow
+from .time_utils import parse_datetime, to_storage, utcnow
 from .topic_manager import sync_ticket_topic
 
 logger = logging.getLogger(__name__)
@@ -235,7 +236,13 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
 
     # ── Step 4: purge orphaned Telegram topics (DB state=deleted but TG topic may
     #           still exist — e.g. deletion failed during testing/crashes) ────────
-    deleted_db_topics = await db.list_topics_by_state("deleted")
+    # Only the last day: older records were swept by earlier runs, and re-deleting
+    # the whole history cost ~2000 Telegram calls (~2 min) per refresh.
+    recent_cutoff = utcnow() - timedelta(days=1)
+    deleted_db_topics = [
+        t for t in await db.list_topics_by_state("deleted")
+        if (deleted_at := parse_datetime(t.deleted_at)) is not None and deleted_at >= recent_cutoff
+    ]
     purged_orphans = 0
     for topic in deleted_db_topics:
         try:

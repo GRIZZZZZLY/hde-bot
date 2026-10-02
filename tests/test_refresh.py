@@ -141,3 +141,52 @@ def _async_method(value):
     async def method(self, *args, **kwargs):
         return value
     return method
+
+
+@pytest.mark.asyncio
+async def test_orphan_purge_only_touches_recently_deleted_topics(initialized_db, monkeypatch):
+    """Step 4 re-deletes Telegram topics only for records deleted in the last day:
+    re-sweeping the whole history cost ~2000 Telegram calls per refresh."""
+    from datetime import timedelta
+    from bot.time_utils import to_storage, utcnow
+    monkeypatch.setattr("bot.hde_api.HDEApiClient.get_my_open_tickets", _async_method([]))
+    await db_module.upsert_topic("OLD", 300, chat_id=config.group_chat_id, topic_state="deleted",
+                                 deleted_at=to_storage(utcnow() - timedelta(days=40)))
+    await db_module.upsert_topic("NEW", 301, chat_id=config.group_chat_id, topic_state="deleted",
+                                 deleted_at=to_storage(utcnow() - timedelta(hours=2)))
+    bot = DummyBot()
+
+    await refresh_topics(bot)
+
+    assert bot.deleted_topics == [301]
+
+
+@pytest.mark.asyncio
+async def test_auto_refresh_runs_every_30_minutes_only_in_working_hours(monkeypatch):
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+    import bot.scheduler as scheduler
+    import bot.work_schedule as work_schedule
+    calls = []
+
+    async def fake_refresh(bot):
+        calls.append(bot)
+        from bot.refresh import RefreshResult
+        return RefreshResult(active_before=0, hde_count=0)
+
+    monkeypatch.setattr("bot.refresh.refresh_topics", fake_refresh)
+    monkeypatch.setattr(scheduler, "_last_auto_refresh_at", None)
+    monkeypatch.setattr(work_schedule, "anyone_at_work", lambda: False)
+    await scheduler._maybe_auto_refresh("bot")
+    assert scheduler._auto_refresh_task is None  # nobody at work → no run
+
+    monkeypatch.setattr(work_schedule, "anyone_at_work", lambda: True)
+    await scheduler._maybe_auto_refresh("bot")
+    await scheduler._auto_refresh_task
+    await scheduler._maybe_auto_refresh("bot")  # 0 min later → skipped
+    assert calls == ["bot"]
+
+    monkeypatch.setattr(scheduler, "_last_auto_refresh_at", datetime.now(timezone.utc) - timedelta(minutes=31))
+    await scheduler._maybe_auto_refresh("bot")
+    await scheduler._auto_refresh_task
+    assert calls == ["bot", "bot"]
