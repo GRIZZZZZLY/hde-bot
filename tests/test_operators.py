@@ -70,3 +70,10 @@ def test_hde_client_uses_the_acting_operators_key(monkeypatch):
     shared = HDEApiClient(auth=operators.hde_auth_for_user(config.personal_chat_id)).auth
     assert (shared.login, shared.password) == (config.hde_api_email, config.hde_api_key)
     assert HDEApiClient(auth="broken").auth.login == config.hde_api_email
+
+
+def test_colleague_without_own_key_is_not_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPERATORS_FILE", _write_registry(tmp_path, [
+        {"hde_id": 61, "name": "Юрий Коржов", "tg_user_id": 929530522, "chat_id": -1004458123183},
+    ]))
+    assert operators._load_colleagues() == ()

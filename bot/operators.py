@@ -56,12 +56,16 @@ def _load_extra(path: str) -> list[Operator]:
     extra = []
     for entry in json.loads(Path(path).read_text(encoding="utf-8")):
         key_file = entry.get("key_file", "")
+        if not key_file:
+            # Without their own key every reply would be signed by the shared key's owner.
+            logger.error("OPERATORS_FILE: %s skipped — no key_file", entry.get("name"))
+            continue
         extra.append(Operator(
             hde_id=str(entry["hde_id"]),
             name=entry["name"],
             tg_user_id=int(entry["tg_user_id"]),
             chat_id=int(entry["chat_id"]),
-            api_auth=Path(key_file).read_text(encoding="utf-8").strip() if key_file else "",
+            api_auth=Path(key_file).read_text(encoding="utf-8").strip(),
             ai_enabled=bool(entry.get("ai_enabled", False)),
             auto_reassurance=bool(entry.get("auto_reassurance", False)),
             work_days=tuple(int(d) for d in entry.get("work_days", ())),
