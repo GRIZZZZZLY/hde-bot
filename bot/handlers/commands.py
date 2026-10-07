@@ -117,10 +117,13 @@ async def cmd_note(message: Message, command: CommandObject) -> None:
 
 
 def _format_autofill_result(r: AutofillResult) -> str:
+    from ..config import config
     if not r.updated:
         return f"⚠️ <b>Автозаполнение не выполнено:</b> {r.error or 'неизвестная ошибка'}"
     lines = ["✅ <b>Поля тикета обновлены</b>", "• Классификация: Оборудование"]
-    if r.env_id:
+    if not config.env_autofill_enabled:
+        lines.append("• Окружение: без изменений (автоопределение выключено)")
+    elif r.env_id:
         lines.append(f"• Окружение: {OKRUZHENIE_OPTIONS.get(r.env_id, r.env_id)}")
     else:
         lines.append("• Окружение: ⚠️ не определено — выставьте вручную")

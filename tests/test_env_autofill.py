@@ -13,6 +13,13 @@ from bot.config import config
 def use_tmp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(_db, "DB_PATH", str(tmp_path / "test.db"))
 
+@pytest.fixture(autouse=True)
+def env_autofill_on(monkeypatch):
+    """Эти тесты проверяют работу автоопределения «Окружения» — включаем его."""
+    from bot.config import config
+    monkeypatch.setattr(config, "env_autofill_enabled", True)
+
+
 
 # --- env_option_id column ---
 

@@ -123,14 +123,26 @@ async def test_topic_not_queried_without_ticket_id():
 # --- D2: поля тикета -------------------------------------------------------
 
 
-async def test_ticket_facts_include_environment_name_not_id():
+async def test_ticket_facts_include_environment_name_not_id(monkeypatch):
     """В промпт идёт «Posiflora Retail», а не «14»: id — деталь HDE, модель по
     нему ничего не поймёт."""
+    from bot.config import config
+    monkeypatch.setattr(config, "env_autofill_enabled", True)
     from bot.ticket_fields import OKRUZHENIE_OPTIONS
     env_id = next(iter(OKRUZHENIE_OPTIONS))
     ctx = await _ctx(_topic(env_option_id=env_id))
     assert OKRUZHENIE_OPTIONS[env_id] in ctx["ticket_facts"]
     assert env_id not in ctx["ticket_facts"]
+
+
+async def test_ticket_facts_skip_environment_when_autofill_off(monkeypatch):
+    """Догадка бота об окружении ошибалась — при выключенном флаге в черновик не идёт."""
+    from bot.config import config
+    from bot.ticket_fields import OKRUZHENIE_OPTIONS
+    monkeypatch.setattr(config, "env_autofill_enabled", False)
+    env_id = next(iter(OKRUZHENIE_OPTIONS))
+    ctx = await _ctx(_topic(env_option_id=env_id))
+    assert "Окружение" not in ctx["ticket_facts"]
 
 
 async def test_ticket_facts_include_company():

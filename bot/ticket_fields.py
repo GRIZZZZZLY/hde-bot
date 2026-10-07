@@ -406,7 +406,9 @@ async def apply_ticket_fields(
         fields[FIELD_ROL] = ROL_NE_VAZHNO
 
     # Окружение: keyword pre-pass + LLM classify; overwrite always when determined.
-    env_id = await classify_environment(enriched, ticket_title, prior_hint)
+    # Флаг выключен — поле не трогаем совсем.
+    env_on = config.env_autofill_enabled
+    env_id = await classify_environment(enriched, ticket_title, prior_hint) if env_on else None
     if env_id:
         fields[FIELD_OKRUZHENIE] = env_id
 
@@ -429,10 +431,11 @@ async def apply_ticket_fields(
 
     # Запоминаем исход: '' = «не определено» (триггер для реклассификации),
     # цифры = выбранная опция (источник приора и сверки с оператором).
-    try:
-        await _db.update_topic(ticket_id, env_option_id=env_id or "")
-    except Exception as exc:
-        logger.warning("apply_ticket_fields: env store failed for %s: %s", ticket_id, exc)
+    if env_on:
+        try:
+            await _db.update_topic(ticket_id, env_option_id=env_id or "")
+        except Exception as exc:
+            logger.warning("apply_ticket_fields: env store failed for %s: %s", ticket_id, exc)
 
     try:
         await _db.update_topic(
@@ -443,7 +446,7 @@ async def apply_ticket_fields(
     except Exception as exc:
         logger.warning("apply_ticket_fields: pt store failed for %s: %s", ticket_id, exc)
 
-    if env_id is None:
+    if env_on and env_id is None:
         try:
             await bot.send_message(
                 chat_id=chat_id,
@@ -484,6 +487,8 @@ async def retry_env_classification(bot: Bot, ticket_id: str, chat_id: int, topic
     (экономия Deepgram; поздние сообщения почти всегда текстовые).
     Never raises.
     """
+    if not config.env_autofill_enabled:
+        return
     from . import operators
     if not operators.ai_enabled_for(chat_id=chat_id):
         logger.info("retry_env_classification: ticket %s skipped, AI is off for chat %s", ticket_id, chat_id)

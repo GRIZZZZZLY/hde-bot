@@ -39,7 +39,10 @@ def build_ticket_facts(topic) -> str:
     company = (getattr(topic, "company_name", "") or "").strip()
     if company:
         facts.append(f"Компания клиента: {company}")
-    env_id = getattr(topic, "env_option_id", None)
+    from ..config import config
+    # Это догадка бота, а не значение поля в HDE: при выключенном
+    # автоопределении (оно ошибалось) в черновик её не несём.
+    env_id = getattr(topic, "env_option_id", None) if config.env_autofill_enabled else None
     if env_id and str(env_id) in OKRUZHENIE_OPTIONS:
         facts.append(f"Окружение: {OKRUZHENIE_OPTIONS[str(env_id)]}")
     return "\n".join(facts)

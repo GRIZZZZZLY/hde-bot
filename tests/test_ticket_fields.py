@@ -22,6 +22,13 @@ def use_tmp_db(tmp_path, monkeypatch):
     from bot import db as _db
     monkeypatch.setattr(_db, "DB_PATH", str(tmp_path / "test.db"))
 
+@pytest.fixture(autouse=True)
+def env_autofill_on(monkeypatch):
+    """Эти тесты проверяют работу автоопределения «Окружения» — включаем его."""
+    from bot.config import config
+    monkeypatch.setattr(config, "env_autofill_enabled", True)
+
+
 
 def test_field_ids_are_strings():
     assert FIELD_OKRUZHENIE == "2"
@@ -393,3 +400,37 @@ def test_format_autofill_result_not_updated():
     out = _format_autofill_result(r)
     assert "не выполнено" in out
     assert "ошибка записи в HDE" in out
+
+
+@pytest.mark.asyncio
+async def test_apply_env_off_leaves_field_untouched(monkeypatch):
+    """Флаг выключен: «Окружение» не классифицируем, не пишем и не предупреждаем."""
+    monkeypatch.setattr(tf.config, "env_autofill_enabled", False)
+    fake_client = MagicMock()
+    fake_client.get_ticket_field_value = AsyncMock(return_value=199)
+    fake_client.update_ticket_fields = AsyncMock()
+    monkeypatch.setattr(tf, "HDEApiClient", lambda: fake_client)
+    classify = AsyncMock(return_value="146")
+    monkeypatch.setattr(tf, "classify_environment", classify)
+    monkeypatch.setattr(tf, "classify_priority_type", AsyncMock(return_value=("1", "3")))
+
+    bot = MagicMock()
+    bot.send_message = AsyncMock()
+
+    res = await tf.apply_ticket_fields(bot, "T1", tf.config.group_chat_id, 555, "Клиент: Эвотор не печатает")
+
+    classify.assert_not_awaited()
+    fake_client.update_ticket_fields.assert_awaited_once_with(
+        "T1", {"3": "20"}, priority_id="1", type_id="3"
+    )
+    bot.send_message.assert_not_awaited()
+    assert res.env_id is None
+
+
+@pytest.mark.asyncio
+async def test_retry_env_off_does_nothing(monkeypatch):
+    monkeypatch.setattr(tf.config, "env_autofill_enabled", False)
+    client_factory = MagicMock()
+    monkeypatch.setattr(tf, "HDEApiClient", client_factory)
+    await tf.retry_env_classification(MagicMock(), "T1", tf.config.group_chat_id, 555)
+    client_factory.assert_not_called()

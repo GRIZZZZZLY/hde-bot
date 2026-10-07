@@ -53,6 +53,7 @@ class Config:
     morning_digest_enabled: bool
     ticket_history_post_enabled: bool
     ai_suggestion_auto_enabled: bool
+    env_autofill_enabled: bool
     personal_digests_enabled: bool
     nightly_reconcile_enabled: bool
     agent_voice_v2_enabled: bool
@@ -144,6 +145,11 @@ class Config:
             ),
             ai_suggestion_auto_enabled=_parse_bool(
                 os.getenv("AI_SUGGESTION_AUTO_ENABLED"), default=False
+            ),
+            # Автоклассификация поля «Окружение». Выключена 2026-10-07: ставила
+            # неверные значения и затирала верные, выставленные вручную.
+            env_autofill_enabled=_parse_bool(
+                os.getenv("ENV_AUTOFILL_ENABLED"), default=False
             ),
             personal_digests_enabled=_parse_bool(
                 os.getenv("PERSONAL_DIGESTS_ENABLED"), default=False
