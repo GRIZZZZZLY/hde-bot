@@ -534,6 +534,30 @@ async def test_get_ticket_open_status_open(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_get_ticket_open_status_deleted_counts_as_deletable(monkeypatch):
+    # HDE keeps status_id "open" on a deleted ticket; only deleted=1 tells.
+    async def fake_read_response(self, response):
+        return {"data": {"status_id": "open", "deleted": 1, "link_staff": "L"}}
+
+    mock_resp = MagicMock()
+    mock_resp.status = 200
+    mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+    mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+    mock_sess = MagicMock()
+    mock_sess.get = MagicMock(return_value=mock_resp)
+    mock_sess.__aenter__ = AsyncMock(return_value=mock_sess)
+    mock_sess.__aexit__ = AsyncMock(return_value=False)
+
+    monkeypatch.setattr("bot.hde_api.HDEApiClient._read_response", fake_read_response)
+
+    with patch("aiohttp.ClientSession", return_value=mock_sess):
+        result = await HDEApiClient().get_ticket_open_status("209994")
+
+    assert result == (True, "L")
+
+
+@pytest.mark.asyncio
 async def test_get_ticket_open_status_api_error(monkeypatch):
     async def fake_read_response(self, response):
         raise RuntimeError("network error")

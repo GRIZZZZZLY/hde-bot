@@ -788,8 +788,30 @@ async def _process_due_timers(bot: Bot) -> None:
             )
         return verify_cache[key]
 
+    async def _ticket_gone(record) -> bool:
+        """Тикет удалён или закрыт в HDE — убираем топик вместо уведомления.
+
+        На удаление тикета HDE вебхук не шлёт, а сам тикет отдаёт как открытый
+        с deleted=1. Ошибка HDE → False: уведомление важнее лишнего топика.
+        """
+        from .hde_api import HDEApiClient, HDEApiError
+        try:
+            status = await HDEApiClient().get_ticket_open_status(record.ticket_id)
+        except HDEApiError:
+            return False
+        if status is None or not status[0]:
+            return False
+        logger.info(
+            "pre-SLA dropped for ticket %s: deleted or closed in HDE, removing topic",
+            record.ticket_id,
+        )
+        await delete_pending_topic(bot, record)
+        return True
+
     for record in await db.list_due_pre_sla(now_value):
         if not _at_work(record):
+            continue
+        if await _ticket_gone(record):
             continue
         if await _staff_replied(record):
             logger.info(
@@ -847,6 +869,8 @@ async def _process_due_timers(bot: Bot) -> None:
             continue
         if await _staff_replied(record):
             await db.clear_pre_sla(record.ticket_id)
+            continue
+        if await _ticket_gone(record):
             continue
         try:
             await send_reassurance_to_client(bot, record)

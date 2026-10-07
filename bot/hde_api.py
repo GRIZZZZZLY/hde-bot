@@ -330,7 +330,7 @@ class HDEApiClient:
     async def get_ticket_open_status(self, ticket_id: str) -> tuple[bool, str] | None:
         """Return (is_deletable, link_staff) or None on any error (fail-safe).
 
-        is_deletable=True means status in {resolved, closed} → safe to delete topic.
+        is_deletable=True means the ticket is closed or deleted → safe to delete topic.
         Returns None on network/API error → caller must skip deletion.
         """
         url = f"{self.base_url}/tickets/{ticket_id}/"
@@ -343,7 +343,8 @@ class HDEApiClient:
             # closed). The only terminal status is "closed" ("Выполнено").
             status = str(raw.get("status_id") or raw.get("status") or "")
             link = raw.get("link_staff", "")
-            is_deletable = status == "closed"
+            # A deleted ticket keeps status_id "open"; only `deleted: 1` tells.
+            is_deletable = status == "closed" or str(raw.get("deleted") or "0") != "0"
             return (is_deletable, link)
         except Exception:
             return None
