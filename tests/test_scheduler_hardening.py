@@ -310,3 +310,28 @@ async def test_dead_alert_survives_telegram_failure():
             raise RuntimeError("telegram down")
 
     await scheduler._maybe_alert_dead_inbox(_BrokenBot())  # не роняет проход
+
+
+@pytest.mark.asyncio
+async def test_timers_run_while_the_main_pass_is_still_busy(monkeypatch):
+    """Pre-SLA has its own loop: a slow pass (reconcile, drafts, Telegram) must not
+    delay it. Before 2026-10-12 timers sat at the end of the pass and a 7-minute SLA
+    warning came 80 s late."""
+    monkeypatch.setattr(scheduler, "_TIMERS_INTERVAL_SECONDS", 0.01)
+    ticks = []
+
+    async def slow_pass(_bot):
+        await asyncio.sleep(10)
+
+    async def timers(_bot):
+        ticks.append(1)
+
+    monkeypatch.setattr(scheduler, "process_scheduled_actions", slow_pass)
+    monkeypatch.setattr(scheduler, "process_due_timers", timers)
+    stop = asyncio.Event()
+    task = asyncio.create_task(scheduler.run_scheduler(_FakeBot(), stop))
+    await asyncio.sleep(0.2)
+    stop.set()
+    task.cancel()
+
+    assert len(ticks) >= 3

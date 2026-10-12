@@ -555,6 +555,7 @@ async def _maybe_backup_db(bot: Bot) -> None:
 
 _JOB_TIMEOUT_SECONDS = 90
 _TIMERS_TIMEOUT_SECONDS = 120
+_TIMERS_INTERVAL_SECONDS = 15
 _REPORT_TIMEOUT_SECONDS = 600
 
 # Ночная пачка dialogue_pairs (01:xx MSK) идёт по HDE API с пейсингом, а потом
@@ -594,7 +595,7 @@ async def _run_job(name: str, coro, *, timeout: float | None = None) -> bool:
         logger.warning("Scheduler job %s failed: %s", name, exc)
     finally:
         elapsed = time.monotonic() - started
-        if elapsed > timeout / 2:
+        if elapsed > min(timeout / 2, 10):
             logger.info("Scheduler job %s took %.1fs", name, elapsed)
     return False
 
@@ -755,10 +756,12 @@ async def process_scheduled_actions(bot: Bot) -> None:
     # Nightly prompt optimizer disabled: the hand-tuned _FORMAT_INSTRUCTIONS is
     # the source of truth. Manual runs still available via /aioptimize.
 
-    # Pre-SLA and pending deletions require both work day AND work hours.
-    # Вынесены в отдельный джоб под таймаутом: это самая чувствительная к
-    # задержке часть прохода, и повиснуть она не должна ни на HDE-сверке, ни на
-    # Telegram.
+
+async def process_due_timers(bot: Bot) -> None:
+    """Pre-SLA и отложенные удаления — свой цикл (run_scheduler), а не хвост
+    общего прохода: там они ждали все джобы подряд, и при SLA в 7 минут
+    предупреждение опаздывало на 80 с (тикет 213842, 2026-10-12).
+    Требуют рабочего дня И рабочего времени."""
     from .work_schedule import anyone_at_work
     if not anyone_at_work():
         return
@@ -881,14 +884,21 @@ async def _process_due_timers(bot: Bot) -> None:
         await delete_pending_topic(bot, record)
 
 
-async def run_scheduler(bot: Bot, stop_event: asyncio.Event) -> None:
+async def _loop(stop_event: asyncio.Event, interval: float, step) -> None:
     while not stop_event.is_set():
         try:
-            await process_scheduled_actions(bot)
+            await step()
         except Exception as exc:
             logger.exception("Scheduler loop failed: %s", exc)
 
         try:
-            await asyncio.wait_for(stop_event.wait(), timeout=config.scheduler_interval_seconds)
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
             continue
+
+
+async def run_scheduler(bot: Bot, stop_event: asyncio.Event) -> None:
+    await asyncio.gather(
+        _loop(stop_event, config.scheduler_interval_seconds, lambda: process_scheduled_actions(bot)),
+        _loop(stop_event, _TIMERS_INTERVAL_SECONDS, lambda: process_due_timers(bot)),
+    )

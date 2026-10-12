@@ -6,7 +6,7 @@ import pytest
 
 import bot.db as db_module
 import bot.topic_manager as topic_manager
-from bot.scheduler import process_scheduled_actions
+from bot.scheduler import process_due_timers
 from bot.time_utils import parse_datetime, to_storage, utcnow
 from bot.topic_manager import (
     handle_assigned_on_create,
@@ -693,7 +693,7 @@ async def test_scheduler_sends_pre_sla_alert(initialized_db, monkeypatch):
     )
     bot = make_bot()
 
-    await process_scheduled_actions(bot)
+    await process_due_timers(bot)
 
     record = await db_module.get_topic("TKT-1")
     assert record is not None
@@ -724,7 +724,7 @@ async def test_scheduler_deletes_pending_topics(initialized_db, monkeypatch):
     )
     bot = make_bot()
 
-    await process_scheduled_actions(bot)
+    await process_due_timers(bot)
 
     bot.delete_forum_topic.assert_called_once()
     record = await db_module.get_topic("TKT-1")
@@ -762,10 +762,10 @@ async def test_scheduler_hde_verify_called_once_per_pass(initialized_db, monkeyp
     monkeypatch.setattr(scheduler, "send_reassurance_to_client", AsyncMock())
     bot = make_bot()
 
-    await process_scheduled_actions(bot)
+    await process_due_timers(bot)
     assert verify.await_count == 1  # countdown + reassurance share one check
 
-    await process_scheduled_actions(bot)
+    await process_due_timers(bot)
     assert verify.await_count == 2  # next pass re-verifies (no cross-pass cache)
 
 
@@ -1227,6 +1227,6 @@ async def test_reassurance_only_for_engineers_who_agreed(initialized_db, monkeyp
     reassure = AsyncMock()
     monkeypatch.setattr(scheduler, "send_reassurance_to_client", reassure)
 
-    await process_scheduled_actions(make_bot())
+    await process_due_timers(make_bot())
 
     assert reassure.await_count == (1 if expect_sent else 0)
