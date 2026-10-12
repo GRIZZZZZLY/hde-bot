@@ -407,7 +407,7 @@ async def test_staff_reply_autoreply_does_not_clear_pre_sla(initialized_db, monk
     monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
     monkeypatch.setattr(topic_manager.config, "hde_owner_id", "me")
     verify = AsyncMock(return_value=False)  # operator has NOT posted in HDE
-    monkeypatch.setattr(topic_manager, "_hde_staff_replied_since", verify)
+    monkeypatch.setattr(topic_manager, "_hde_staff_wrote_last", verify)
     bot = make_bot()
 
     await handle_staff_reply(bot, make_payload(
@@ -434,7 +434,7 @@ async def test_staff_reply_operator_reply_clears_pre_sla(initialized_db, monkeyp
     monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
     monkeypatch.setattr(topic_manager.config, "hde_owner_id", "me")
     verify = AsyncMock(return_value=True)  # operator genuinely replied
-    monkeypatch.setattr(topic_manager, "_hde_staff_replied_since", verify)
+    monkeypatch.setattr(topic_manager, "_hde_staff_wrote_last", verify)
     bot = make_bot()
 
     await handle_staff_reply(bot, make_payload(
@@ -461,7 +461,7 @@ async def test_staff_reply_legacy_clear_when_verify_disabled(initialized_db, mon
     )
     monkeypatch.setattr(topic_manager.config, "presla_hde_verify", False)
     verify = AsyncMock(return_value=False)
-    monkeypatch.setattr(topic_manager, "_hde_staff_replied_since", verify)
+    monkeypatch.setattr(topic_manager, "_hde_staff_wrote_last", verify)
     bot = make_bot()
 
     await handle_staff_reply(bot, make_payload(last_post_date=to_storage(utcnow())))
@@ -506,7 +506,7 @@ async def test_staff_replied_counts_colleague_from_static_list(monkeypatch):
     client.get_user_group_type = AsyncMock()
 
     with patch("bot.hde_api.HDEApiClient", return_value=client):
-        replied = await topic_manager._hde_staff_replied_since("TKT-1", to_storage(since))
+        replied = await topic_manager._hde_staff_wrote_last("TKT-1")
 
     assert replied is True
     client.get_user_group_type.assert_not_awaited()  # список покрыл — API не нужен
@@ -529,8 +529,8 @@ async def test_staff_replied_resolves_unknown_author_via_api(monkeypatch):
     client.get_user_group_type = AsyncMock(return_value="staff")
 
     with patch("bot.hde_api.HDEApiClient", return_value=client):
-        first = await topic_manager._hde_staff_replied_since("TKT-1", to_storage(since))
-        second = await topic_manager._hde_staff_replied_since("TKT-1", to_storage(since))
+        first = await topic_manager._hde_staff_wrote_last("TKT-1")
+        second = await topic_manager._hde_staff_wrote_last("TKT-1")
 
     assert first is True and second is True
     assert client.get_user_group_type.await_count == 1  # второй раз из кэша
@@ -553,7 +553,7 @@ async def test_staff_replied_ignores_client_author(monkeypatch):
     client.get_user_group_type = AsyncMock(return_value="user")
 
     with patch("bot.hde_api.HDEApiClient", return_value=client):
-        replied = await topic_manager._hde_staff_replied_since("TKT-1", to_storage(since))
+        replied = await topic_manager._hde_staff_wrote_last("TKT-1")
 
     assert replied is False
 
@@ -581,7 +581,7 @@ async def test_staff_replied_ignores_own_autoreply(monkeypatch):
     client.get_user_group_type = AsyncMock()
 
     with patch("bot.hde_api.HDEApiClient", return_value=client):
-        replied = await topic_manager._hde_staff_replied_since("TKT-1", to_storage(since))
+        replied = await topic_manager._hde_staff_wrote_last("TKT-1")
 
     assert replied is False
 
@@ -624,7 +624,7 @@ async def test_staff_reply_clear_resets_reassurance_flag(initialized_db, monkeyp
     monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
     monkeypatch.setattr(topic_manager.config, "hde_owner_id", "98")
     monkeypatch.setattr(
-        topic_manager, "_hde_staff_replied_since", AsyncMock(return_value=True)
+        topic_manager, "_hde_staff_wrote_last", AsyncMock(return_value=True)
     )
     bot = make_bot()
 
@@ -735,7 +735,7 @@ async def test_scheduler_deletes_pending_topics(initialized_db, monkeypatch):
 @pytest.mark.asyncio
 async def test_scheduler_hde_verify_called_once_per_pass(initialized_db, monkeypatch):
     """One scheduler pass must hit HDE at most once per ticket: the countdown
-    loop and the reassurance loop share a single _hde_staff_replied_since
+    loop and the reassurance loop share a single _hde_staff_wrote_last
     result. The cache must NOT survive into the next pass."""
     import bot.scheduler as scheduler
     import bot.work_schedule as work_schedule
@@ -757,7 +757,7 @@ async def test_scheduler_hde_verify_called_once_per_pass(initialized_db, monkeyp
     )
     await db_module.update_topic("TKT-1", pre_sla_message_id=555)
     verify = AsyncMock(return_value=False)
-    monkeypatch.setattr(scheduler, "_hde_staff_replied_since", verify)
+    monkeypatch.setattr(scheduler, "_hde_staff_wrote_last", verify)
     monkeypatch.setattr(scheduler, "update_pre_sla_alert", AsyncMock())
     monkeypatch.setattr(scheduler, "send_reassurance_to_client", AsyncMock())
     bot = make_bot()
@@ -1222,7 +1222,7 @@ async def test_reassurance_only_for_engineers_who_agreed(initialized_db, monkeyp
         status="open",
     )
     await db_module.update_topic("TKT-1", pre_sla_message_id=555)
-    monkeypatch.setattr(scheduler, "_hde_staff_replied_since", AsyncMock(return_value=False))
+    monkeypatch.setattr(scheduler, "_hde_staff_wrote_last", AsyncMock(return_value=False))
     monkeypatch.setattr(scheduler, "update_pre_sla_alert", AsyncMock())
     reassure = AsyncMock()
     monkeypatch.setattr(scheduler, "send_reassurance_to_client", reassure)
@@ -1230,3 +1230,66 @@ async def test_reassurance_only_for_engineers_who_agreed(initialized_db, monkeyp
     await process_due_timers(make_bot())
 
     assert reassure.await_count == (1 if expect_sent else 0)
+
+
+def _verify_on(monkeypatch):
+    monkeypatch.setattr(topic_manager.config, "presla_hde_verify", True)
+    monkeypatch.setattr(topic_manager.config, "hde_owner_id", "98")
+    monkeypatch.setattr(topic_manager.config, "agent_staff_user_ids", ("98", "102"))
+    topic_manager._STAFF_GROUP_CACHE.clear()
+
+
+async def _wrote_last(posts, groups=None):
+    client = MagicMock()
+    client.get_ticket_posts = AsyncMock(return_value=posts)
+    client.get_user_group_type = AsyncMock(side_effect=lambda uid: (groups or {}).get(str(uid)))
+    with patch("bot.hde_api.HDEApiClient", return_value=client):
+        return await topic_manager._hde_staff_wrote_last("TKT-1")
+
+
+@pytest.mark.asyncio
+async def test_staff_wrote_last_ignores_times(monkeypatch):
+    """Ticket 213906: client 13:13:46, Maksim 13:14:20, all webhooks landed at
+    13:14:42. The newest post is staff — the client is not waiting, whatever
+    the bot recorded as the client reply time."""
+    _verify_on(monkeypatch)
+    now = utcnow()
+    posts = [_hde_post(36737, "приняли", now - timedelta(seconds=34), 1),
+             _hde_post(102, "<p>Уже звоню вам</p>", now, 2)]
+    assert await _wrote_last(posts, {"36737": "user"}) is True
+
+
+@pytest.mark.asyncio
+async def test_client_wrote_last_after_staff(monkeypatch):
+    _verify_on(monkeypatch)
+    now = utcnow()
+    posts = [_hde_post(102, "<p>Примите запрос</p>", now - timedelta(seconds=60), 1),
+             _hde_post(36737, "приняли", now, 2)]
+    assert await _wrote_last(posts, {"36737": "user"}) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hde_says, cleared", [(True, True), (False, False)])
+async def test_same_second_staff_reply_is_decided_by_hde(initialized_db, monkeypatch, hde_says, cleared):
+    """With HDE verify on, a staff_reply in the same second as the client reply is
+    not dropped by the time guard: 213906 (staff wrote last) clears the timer,
+    an echo (client still last, ticket 167908) keeps it."""
+    from datetime import datetime, timezone as _tz
+    _verify_on(monkeypatch)
+    lcr, notify = "2026-10-12 10:14:42", "2026-10-12 10:18:42"
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Эвотор - не фискалит", priority="high", status="open",
+        owner_id="102", owner_name="Максим",
+        hde_link="https://hde.example.com/tickets/1",
+        pre_sla_notify_at=notify, last_client_reply_at=lcr,
+        chat_id=config.group_chat_id,
+    )
+    fake_now = datetime(2026, 10, 12, 10, 14, 42, 998000, tzinfo=_tz.utc)
+    monkeypatch.setattr(topic_manager, "utcnow", lambda: fake_now)
+    monkeypatch.setattr(topic_manager, "_hde_staff_wrote_last", AsyncMock(return_value=hde_says))
+
+    await handle_staff_reply(make_bot(), make_payload(last_post_date="", user_name="Максим"))
+
+    rec = await db_module.get_topic("TKT-1")
+    assert (rec.pre_sla_notify_at is None) is cleared

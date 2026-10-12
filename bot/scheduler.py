@@ -19,7 +19,7 @@ from .topic_manager import (
     delete_pending_topic,
     send_pre_sla_alert,
     update_pre_sla_alert,
-    _hde_staff_replied_since,
+    _hde_staff_wrote_last,
     _try_delete_pre_sla_message,
     send_reassurance_to_client,
 )
@@ -786,9 +786,7 @@ async def _process_due_timers(bot: Bot) -> None:
     async def _staff_replied(record) -> bool:
         key = (record.ticket_id, record.last_client_reply_at)
         if key not in verify_cache:
-            verify_cache[key] = await _hde_staff_replied_since(
-                record.ticket_id, record.last_client_reply_at
-            )
+            verify_cache[key] = await _hde_staff_wrote_last(record.ticket_id)
         return verify_cache[key]
 
     async def _ticket_gone(record) -> bool:

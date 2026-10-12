@@ -785,17 +785,15 @@ async def _handle_staff_reply_locked(bot: Bot, payload: dict, ticket_id: str) ->
         last_client.replace(microsecond=0) if last_client else None
     )
     newer_than_client = last_client_sec is None or reply_at_sec > last_client_sec
-    if not newer_than_client:
+    if config.presla_hde_verify and config.hde_owner_id.strip():
+        # HDE decides, not event times: both are arrival times, and HDE sends
+        # answers in bursts — ticket 213906 got client and staff events in the
+        # same second, the staff one "lost" and the timer survived a real reply.
+        # Echoes and the bot's own autoreply leave the client as the last author.
+        should_clear = await _hde_staff_wrote_last(ticket_id)
+    elif not newer_than_client:
         # stale / out-of-order / at-or-before the client message — never clears
         should_clear = False
-    elif config.presla_hde_verify and config.hde_owner_id.strip():
-        # Only the operator's own HDE post should clear the timer. Automated
-        # replies (PosifloraSupportBot, dispatcher echoes) fire staff_reply too
-        # but have a different HDE user_id — verify the operator genuinely
-        # replied after the client before wiping the pre-SLA timer.
-        should_clear = await _hde_staff_replied_since(
-            ticket_id, record.last_client_reply_at
-        )
     else:
         # No HDE verification available — trust the staff_reply event (legacy).
         should_clear = True
@@ -959,12 +957,17 @@ async def _is_staff_author(client, user_id: int, static_staff: set[str]) -> bool
     return group_type == "staff"
 
 
-async def _hde_staff_replied_since(ticket_id: str, since_storage: Optional[str]) -> bool:
-    """Return True if any support staff posted in HDE after last client reply.
+async def _hde_staff_wrote_last(ticket_id: str) -> bool:
+    """Return True if the latest HDE post (the bot's autoreply aside) is by staff,
+    i.e. the client is not waiting.
 
     Not just the timer's owner: a colleague answering the client must stop the
     pre-SLA countdown and the reassurance auto-reply too (prod ticket 200484 —
     a colleague replied and 9 s later the bot told the client "I'm on it").
+
+    Post order, not times: the bot only knows when webhooks arrived, and HDE
+    sends them in bursts (ticket 213906: Maksim replied at 13:14:20, all events
+    landed at 13:14:42, and "staff posts after the client reply" found none).
 
     Fails open (returns False) on any error so pre-SLA is never silently swallowed.
     Skips check when presla_hde_verify=False or hde_owner_id not configured.
@@ -979,24 +982,15 @@ async def _hde_staff_replied_since(ticket_id: str, since_storage: Optional[str])
         *(uid for uid in config.agent_staff_user_ids if uid),
     }
 
-    since_dt = parse_datetime(since_storage)
-
     try:
         from .hde_api import HDEApiClient
         client = HDEApiClient()
         posts = await client.get_ticket_posts(ticket_id, limit=5)
-        # get_ticket_posts returns oldest-first; iterate newest-first
+        # get_ticket_posts returns oldest-first; the newest real post decides
         for post in reversed(posts):
             if _post_text_matches_reassurance(post.text):
                 continue
-            # Время проверяем ДО автора: резолв автора может стоить запроса,
-            # а старый пост отбрасывается бесплатно.
-            if since_dt is not None:
-                post_dt = _parse_hde_post_dt(post.date_created)
-                if post_dt is None or post_dt <= since_dt:
-                    continue
-            if await _is_staff_author(client, post.user_id, static_staff):
-                return True
+            return await _is_staff_author(client, post.user_id, static_staff)
         return False
     except Exception as exc:
         logger.warning("pre-SLA HDE verify failed for ticket %s: %s", ticket_id, exc)

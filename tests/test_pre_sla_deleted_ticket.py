@@ -44,7 +44,7 @@ def due_one(monkeypatch):
     monkeypatch.setattr(scheduler.db, "list_due_deletions", empty)
     monkeypatch.setattr(scheduler, "send_pre_sla_alert", alert)
     monkeypatch.setattr(scheduler, "delete_pending_topic", delete)
-    monkeypatch.setattr(scheduler, "_hde_staff_replied_since", not_replied)
+    monkeypatch.setattr(scheduler, "_hde_staff_wrote_last", not_replied)
     monkeypatch.setattr(work_schedule, "is_work_time_for", lambda _op: True)
     return calls
 
