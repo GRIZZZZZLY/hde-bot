@@ -9,13 +9,22 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 
 from . import db, operators
+from .client_media import extract_client_attachment_refs
 from .config import config
-from .formatter import make_topic_name
+from .formatter import _strip_html, make_topic_name
 from .hde_api import HDEApiClient, HDEApiError, HDETicket
 from .time_utils import parse_datetime, to_storage, utcnow
-from .topic_manager import sync_ticket_topic
+from .topic_manager import (
+    _STAFF_GROUP_CACHE,
+    _parse_hde_post_dt,
+    handle_client_reply,
+    sync_ticket_topic,
+)
 
 logger = logging.getLogger(__name__)
+
+# Younger client posts are left to the webhook, which normally lands within seconds.
+_MISSED_POST_GRACE = timedelta(seconds=60)
 
 
 @dataclass
@@ -56,6 +65,68 @@ def _ticket_to_payload(ticket: HDETicket, existing: db.TicketTopic | None, owner
 def _topic_display_name(ticket: HDETicket, existing: db.TicketTopic | None) -> str:
     priority = (existing.priority if existing and existing.priority else None) or "medium"
     return make_topic_name(ticket.unique_id, ticket.company_name, ticket.title, priority)
+
+
+async def _is_client_author(client: HDEApiClient, user_id: int) -> bool:
+    """Only a confirmed non-staff author counts. A failed lookup reads as staff, so
+    a colleague's answer is never replayed into the topic as the client's."""
+    uid = str(user_id)
+    if uid in {o.hde_id for o in operators.all_operators()} | set(config.agent_staff_user_ids):
+        return False
+    group_type = _STAFF_GROUP_CACHE.get(uid) or await client.get_user_group_type(uid)
+    if group_type:
+        _STAFF_GROUP_CACHE[uid] = group_type
+    return bool(group_type) and group_type != "staff"
+
+
+async def _replay_missed_client_posts(
+    bot: Bot, client: HDEApiClient, ticket: HDETicket, owner_name: str
+) -> int:
+    """Run client posts the bot never saw through the client_reply path.
+
+    HDE dispatcher rules decide client_reply vs staff_reply; on 2026-10-12 broken
+    rules sent client answers as staff ones, so nothing reached the topic and no
+    pre-SLA started. Only the unanswered tail of the ticket is replayed, and only
+    posts newer than the last client reply the bot recorded and than the topic
+    itself (older ones are in the topic history already).
+    """
+    record = await db.get_topic(ticket.ticket_id)
+    if record is None or record.topic_state != "active":
+        return 0
+    seen = [
+        d for d in (
+            parse_datetime(record.last_client_reply_at),
+            parse_datetime(record.last_assigned_at),
+            parse_datetime(record.created_at),
+        ) if d is not None
+    ]
+    seen_at = max(seen) if seen else None
+
+    missed = []
+    for post in reversed(await client.get_ticket_posts(ticket.ticket_id)):
+        post_at = _parse_hde_post_dt(post.date_created)
+        if post_at is None or (seen_at is not None and post_at <= seen_at):
+            break
+        if not await _is_client_author(client, post.user_id):
+            break
+        missed.append((post, post_at))
+    if not missed or missed[0][1] > utcnow() - _MISSED_POST_GRACE:
+        return 0
+
+    for post, post_at in reversed(missed):
+        payload = _ticket_to_payload(ticket, record, owner_name)
+        payload.update(
+            user_name=post.user_name,
+            message=_strip_html(post.text),
+            last_post_date=to_storage(post_at),
+            attachments=extract_client_attachment_refs({"attachments": post.files}),
+        )
+        logger.warning(
+            "refresh: ticket %s client post %s at %s never reached the bot, replaying",
+            ticket.ticket_id, post.post_id, to_storage(post_at),
+        )
+        await handle_client_reply(bot, payload)
+    return len(missed)
 
 
 async def refresh_topics(bot: Bot) -> RefreshResult:
@@ -174,6 +245,13 @@ async def refresh_topics(bot: Bot) -> RefreshResult:
         elif will_rename:
             renamed.append(ticket)
             logger.info("refresh: renamed topic for ticket %s → %s", ticket.ticket_id, ticket.title)
+
+        # ponytail: runs every 30 min with the refresh, so a missed client post is
+        # caught up to 30 min late; move to its own few-minute job if that matters.
+        try:
+            await _replay_missed_client_posts(bot, client, ticket, owner_names[ticket.ticket_id])
+        except Exception as exc:
+            logger.error("refresh: missed client post check failed for ticket %s: %s", ticket.ticket_id, exc)
 
     # ── Step 2: delete active topics whose tickets are gone from HDE ──────────
     deleted: list[tuple[str, str, str]] = []  # (ticket_name, ticket_id, link)

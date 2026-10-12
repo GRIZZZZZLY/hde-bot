@@ -1,5 +1,5 @@
 import re
-from datetime import datetime as _dt
+from datetime import datetime as _dt, timedelta, timezone
 from html import escape, unescape
 from typing import Optional, TYPE_CHECKING
 
@@ -394,6 +394,7 @@ def _parse_hde_post_date(date_str: str) -> str:
     Handles:
     - "HH:MM:SS DD.MM.YYYY"  (posts/comments API)
     - "DD.MM.YYYY HH:MM"     (webhook last_post_date)
+    - "YYYY-MM-DD HH:MM:SS"  (bot storage, UTC → shown in MSK like the others)
     """
     s = date_str.strip()
     for fmt in ("%H:%M:%S %d.%m.%Y", "%d.%m.%Y %H:%M"):
@@ -401,6 +402,11 @@ def _parse_hde_post_date(date_str: str) -> str:
             return _dt.strptime(s, fmt).strftime("%d.%m %H:%M")
         except ValueError:
             continue
+    try:
+        utc = _dt.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        return utc.astimezone(timezone(timedelta(hours=3))).strftime("%d.%m %H:%M")
+    except ValueError:
+        pass
     return s[:16]
 
 
