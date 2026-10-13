@@ -110,7 +110,7 @@ async def test_escalate_keeps_suggest_button_and_registers_no_pending(monkeypatc
     kwargs = bot.edit_message_text.await_args.kwargs
     assert "Эскалация: возврат денег" in kwargs["text"]
     buttons = [b for row in kwargs["reply_markup"].inline_keyboard for b in row]
-    assert [b.callback_data for b in buttons] == ["ai:suggest"]
+    assert [b.callback_data for b in buttons] == ["ai:suggest", "tp:autofill"]
     reg.assert_not_awaited()
 
 
@@ -133,7 +133,7 @@ async def test_v2_escalate_message_carries_suggest_button(monkeypatch):
         )
     assert ok
     markup = bot.send_message.await_args.kwargs["reply_markup"]
-    assert [b.callback_data for row in markup.inline_keyboard for b in row] == ["ai:suggest"]
+    assert [b.callback_data for row in markup.inline_keyboard for b in row] == ["ai:suggest", "tp:autofill"]
 
 
 async def test_hde_lookup_error_after_fetch_returns_false_without_raising(monkeypatch):

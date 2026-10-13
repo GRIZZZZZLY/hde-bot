@@ -1066,7 +1066,7 @@ async def test_first_message_without_draft_gets_suggest_button_on_v2(monkeypatch
     if v2:
         assert len(button_msgs) == 1, texts
         kb = button_msgs[0].kwargs["reply_markup"]
-        assert [b.callback_data for row in kb.inline_keyboard for b in row] == ["ai:suggest"]
+        assert [b.callback_data for row in kb.inline_keyboard for b in row] == ["ai:suggest", "tp:autofill"]
     else:
         assert button_msgs == []
 
