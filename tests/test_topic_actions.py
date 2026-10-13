@@ -203,3 +203,30 @@ async def test_delete_rejects_garbage_id(monkeypatch):
     monkeypatch.setattr(ta, "delete_operator_message", delete)
     await ta.cb_delete(make_callback("tp:delyes:abc"))
     delete.assert_not_awaited()
+
+
+def test_suggest_keyboard_has_autofill():
+    from bot.handlers.ai_feedback import suggest_button_kb
+    data = [b.callback_data for row in suggest_button_kb().inline_keyboard for b in row]
+    assert data == ["ai:suggest", "tp:autofill"]
+
+
+async def test_autofill_button_answers_in_topic(monkeypatch):
+    import bot.handlers.commands as cmds
+    run = AsyncMock(return_value="✅ fields")
+    monkeypatch.setattr(cmds, "run_autofill", run, raising=False)
+    cb = make_callback("tp:autofill")
+    cb.message.answer = AsyncMock()
+    await ta.cb_autofill(cb)
+    run.assert_awaited_once_with(cb.bot, chat_id=CHAT, topic_id=9001, tg_user_id=ENGINEER)
+    cb.message.answer.assert_awaited_once_with("✅ fields", parse_mode="HTML")
+
+
+async def test_autofill_button_ai_off(monkeypatch, initialized_db):
+    import bot.handlers.commands as cmds
+    import bot.operators as ops
+    monkeypatch.setattr(cmds, "get_operator_topic_context", AsyncMock(return_value=SimpleNamespace(
+        record=SimpleNamespace(ticket_id="T1", ticket_name=""), topic_id=9001)))
+    monkeypatch.setattr(ops, "ai_enabled_for", lambda **kw: False)
+    text = await cmds.run_autofill(MagicMock(), chat_id=CHAT, topic_id=9001, tg_user_id=ENGINEER)
+    assert ops.AI_OFF_NOTE in text

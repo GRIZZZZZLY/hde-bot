@@ -145,34 +145,37 @@ def _format_autofill_result(r: AutofillResult) -> str:
     return "\n".join(lines)
 
 
+async def run_autofill(bot, *, chat_id: int, topic_id: int, tg_user_id: int) -> str:
+    """Fill Окружение/Классификация/Роль for the topic's ticket; HTML result text."""
+    context = await get_operator_topic_context(
+        telegram_user_id=tg_user_id, topic_id=topic_id, chat_id=chat_id,
+    )
+    ticket_id = context.record.ticket_id
+    if not operators.ai_enabled_for(chat_id=chat_id):
+        return _format_autofill_result(AutofillResult(updated=False, error=operators.AI_OFF_NOTE))
+    client = HDEApiClient()
+    info = await client.get_ticket_info(ticket_id)
+    posts = await client.get_ticket_posts(ticket_id)
+    try:
+        comments = await client.get_ticket_comments(ticket_id)
+    except HDEApiError:
+        comments = []
+    all_posts = sorted(posts + comments, key=post_sort_key)
+    history = _build_history_text(all_posts, info)
+    result = await apply_ticket_fields(
+        bot, ticket_id, chat_id, context.topic_id, history,
+        ticket_title=context.record.ticket_name or "",
+        posts=all_posts,
+    )
+    return _format_autofill_result(result)
+
+
 @router.message(Command("autofill"))
 async def cmd_autofill(message: Message) -> None:
-    async def action() -> str:
-        context = await get_operator_topic_context(
-            telegram_user_id=message.from_user.id,
-            topic_id=message.message_thread_id,
-            chat_id=message.chat.id,
-        )
-        ticket_id = context.record.ticket_id
-        if not operators.ai_enabled_for(chat_id=message.chat.id):
-            return _format_autofill_result(AutofillResult(updated=False, error=operators.AI_OFF_NOTE))
-        client = HDEApiClient()
-        info = await client.get_ticket_info(ticket_id)
-        posts = await client.get_ticket_posts(ticket_id)
-        try:
-            comments = await client.get_ticket_comments(ticket_id)
-        except HDEApiError:
-            comments = []
-        all_posts = sorted(posts + comments, key=post_sort_key)
-        history = _build_history_text(all_posts, info)
-        result = await apply_ticket_fields(
-            message.bot, ticket_id, message.chat.id, context.topic_id, history,
-            ticket_title=context.record.ticket_name or "",
-            posts=all_posts,
-        )
-        return _format_autofill_result(result)
-
-    await _run_operator_command(message, action)
+    await _run_operator_command(message, lambda: run_autofill(
+        message.bot, chat_id=message.chat.id,
+        topic_id=message.message_thread_id, tg_user_id=message.from_user.id,
+    ))
 
 
 @router.message(Command("send"))

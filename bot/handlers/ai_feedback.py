@@ -43,6 +43,7 @@ def suggest_button_kb() -> InlineKeyboardMarkup:
     """Keyboard attached to client-reply messages in the topic (Phase 3)."""
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="💡 Предложить ответ", callback_data="ai:suggest"),
+        InlineKeyboardButton(text="🪄 Автополя", callback_data="tp:autofill"),
     ]])
 
 

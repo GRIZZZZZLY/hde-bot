@@ -188,3 +188,21 @@ async def cb_delete(callback: CallbackQuery) -> None:
         _in_flight.discard(key)
     await callback.answer("Удалено из HDE")
     await prompt.edit_text(result, parse_mode="HTML")
+
+
+@router.callback_query(F.data == "tp:autofill")
+async def cb_autofill(callback: CallbackQuery) -> None:
+    from . import commands   # commands includes this router: import at call time, not at module load
+
+    await callback.answer("Заполняю поля…")
+    msg = callback.message
+    try:
+        result = await commands.run_autofill(
+            callback.bot, chat_id=msg.chat.id,
+            topic_id=msg.message_thread_id, tg_user_id=callback.from_user.id,
+        )
+    except Exception as exc:
+        if not isinstance(exc, OperatorReplyError):
+            logger.exception("topic_actions: autofill failed")
+        result = format_operator_exception(exc)
+    await msg.answer(result, parse_mode="HTML")
