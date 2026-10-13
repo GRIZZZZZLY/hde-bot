@@ -230,3 +230,36 @@ async def test_autofill_button_ai_off(monkeypatch, initialized_db):
     monkeypatch.setattr(ops, "ai_enabled_for", lambda **kw: False)
     text = await cmds.run_autofill(MagicMock(), chat_id=CHAT, topic_id=9001, tg_user_id=ENGINEER)
     assert ops.AI_OFF_NOTE in text
+
+
+async def test_send_answers_the_press_before_the_slow_send(monkeypatch):
+    """Final review F2: a late callback answer fails ("query is too old") and the result edit never runs."""
+    cb = make_callback("tp:client", original=make_msg(text="x", message_id=7))
+
+    async def send(**kwargs):
+        assert cb.answer.await_count == 1, "press must be answered before HDE is called"
+        return "ok"
+
+    monkeypatch.setattr(ta, "send_public_reply", AsyncMock(side_effect=send))
+    monkeypatch.setattr(ta, "get_operator_topic_context", AsyncMock(return_value="CTX"))
+    await ta.cb_send(cb)
+    assert cb.answer.await_count == 1
+    assert cb.message.edit_text.await_args.args[0] == "ok"
+
+
+async def test_delete_answers_the_press_before_hde_and_shows_errors_inline(monkeypatch):
+    cb = make_callback("tp:delyes:77")
+    cb.message.html_text = "✅ sent"
+
+    async def delete(**kwargs):
+        assert cb.answer.await_count == 1, "press must be answered before HDE is called"
+        raise OperatorReplyError("HDE timeout")
+
+    monkeypatch.setattr(ta, "delete_operator_message", AsyncMock(side_effect=delete))
+    monkeypatch.setattr(ta, "get_operator_topic_context", AsyncMock(return_value="CTX"))
+    await ta.cb_delete(cb)
+    assert cb.answer.await_count == 1
+    text = cb.message.edit_text.await_args.args[0]
+    assert "✅ sent" in text and "HDE timeout" in text
+    kb = cb.message.edit_text.await_args.kwargs["reply_markup"]
+    assert kb.inline_keyboard[0][0].callback_data == "tp:del:77"

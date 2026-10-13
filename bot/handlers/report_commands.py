@@ -39,7 +39,7 @@ async def run_daily_report(target: Message, report_date: date | None) -> None:
 
     wait_msg = await target.answer("⏳ Отчёт генерируется, подождите...")
     try:
-        result = await runner.run_report(report_date)
+        result = await runner.run_report(day)
         from ..scheduler import mark_report_done_today
         mark_report_done_today()
         await mark_report_sent(day)

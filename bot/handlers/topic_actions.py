@@ -111,6 +111,9 @@ async def cb_send(callback: CallbackQuery) -> None:
 
 async def _send(callback: CallbackQuery, prompt: Message, original: Message) -> None:
     to_client = callback.data == "tp:client"
+    # Answer the press now: a send that waits on attachments or HDE can outlive
+    # the callback query, and a late answer raises before the result is shown.
+    await callback.answer()
     try:
         await prompt.edit_reply_markup(reply_markup=None)
     except Exception as exc:
@@ -129,11 +132,9 @@ async def _send(callback: CallbackQuery, prompt: Message, original: Message) -> 
     except Exception as exc:
         if not isinstance(exc, OperatorReplyError):
             logger.exception("topic_actions: send failed")
-        await callback.answer()
         await prompt.edit_text(f"{ASK_TEXT}\n{format_operator_exception(exc)}",
                                parse_mode="HTML", reply_markup=ask_keyboard())
         return
-    await callback.answer("Отправлено клиенту" if to_client else "Комментарий сохранён")
     await prompt.edit_text(result, parse_mode="HTML", reply_markup=delete_keyboard(original.message_id))
 
 
@@ -166,8 +167,8 @@ async def cb_delete(callback: CallbackQuery) -> None:
         await callback.answer()
         return
     key = (prompt.chat.id, prompt.message_id)
+    await callback.answer()   # before HDE: see _send
     if key in _in_flight:
-        await callback.answer()
         return
     _in_flight.add(key)
     try:
@@ -181,12 +182,11 @@ async def cb_delete(callback: CallbackQuery) -> None:
     except Exception as exc:
         if not isinstance(exc, OperatorReplyError):
             logger.exception("topic_actions: delete failed")
-        await callback.answer(str(exc)[:190] or "Не удалось удалить", show_alert=True)
-        await prompt.edit_reply_markup(reply_markup=delete_keyboard(orig_id))
+        await prompt.edit_text(f"{prompt.html_text}\n{format_operator_exception(exc)}",
+                               parse_mode="HTML", reply_markup=delete_keyboard(orig_id))
         return
     finally:
         _in_flight.discard(key)
-    await callback.answer("Удалено из HDE")
     await prompt.edit_text(result, parse_mode="HTML")
 
 
