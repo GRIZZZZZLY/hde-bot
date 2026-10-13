@@ -41,6 +41,7 @@ _last_value_report_date: Optional[str] = None   # daily AI-value report
 _last_general_flush_date: Optional[str] = None  # "YYYY-MM-DD" UTC date
 _last_general_reconcile_at: Optional[datetime] = None  # last in-hours reconcile time
 _GENERAL_RECONCILE_INTERVAL_SEC = 7 * 60
+_general_chats_at_work: frozenset[int] = frozenset()  # engineers' groups on shift at the last pass
 # Safety net for lost webhooks, hand-deleted topics and reassignments made around
 # the dispatcher rules: the same sync as /refresh, silent, while anyone is at work.
 _AUTO_REFRESH_INTERVAL_SEC = 30 * 60
@@ -134,20 +135,24 @@ async def _maybe_flush_general(bot: Bot) -> None:
 
 async def _maybe_reconcile_general(bot: Bot) -> None:
     """Run periodic HDE reconciliation during work hours to catch direct-HDE assignments."""
-    global _last_general_reconcile_at
+    global _last_general_reconcile_at, _general_chats_at_work
     if config.general_topic_id is None:
         return
-    from .work_schedule import anyone_at_work
-    if not anyone_at_work():
+    from .general_channel import _general_chats, reconcile_with_hde
+    chats = frozenset(_general_chats())
+    # A shift just started: its group gets the queued tickets now, not on the timer.
+    shift_started = not chats <= _general_chats_at_work
+    _general_chats_at_work = chats
+    if not chats:
         return
     now = datetime.now(timezone.utc)
     if (
-        _last_general_reconcile_at is not None
+        not shift_started
+        and _last_general_reconcile_at is not None
         and (now - _last_general_reconcile_at).total_seconds() < _GENERAL_RECONCILE_INTERVAL_SEC
     ):
         return
     _last_general_reconcile_at = now
-    from .general_channel import reconcile_with_hde
     try:
         await reconcile_with_hde(bot)
     except Exception as exc:

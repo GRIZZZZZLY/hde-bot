@@ -66,3 +66,31 @@ async def test_general_goes_only_to_groups_at_work(initialized_db, monkeypatch):
 
     assert [c.kwargs["chat_id"] for c in bot.send_message.call_args_list] == [-100222]
     assert [r["chat_id"] for r in await db.list_general_messages_for("T9")] == [-100222]
+
+
+@pytest.mark.asyncio
+async def test_shift_start_reconciles_general_at_once(monkeypatch):
+    """Overnight tickets reach an engineer's General when the shift starts, not after the 7-min timer."""
+    from datetime import datetime, timezone
+
+    from bot import scheduler
+
+    monkeypatch.setattr(config, "general_topic_id", 1)
+    reconcile = AsyncMock()
+    monkeypatch.setattr(general_channel, "reconcile_with_hde", reconcile)
+    monkeypatch.setattr(scheduler, "_last_general_reconcile_at", datetime.now(timezone.utc))
+    monkeypatch.setattr(scheduler, "_general_chats_at_work", frozenset({-100111}))
+    at_work = [-100111, -100222]  # the second engineer's shift has just started
+    monkeypatch.setattr(general_channel, "_general_chats", lambda: at_work)
+
+    await scheduler._maybe_reconcile_general(AsyncMock())
+    assert reconcile.await_count == 1
+
+    await scheduler._maybe_reconcile_general(AsyncMock())
+    assert reconcile.await_count == 1  # same people at work: back to the 7-min timer
+
+    at_work[:] = []  # everyone went home
+    await scheduler._maybe_reconcile_general(AsyncMock())
+    at_work[:] = [-100111]  # next morning
+    await scheduler._maybe_reconcile_general(AsyncMock())
+    assert reconcile.await_count == 2
