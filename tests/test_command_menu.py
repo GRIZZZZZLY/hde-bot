@@ -125,3 +125,56 @@ async def test_menu_callback_navigation():
     cb.message.edit_text = AsyncMock()
     await cmds.cb_menu(cb)
     cb.message.edit_text.assert_awaited()
+
+
+# --- shared bodies used by both commands and menu buttons -------------------
+
+from datetime import date, datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock
+
+
+async def test_status_text_has_metrics(monkeypatch):
+    import bot.handlers.commands as cmds
+    for name in ("count_active_topics", "count_pending_delete_topics",
+                 "count_pending_pre_sla_topics", "count_total_topics"):
+        monkeypatch.setattr(cmds, name, AsyncMock(return_value=2))
+    text = await cmds.status_text()
+    assert "Активных topics" in text and "Метрики" in text
+
+
+def test_vacation_until_from_args(monkeypatch):
+    import bot.handlers.commands as cmds
+    import bot.work_schedule as ws
+    now = datetime(2026, 10, 13, 10, 0, tzinfo=timezone.utc)
+    marker = datetime(2026, 10, 14, 6, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(ws, "next_work_start", lambda: marker)
+    assert cmds.vacation_until_from_args("", now) == marker
+    assert cmds.vacation_until_from_args("3d", now) == now + timedelta(days=3)
+    assert cmds.vacation_until_from_args("2026-10-20", now) == datetime(2026, 10, 20, 6, 0, tzinfo=timezone.utc)
+    assert cmds.vacation_until_from_args("soon", now) is None
+
+
+async def test_run_daily_report_passes_date(monkeypatch):
+    import bot.handlers.report_commands as rc
+    import bot.reporting.runner as runner
+    from bot.config import config
+    monkeypatch.setattr(runner, "is_report_configured", lambda: True)
+    run = AsyncMock(return_value="ok")
+    monkeypatch.setattr(runner, "run_report", run)
+    monkeypatch.setattr(rc, "mark_report_sent", AsyncMock())
+    monkeypatch.setattr(config, "work_days", (0, 1, 2, 3, 4))
+    target = MagicMock()
+    target.answer = AsyncMock(return_value=MagicMock(delete=AsyncMock()))
+    await rc.run_daily_report(target, date(2026, 10, 12))
+    run.assert_awaited_once_with(date(2026, 10, 12))
+
+
+async def test_show_promptrollback_has_no_auth_gate(monkeypatch):
+    import bot.handlers.optimizer_commands as oc
+    import bot.db as db_module
+    monkeypatch.setattr(db_module, "list_prompt_versions", AsyncMock(return_value=[]))
+    msg = MagicMock()
+    msg.from_user = MagicMock(id=999)            # not an admin, and it does not matter here
+    msg.answer = AsyncMock()
+    await oc.show_promptrollback(msg)
+    msg.answer.assert_awaited_once()

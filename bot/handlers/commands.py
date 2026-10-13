@@ -73,22 +73,24 @@ def _format_metrics_block() -> str:
     return "\n".join(lines)
 
 
-@router.message(Command("status"))
-async def cmd_status(message: Message) -> None:
+async def status_text() -> str:
     active_topics = await count_active_topics()
     pending_delete = await count_pending_delete_topics()
     pending_pre_sla = await count_pending_pre_sla_topics()
     total_topics = await count_total_topics()
-
-    await message.answer(
+    return (
         "📊 <b>Статус бота</b>\n\n"
         f"🟢 Активных topics: <b>{active_topics}</b>\n"
         f"⏳ Ожидают удаления: <b>{pending_delete}</b>\n"
         f"⏰ Ожидают pre-SLA: <b>{pending_pre_sla}</b>\n"
         f"📚 Всего записей: <b>{total_topics}</b>"
-        + _format_metrics_block(),
-        parse_mode="HTML",
+        + _format_metrics_block()
     )
+
+
+@router.message(Command("status"))
+async def cmd_status(message: Message) -> None:
+    await message.answer(await status_text(), parse_mode="HTML")
 
 
 @router.message(Command("help"))
@@ -465,61 +467,71 @@ async def cb_menu(callback: CallbackQuery) -> None:
     logger.warning("cb_menu: unknown action %r", action)
 
 
-@router.message(Command("vacation"))
-async def cmd_vacation(message: Message, command: CommandObject) -> None:
-    """
-    /vacation        — до следующего рабочего дня
-    /vacation 3d     — на N дней
-    /vacation 2026-04-15  — до конкретной даты (МСК полночь)
-    """
-    from ..work_schedule import enable_vacation, next_work_start
+def vacation_until_from_args(args: str, now_utc: datetime) -> datetime | None:
+    """'' → next work start, '3d' → now + 3 days, 'YYYY-MM-DD' → 09:00 MSK that day; None if unparseable."""
+    from .. import work_schedule
     import zoneinfo
 
-    args = (command.args or "").strip()
-    now_utc = datetime.now(timezone.utc)
-    _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
-
-    until: datetime
+    args = args.strip()
     if not args:
-        until = next_work_start()
-    elif args.endswith("d") and args[:-1].isdigit():
-        days = int(args[:-1])
-        until = now_utc + timedelta(days=days)
-    else:
-        try:
-            d = date.fromisoformat(args)
-            # Until the start of that day in MSK
-            until = datetime(d.year, d.month, d.day, 9, 0, tzinfo=_MSK).astimezone(timezone.utc)
-        except ValueError:
-            await message.answer(
-                "⚠️ Неверный формат. Примеры:\n"
-                "/vacation — до следующего рабочего дня\n"
-                "/vacation 3d — на 3 дня\n"
-                "/vacation 2026-04-15 — до 15 апреля",
-                parse_mode="HTML",
-            )
-            return
+        return work_schedule.next_work_start()
+    if args.endswith("d") and args[:-1].isdigit():
+        return now_utc + timedelta(days=int(args[:-1]))
+    try:
+        d = date.fromisoformat(args)
+    except ValueError:
+        return None
+    msk = zoneinfo.ZoneInfo("Europe/Moscow")
+    return datetime(d.year, d.month, d.day, 9, 0, tzinfo=msk).astimezone(timezone.utc)
+
+
+async def turn_on_vacation(target: Message, until: datetime) -> None:
+    from ..work_schedule import enable_vacation
+    import zoneinfo
 
     await enable_vacation(until)
-    until_msk = until.astimezone(_MSK)
-    await message.answer(
+    until_msk = until.astimezone(zoneinfo.ZoneInfo("Europe/Moscow"))
+    await target.answer(
         f"🏖 <b>Режим отпуска включён</b>\n"
         f"Уведомления возобновятся: <b>{until_msk.strftime('%d.%m.%Y %H:%M')} МСК</b>",
         parse_mode="HTML",
     )
 
 
-@router.message(Command("workon"))
-async def cmd_workon(message: Message) -> None:
-    """Снять режим отпуска досрочно."""
+async def turn_off_vacation(target: Message) -> None:
     from ..work_schedule import disable_vacation, is_on_vacation
 
     if not is_on_vacation():
-        await message.answer("ℹ️ Режим отпуска не активен.")
+        await target.answer("ℹ️ Режим отпуска не активен.")
         return
-
     await disable_vacation()
-    await message.answer("✅ <b>Режим отпуска отключён.</b> Уведомления возобновлены.", parse_mode="HTML")
+    await target.answer("✅ <b>Режим отпуска отключён.</b> Уведомления возобновлены.", parse_mode="HTML")
+
+
+@router.message(Command("vacation"))
+async def cmd_vacation(message: Message, command: CommandObject) -> None:
+    """
+    /vacation        — до следующего рабочего дня
+    /vacation 3d     — на N дней
+    /vacation 2026-04-15  — до конкретной даты (МСК 09:00)
+    """
+    until = vacation_until_from_args(command.args or "", datetime.now(timezone.utc))
+    if until is None:
+        await message.answer(
+            "⚠️ Неверный формат. Примеры:\n"
+            "/vacation — до следующего рабочего дня\n"
+            "/vacation 3d — на 3 дня\n"
+            "/vacation 2026-04-15 — до 15 апреля",
+            parse_mode="HTML",
+        )
+        return
+    await turn_on_vacation(message, until)
+
+
+@router.message(Command("workon"))
+async def cmd_workon(message: Message) -> None:
+    """Снять режим отпуска досрочно."""
+    await turn_off_vacation(message)
 
 
 @router.message(Command("digest"))
@@ -527,14 +539,11 @@ async def cmd_digest(message: Message) -> None:
     await send_morning_digest(message.bot)
 
 
-@router.message(Command("refresh"))
-async def cmd_refresh(message: Message) -> None:
-    wait_msg = await message.answer("🔄 Синхронизирую с HDE...")
-    error_text: str | None = None
-    result_text: str | None = None
+async def run_refresh(target: Message) -> None:
+    wait_msg = await target.answer("🔄 Синхронизирую с HDE...")
     try:
-        result = await refresh_topics(bot=message.bot)
-        result_text = format_refresh_result(
+        result = await refresh_topics(bot=target.bot)
+        text = format_refresh_result(
             active_count=result.active_after,
             hde_count=result.hde_count,
             created=result.created,
@@ -542,25 +551,31 @@ async def cmd_refresh(message: Message) -> None:
             deleted=result.deleted,
             cleaned_pending=result.cleaned_pending,
         )
-    except Exception as exc:
-        error_text = f"⚠️ <b>Ошибка при синхронизации:</b> {exc}"
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("refresh failed")
+        text = f"⚠️ <b>Ошибка при синхронизации:</b> {exc}"
     try:
         await wait_msg.delete()
     except Exception as exc:
         logger.debug("refresh: wait message cleanup failed: %s", exc)
-    await message.answer(error_text or result_text, parse_mode="HTML")
+    await target.answer(text, parse_mode="HTML")
 
     # Retry AI summaries for topics that missed them
     from ..topic_manager import retry_missing_ai_summaries
     try:
-        sent = await retry_missing_ai_summaries(message.bot)
+        sent = await retry_missing_ai_summaries(target.bot)
         if sent:
-            await message.answer(
+            await target.answer(
                 f"🧠 <b>AI саммари отправлено:</b> {sent} топик(ов)",
                 parse_mode="HTML",
             )
     except Exception as exc:
         logger.warning("retry_missing_ai_summaries failed: %s", exc)
+
+
+@router.message(Command("refresh"))
+async def cmd_refresh(message: Message) -> None:
+    await run_refresh(message)
 
 
 @router.edited_message(F.message_thread_id.is_not(None))

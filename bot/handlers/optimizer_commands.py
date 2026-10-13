@@ -12,16 +12,22 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
+async def run_aioptimize(message: Message) -> None:
+    """Start the prompt optimizer in the background."""
+    import asyncio
+    from ..optimizer.agent import run_optimizer
+
+    await message.answer("🧪 Запускаю оптимизатор промптов...")
+    asyncio.create_task(run_optimizer(message.bot))
+
+
 @router.message(Command("aioptimize"))
 async def cmd_aioptimize(message: Message) -> None:
     """Manually trigger prompt optimizer (for testing)."""
-    from ..optimizer.agent import run_optimizer
     from ..config import config as _cfg
     if message.from_user and message.from_user.id not in _cfg.operator_telegram_user_ids:
         return
-    await message.answer("🧪 Запускаю оптимизатор промптов...")
-    import asyncio
-    asyncio.create_task(run_optimizer(message.bot))
+    await run_aioptimize(message)
 
 
 @router.callback_query(F.data.startswith("opt:apply:"))
@@ -103,13 +109,17 @@ async def cb_opt_detail(callback: CallbackQuery) -> None:
 
 @router.message(Command("promptrollback"))
 async def cmd_promptrollback(message: Message) -> None:
-    from html import escape
-    from ..db import list_prompt_versions
     from ..config import config as _cfg
     if message.from_user and message.from_user.id not in _cfg.operator_telegram_user_ids:
         return
+    await show_promptrollback(message)
 
-    versions = await list_prompt_versions(limit=8)
+
+async def show_promptrollback(message: Message) -> None:
+    """Prompt versions with «apply» buttons; the caller checks who asked."""
+    from html import escape
+
+    versions = await db.list_prompt_versions(limit=8)
     if not versions:
         await message.answer("❌ Нет сохранённых версий промпта.")
         return

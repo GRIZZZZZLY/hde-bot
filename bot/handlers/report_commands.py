@@ -12,16 +12,14 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 
-@router.message(Command("report"))
-async def cmd_report(message: Message, command: CommandObject) -> None:
-    """
-    /report          — отчёт за вчера
-    /report 2025-04-04  — отчёт за конкретную дату (YYYY-MM-DD)
-    """
-    from ..reporting.runner import is_report_configured, run_report
+async def run_daily_report(target: Message, report_date: date | None) -> None:
+    """Daily report for `report_date`, or for the last work day when None."""
+    from ..reporting import runner
+    from ..config import config
+    from ..work_schedule import last_work_day
 
-    if not is_report_configured():
-        await message.answer(
+    if not runner.is_report_configured():
+        await target.answer(
             "⚠️ Отчёт не настроен.\n\n"
             "Добавьте в .env:\n"
             "<code>HDE_REPORT_PASSWORD=...\n"
@@ -31,6 +29,35 @@ async def cmd_report(message: Message, command: CommandObject) -> None:
         )
         return
 
+    day = report_date or last_work_day()
+    if day.weekday() not in config.work_days:
+        await target.answer(
+            f"🏖 <b>{day.strftime('%d.%m.%Y')} был выходной</b> — данных для отчёта нет.",
+            parse_mode="HTML",
+        )
+        return
+
+    wait_msg = await target.answer("⏳ Отчёт генерируется, подождите...")
+    try:
+        result = await runner.run_report(report_date)
+        from ..scheduler import mark_report_done_today
+        mark_report_done_today()
+        await mark_report_sent(day)
+    except Exception as exc:
+        result = f"❌ <b>Ошибка:</b>\n<code>{exc}</code>"
+    try:
+        await wait_msg.delete()
+    except Exception as exc:
+        logger.debug("report: wait message cleanup failed: %s", exc)
+    await target.answer(result, parse_mode="HTML")
+
+
+@router.message(Command("report"))
+async def cmd_report(message: Message, command: CommandObject) -> None:
+    """
+    /report          — отчёт за прошлый рабочий день
+    /report 2025-04-04  — отчёт за конкретную дату (YYYY-MM-DD)
+    """
     report_date: date | None = None
     if command.args:
         try:
@@ -41,32 +68,33 @@ async def cmd_report(message: Message, command: CommandObject) -> None:
                 parse_mode="HTML",
             )
             return
+    await run_daily_report(message, report_date)
 
-    # Check if target date was a work day
-    from ..config import config
-    from ..work_schedule import last_work_day
-    target = report_date if report_date else last_work_day()
-    target_weekday = target.weekday()
-    if target_weekday not in config.work_days:
-        await message.answer(
-            f"🏖 <b>{target.strftime('%d.%m.%Y')} был выходной</b> — данных для отчёта нет.",
+
+async def run_weekly(target: Message, today: date | None) -> None:
+    """Weekly summary as of Sunday `today` (None = real today)."""
+    from ..reporting import runner
+
+    if not runner.is_report_configured():
+        await target.answer(
+            "⚠️ Отчёт не настроен.\n\n"
+            "Добавьте в .env:\n"
+            "<code>GOOGLE_SERVICE_ACCOUNT_FILE=secrets/google_service_account.json\n"
+            "GOOGLE_SPREADSHEET_ID=...</code>",
             parse_mode="HTML",
         )
         return
 
-    wait_msg = await message.answer("⏳ Отчёт генерируется, подождите...")
+    wait_msg = await target.answer("⏳ Считаю недельную сводку...")
     try:
-        result = await run_report(report_date)
-        from ..scheduler import mark_report_done_today
-        mark_report_done_today()
-        await mark_report_sent(target)
+        result = await runner.run_weekly_summary(today)
     except Exception as exc:
         result = f"❌ <b>Ошибка:</b>\n<code>{exc}</code>"
     try:
         await wait_msg.delete()
     except Exception as exc:
-        logger.debug("report: wait message cleanup failed: %s", exc)
-    await message.answer(result, parse_mode="HTML")
+        logger.debug("weekly: wait message cleanup failed: %s", exc)
+    await target.answer(result, parse_mode="HTML")
 
 
 @router.message(Command("weekly"))
@@ -78,18 +106,6 @@ async def cmd_weekly(message: Message, command: CommandObject) -> None:
     Нужна, когда воскресная авторассылка упала: планировщик помечает день
     отправленным до попытки и сам не повторяет.
     """
-    from ..reporting.runner import is_report_configured, run_weekly_summary
-
-    if not is_report_configured():
-        await message.answer(
-            "⚠️ Отчёт не настроен.\n\n"
-            "Добавьте в .env:\n"
-            "<code>GOOGLE_SERVICE_ACCOUNT_FILE=secrets/google_service_account.json\n"
-            "GOOGLE_SPREADSHEET_ID=...</code>",
-            parse_mode="HTML",
-        )
-        return
-
     today: date | None = None
     if command.args:
         try:
@@ -100,17 +116,7 @@ async def cmd_weekly(message: Message, command: CommandObject) -> None:
                 parse_mode="HTML",
             )
             return
-
-    wait_msg = await message.answer("⏳ Считаю недельную сводку...")
-    try:
-        result = await run_weekly_summary(today)
-    except Exception as exc:
-        result = f"❌ <b>Ошибка:</b>\n<code>{exc}</code>"
-    try:
-        await wait_msg.delete()
-    except Exception as exc:
-        logger.debug("weekly: wait message cleanup failed: %s", exc)
-    await message.answer(result, parse_mode="HTML")
+    await run_weekly(message, today)
 
 
 @router.callback_query(F.data == "report:cancel")
