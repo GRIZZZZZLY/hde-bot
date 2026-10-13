@@ -25,7 +25,7 @@ from ..ticket_fields import (
     AutofillResult,
     apply_ticket_fields,
 )
-from ..command_menu import hub_keyboard, submenu_keyboard, back_keyboard, HUB_TITLE, ARGS_HELP_TEXT
+from .. import command_menu as menu
 from ..operator_replies import (
     OperatorReplyError,
     add_internal_note,
@@ -93,10 +93,19 @@ async def cmd_status(message: Message) -> None:
     await message.answer(await status_text(), parse_mode="HTML")
 
 
+@router.message(Command("start"))
 @router.message(Command("help"))
 @router.message(Command("menu"))
+@router.message(F.text == menu.MENU_BUTTON_TEXT)
 async def cmd_menu(message: Message) -> None:
-    await message.answer(HUB_TITLE, parse_mode="HTML", reply_markup=hub_keyboard())
+    if message.chat.type == "private":
+        # A reply keyboard persists once sent, so set the ☰ button once per chat.
+        key = f"menu_keyboard_sent:{message.chat.id}"
+        if not await db.get_setting(key):
+            await message.answer("☰ Кнопка меню теперь всегда под полем ввода.",
+                                 reply_markup=menu.menu_reply_keyboard())
+            await db.set_setting(key, "1")
+    await message.answer(menu.HUB_TITLE, parse_mode="HTML", reply_markup=menu.hub_keyboard())
 
 
 @router.message(Command("note"))
@@ -347,124 +356,154 @@ async def _take(callback: CallbackQuery, ticket_id: str, mode: str, operator) ->
     await callback.answer(f"Тикет {ticket_id} назначен на тебя")
 
 
+async def menu_screen(name: str):
+    """(text, keyboard) for a menu screen, or None if `name` is not a screen."""
+    from ..config import config
+    from ..general_channel import busy_options
+    from ..work_schedule import _today_msk, is_on_vacation, vacation_until
+    import zoneinfo
+
+    if name == "root":
+        return menu.HUB_TITLE, menu.hub_keyboard()
+    if name == "quiet":
+        active = is_on_vacation()
+        if active:
+            until = vacation_until().astimezone(zoneinfo.ZoneInfo("Europe/Moscow"))
+            title = f"💤 <b>Тишина до {until:%d.%m %H:%M} МСК</b>"
+        else:
+            title = "💤 <b>Тишина выключена</b>"
+        return title + "\nВключить на:", menu.quiet_keyboard(active)
+    if name == "reports":
+        return "📈 <b>Отчёты</b>", menu.reports_keyboard()
+    if name == "days":
+        return "📅 <b>Отчёт за день</b>", menu.days_keyboard(_today_msk(), config.work_days)
+    if name == "weeks":
+        return "🗓 <b>Недельная сводка</b>", menu.weeks_keyboard(_today_msk())
+    if name == "ai":
+        on = await db.get_setting("ai_summary_enabled", "1") == "1"
+        return "🤖 <b>AI</b>", menu.ai_keyboard(on)
+    if name == "maint":
+        return ("🛠 <b>Обслуживание AI</b>\nТяжёлые операции, каждая спросит подтверждение.",
+                menu.maint_keyboard())
+    if name == "hours":
+        return ("⏳ <b>Часы на кнопках «Беру»</b>\nОтметь от 1 до 6 вариантов. "
+                "Новые тикеты получат их сразу, уже отправленные — нет.",
+                menu.hours_keyboard(await busy_options()))
+    if name == "howto":
+        return menu.HOWTO_TEXT, menu.back_keyboard()
+    return None
+
+
+async def _redraw(callback: CallbackQuery, screen) -> None:
+    text, kb = screen
+    try:
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    except Exception as exc:  # "message is not modified" on a repeated tap
+        logger.debug("cb_menu: screen not redrawn: %s", exc)
+
+
+async def _run_maint(callback: CallbackQuery, cmd: str) -> None:
+    from aiogram.filters import CommandObject
+    from ..config import config
+    from . import ai_commands, optimizer_commands
+
+    target = callback.message
+    if cmd in ("aioptimize", "promptrollback") and callback.from_user.id not in config.operator_telegram_user_ids:
+        await target.answer("⛔ Только для администратора бота")
+        return
+    if cmd == "aiimport":
+        await ai_commands.cmd_aiimport(target, CommandObject(command="aiimport"))
+    elif cmd == "aireindex":
+        await ai_commands.cmd_aireindex(target)
+    elif cmd == "aibackfill":
+        await ai_commands.cmd_aibackfill(target)
+    elif cmd == "aianalyze":
+        await ai_commands.cmd_aianalyze(target)
+    elif cmd == "aioptimize":
+        await optimizer_commands.run_aioptimize(target)
+    elif cmd == "promptrollback":
+        await optimizer_commands.show_promptrollback(target)
+
+
+async def _toggle_hour(callback: CallbackQuery, option: str) -> None:
+    from ..general_channel import TAKE_HOURS_SETTING, busy_options, is_busy_option
+
+    if not is_busy_option(option):
+        await callback.answer()
+        return
+    new = menu.toggle_hour(await busy_options(), option)
+    if new is None:
+        await callback.answer("От 1 до 6 вариантов", show_alert=True)
+        return
+    await db.set_setting(TAKE_HOURS_SETTING, " ".join(new))
+    await callback.answer()
+    await _redraw(callback, await menu_screen("hours"))
+
+
 @router.callback_query(F.data.startswith("menu:"))
 async def cb_menu(callback: CallbackQuery) -> None:
-    action = callback.data.split(":", 1)[1]
+    _, action, *rest = callback.data.split(":")
+    arg = rest[0] if rest else ""
+
+    if action == "hour":
+        await _toggle_hour(callback, arg)
+        return
     await callback.answer()
 
-    if action == "root":
-        await callback.message.edit_text(
-            HUB_TITLE, parse_mode="HTML", reply_markup=hub_keyboard()
-        )
-        return
-    if action in ("quiet", "reports", "ai"):
-        await callback.message.edit_text(
-            HUB_TITLE, parse_mode="HTML", reply_markup=submenu_keyboard(action)
-        )
-        return
-    if action == "args":
-        await callback.message.edit_text(
-            ARGS_HELP_TEXT, parse_mode="HTML", reply_markup=back_keyboard()
-        )
+    screen = await menu_screen(action)
+    if screen is not None:
+        await _redraw(callback, screen)
         return
 
+    target = callback.message
     if action == "status":
-        active_topics = await count_active_topics()
-        pending_delete = await count_pending_delete_topics()
-        pending_pre_sla = await count_pending_pre_sla_topics()
-        total_topics = await count_total_topics()
-        await callback.message.answer(
-            "📊 <b>Статус бота</b>\n\n"
-            f"🟢 Активных topics: <b>{active_topics}</b>\n"
-            f"⏳ Ожидают удаления: <b>{pending_delete}</b>\n"
-            f"⏰ Ожидают pre-SLA: <b>{pending_pre_sla}</b>\n"
-            f"📚 Всего записей: <b>{total_topics}</b>",
-            parse_mode="HTML",
-        )
-        return
-    if action == "refresh":
-        wait_msg = await callback.message.answer("🔄 Синхронизирую с HDE...")
-        error_text: str | None = None
-        result_text: str | None = None
+        await target.answer(await status_text(), parse_mode="HTML")
+    elif action == "refresh":
+        await run_refresh(target)
+    elif action == "vac":
+        until = vacation_until_from_args("" if arg == "next" else f"{arg}d", datetime.now(timezone.utc))
+        if until is not None:
+            await turn_on_vacation(target, until)
+            await _redraw(callback, await menu_screen("quiet"))
+    elif action == "workon":
+        await turn_off_vacation(target)
+        await _redraw(callback, await menu_screen("quiet"))
+    elif action in ("report_yesterday", "rep", "week"):
+        from . import report_commands
         try:
-            result = await refresh_topics(bot=callback.bot)
-            result_text = format_refresh_result(
-                active_count=result.active_after,
-                hde_count=result.hde_count,
-                created=result.created,
-                renamed=result.renamed,
-                deleted=result.deleted,
-                cleaned_pending=result.cleaned_pending,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("cb_menu refresh failed")
-            error_text = f"⚠️ <b>Ошибка при синхронизации:</b> {exc}"
-        try:
-            await wait_msg.delete()
-        except Exception as exc:
-            logger.debug("cb_menu: wait message cleanup failed: %s", exc)
-        await callback.message.answer(error_text or result_text, parse_mode="HTML")
-        from ..topic_manager import retry_missing_ai_summaries
-        try:
-            sent = await retry_missing_ai_summaries(callback.bot)
-            if sent:
-                await callback.message.answer(
-                    f"🧠 <b>AI саммари отправлено:</b> {sent} топик(ов)",
-                    parse_mode="HTML",
-                )
-        except Exception as exc:
-            logger.warning("retry_missing_ai_summaries failed: %s", exc)
-        return
-    if action == "report_yesterday":
-        from .report_commands import cb_report_yesterday
-        await cb_report_yesterday(callback)
-        return
-    if action == "digest":
+            day = date.fromisoformat(arg) if arg else None
+        except ValueError:
+            logger.warning("cb_menu: bad date %r", arg)
+            return
+        if action == "week":
+            await report_commands.run_weekly(target, day)
+        else:
+            await report_commands.run_daily_report(target, day)
+    elif action == "digest":
         try:
             await send_morning_digest(callback.bot)
-            await callback.message.answer("🌅 Утренняя сводка отправлена.")
+            await target.answer("🌅 Утренняя сводка отправлена.")
         except Exception as exc:  # noqa: BLE001
             logger.exception("cb_menu digest failed")
-            await callback.message.answer(f"⚠️ <b>Ошибка:</b> {exc}", parse_mode="HTML")
-        return
-    if action == "vacation":
-        from ..work_schedule import enable_vacation, next_work_start
-        import zoneinfo
-        _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
-        until = next_work_start()
-        await enable_vacation(until)
-        until_msk = until.astimezone(_MSK)
-        await callback.message.answer(
-            f"🏖 <b>Режим отпуска включён</b>\n"
-            f"Уведомления возобновятся: <b>{until_msk.strftime('%d.%m.%Y %H:%M')} МСК</b>",
-            parse_mode="HTML",
-        )
-        return
-    if action == "workon":
-        from ..work_schedule import disable_vacation, is_on_vacation
-        if not is_on_vacation():
-            await callback.message.answer("ℹ️ Режим отпуска не активен.")
-            return
-        await disable_vacation()
-        await callback.message.answer(
-            "✅ <b>Режим отпуска отключён.</b> Уведомления возобновлены.", parse_mode="HTML"
-        )
-        return
-    if action == "aisummary":
-        from ..db import get_setting, set_setting
-        current = await get_setting("ai_summary_enabled", "1")
-        new = "0" if current == "1" else "1"
-        await set_setting("ai_summary_enabled", new)
-        if new == "1":
-            await callback.message.answer("🧠 <b>AI Саммари включён</b> ✅", parse_mode="HTML")
-        else:
-            await callback.message.answer("🧠 <b>AI Саммари выключен</b> ❌", parse_mode="HTML")
-        return
-    if action == "aimetrics":
+            await target.answer(f"⚠️ <b>Ошибка:</b> {exc}", parse_mode="HTML")
+    elif action == "aisummary":
+        new = "0" if await db.get_setting("ai_summary_enabled", "1") == "1" else "1"
+        await db.set_setting("ai_summary_enabled", new)
+        await _redraw(callback, await menu_screen("ai"))
+    elif action == "aimetrics":
         from .ai_commands import cmd_aimetrics
-        await cmd_aimetrics(callback.message)
-        return
-    logger.warning("cb_menu: unknown action %r", action)
+        await cmd_aimetrics(target)
+    elif action == "aiknowledge":
+        from .ai_commands import cmd_aiknowledge
+        await cmd_aiknowledge(target)
+    elif action == "ask" and arg in menu.MAINT_COMMANDS:
+        await target.edit_text(f"Запустить «{menu.MAINT_COMMANDS[arg]}»?",
+                               reply_markup=menu.confirm_keyboard(arg))
+    elif action == "run" and arg in menu.MAINT_COMMANDS:
+        await _redraw(callback, await menu_screen("maint"))
+        await _run_maint(callback, arg)
+    else:
+        logger.warning("cb_menu: unknown action %r", callback.data)
 
 
 def vacation_until_from_args(args: str, now_utc: datetime) -> datetime | None:
