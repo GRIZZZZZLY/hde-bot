@@ -655,11 +655,15 @@ async def on_edited_message(message: Message) -> None:
 from .ai_commands import router as _ai_router  # noqa: E402
 from .optimizer_commands import router as _optimizer_router  # noqa: E402
 from .report_commands import router as _report_router  # noqa: E402
+from .topic_actions import router as _topic_router  # noqa: E402
 from .media_commands import router as _media_router  # noqa: E402
 
 router.include_router(_ai_router)
 router.include_router(_optimizer_router)
 router.include_router(_report_router)
+# Before media: it must see an engineer's documents before the call-recording
+# handler (F.document) and the catch-all media cache swallow them.
+router.include_router(_topic_router)
 router.include_router(_media_router)
 
 # Compatibility re-exports: tests and callers import these names from here.
