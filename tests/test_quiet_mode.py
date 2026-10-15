@@ -17,8 +17,8 @@ def _bot() -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_history_dump_off_but_autofill_still_runs(monkeypatch):
-    """Дамп переписки не уходит в топик, автозаполнение полей остаётся."""
+async def test_history_dump_off_and_no_field_autofill(monkeypatch):
+    """Дамп переписки не уходит в топик, поля тикета бот сам не заполняет."""
     from bot.hde_api import HDEPost, HDETicketInfo
 
     monkeypatch.setattr(config, "ticket_history_post_enabled", False)
@@ -49,7 +49,7 @@ async def test_history_dump_off_but_autofill_still_runs(monkeypatch):
         await topic_manager._post_ticket_history(_bot(), "TKT-1", config.group_chat_id, 555, ticket_title="T")
 
     format_mock.assert_not_called()
-    apply_mock.assert_awaited_once()
+    apply_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

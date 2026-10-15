@@ -770,8 +770,9 @@ async def test_scheduler_hde_verify_called_once_per_pass(initialized_db, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_post_ticket_history_autofill_called(monkeypatch):
-    """apply_ticket_fields is awaited once after a successful AI summary."""
+async def test_post_ticket_history_does_not_autofill_fields(monkeypatch):
+    """Priority/type/classification are never set automatically: a priority
+    change fires HDE SLA rules. Only the manual 🪄 button fills fields."""
     from bot.hde_api import HDEPost, HDETicketInfo
 
     bot = make_bot()
@@ -815,13 +816,7 @@ async def test_post_ticket_history_autofill_called(monkeypatch):
 
         await topic_manager._post_ticket_history(bot, "TKT-9", config.group_chat_id, 999, ticket_title="T", company_id="")
 
-    apply_mock.assert_awaited_once()
-    call_args = apply_mock.await_args.args
-    assert call_args[0] is bot
-    assert call_args[1] == "TKT-9"
-    assert call_args[2] == config.group_chat_id
-    assert call_args[3] == 999
-    assert isinstance(call_args[4], str)
+    apply_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

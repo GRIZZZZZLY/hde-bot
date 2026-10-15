@@ -111,7 +111,7 @@ async def test_new_primary_ticket_still_calls_the_model(models, monkeypatch):
 
     models["run_agent"].assert_awaited_once()
     assert models["run_agent"].await_args.kwargs["chat_id"] == config.group_chat_id
-    apply_fields.assert_awaited_once()
+    apply_fields.assert_not_awaited()
 
 
 async def test_colleague_client_reply_with_photo_gets_no_model_calls(models, monkeypatch):

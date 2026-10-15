@@ -346,7 +346,7 @@ async def _post_ticket_history(
         return
 
     # Start AI generation immediately — runs in parallel with history posting
-    from .ai_summary import generate_ticket_summary, _build_history_text
+    from .ai_summary import generate_ticket_summary
     gen_task = None
     if operators.ai_enabled_for(chat_id=chat_id):
         gen_task = asyncio.create_task(
@@ -380,14 +380,11 @@ async def _post_ticket_history(
                 break
 
     if gen_task is None:
-        return  # no draft, no 💡 prompt, no LLM autofill
+        return  # no draft, no 💡 prompt
 
     # Await generation result (was running during history posting)
     result = await gen_task
     if result is None:
-        # Подсказки нет (выключена или LLM не ответила) — это НЕ повод пропускать
-        # автозаполнение полей: приоритет и тип тикета от текста подсказки не
-        # зависят, а раньше они молча не заполнялись при любом сбое генерации.
         logger.info("AI summary not generated for ticket %s", ticket_id)
         if _tm.config.agent_voice_v2_enabled:
             from .handlers.ai_feedback import suggest_button_kb
@@ -415,13 +412,5 @@ async def _post_ticket_history(
             ticket_title=ticket_title,
             anchor=anchor,
         )
-
-    try:
-        from .ticket_fields import apply_ticket_fields
-        autofill_history = _build_history_text(all_posts, info)
-        await apply_ticket_fields(
-            bot, ticket_id, chat_id, topic_id, autofill_history,
-            ticket_title=ticket_title, posts=all_posts,
-        )
-    except Exception as exc:
-        logger.warning("Ticket field auto-fill failed for %s: %s", ticket_id, exc)
+    # Поля тикета (приоритет/тип/классификация) бот сам не ставит: смена
+    # приоритета запускает SLA-правила HDE. Заполнение — только по 🪄.
