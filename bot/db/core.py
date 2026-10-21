@@ -89,6 +89,10 @@ TICKET_TOPIC_COLUMNS = {
     "pre_sla_sent_at": "TEXT",
     "pre_sla_message_id": "INTEGER",
     "reassurance_sent_at": "TEXT",
+    # Последний отправленный текст автоответа: следующий выбираем другой.
+    "reassurance_text": "TEXT",
+    # Напоминание инженеру после автоответа — одно на цикл ожидания.
+    "reassurance_reminded_at": "TEXT",
     "suggest_button_msg_id": "INTEGER",
     "hde_link": "TEXT DEFAULT ''",
     "updated_at": "TEXT",
@@ -129,6 +133,8 @@ UPDATABLE_FIELDS = {
     "pre_sla_sent_at",
     "pre_sla_message_id",
     "reassurance_sent_at",
+    "reassurance_text",
+    "reassurance_reminded_at",
     "suggest_button_msg_id",
     "hde_link",
     "deleted_at",
@@ -181,6 +187,8 @@ class TicketTopic:
     suggest_button_msg_id: Optional[int] = None
     # Супергруппа инженера, где живёт топик
     chat_id: int = 0
+    reassurance_text: Optional[str] = None
+    reassurance_reminded_at: Optional[str] = None
 
     @property
     def is_active(self) -> bool:
@@ -900,6 +908,10 @@ def _row_to_topic(row: aiosqlite.Row) -> TicketTopic:
         type_option_id=row["type_option_id"] if "type_option_id" in row.keys() else None,
         call_notes=row["call_notes"] if "call_notes" in row.keys() else "",
         chat_id=(row["chat_id"] or 0) if "chat_id" in row.keys() else 0,
+        reassurance_text=row["reassurance_text"] if "reassurance_text" in row.keys() else None,
+        reassurance_reminded_at=(
+            row["reassurance_reminded_at"] if "reassurance_reminded_at" in row.keys() else None
+        ),
     )
 
 

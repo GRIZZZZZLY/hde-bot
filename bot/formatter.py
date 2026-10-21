@@ -148,6 +148,23 @@ def format_pre_sla_alert_topic(
     )
 
 
+def format_reassurance_reminder(
+    sent_at: str,
+    minutes_since: int,
+    ticket_name: str,
+    link: str,
+) -> str:
+    hours, minutes = divmod(minutes_since, 60)
+    waited = f"{hours} ч {minutes} мин" if hours else f"{minutes} мин"
+    return (
+        "⏰ Клиент всё ещё ждёт ответа\n"
+        f"Автоответ ушёл в {sent_at}, с тех пор {waited} без ответа\n"
+        "──────────────\n"
+        f"📝 {_escape(ticket_name)}\n"
+        f'🔗 <a href="{_escape(link)}">Открыть в HDE</a>'
+    )
+
+
 def format_pre_sla_alert_general(
     minutes_left: int,
     ticket_name: str,

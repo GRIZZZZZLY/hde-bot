@@ -72,7 +72,7 @@ class Config:
     openrouter_api_key: str
     presla_hde_verify: bool
     reassurance_minutes_before: int
-    reassurance_text: str
+    reassurance_texts: tuple[str, ...]
     agent_enabled: bool
     agent_pipeline_version: str
     agent_auto_first_suggestion_enabled: bool
@@ -188,9 +188,15 @@ class Config:
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
             presla_hde_verify=os.getenv("PRESLA_HDE_VERIFY", "1") == "1",
             reassurance_minutes_before=int(os.getenv("REASSURANCE_MINUTES_BEFORE", "2")),
-            reassurance_text=os.getenv(
-                "REASSURANCE_TEXT",
+            # Бот узнаёт свой автоответ в HDE по точному тексту: убранный вариант
+            # перестанет узнаваться и в тикетах, где он уже отправлен.
+            reassurance_texts=(
                 "Я про вас не забыл, занимаюсь вашим вопросом",
+                "Ваш вопрос у меня, разбираюсь. Напишу сюда, как будет результат",
+                "Сообщение получил, уже разбираюсь. Ответ пришлю в этот чат",
+                "Продолжаю разбираться с вашим вопросом, скоро вернусь с ответом",
+                "Я на связи и работаю над вашим вопросом. Напишу, как только будет ясность",
+                "Нужно ещё немного времени, чтобы разобраться. Я на связи, ответ пришлю сюда",
             ),
             agent_enabled=_parse_bool(os.getenv("AGENT_ENABLED"), default=False),
             agent_pipeline_version=os.getenv("AGENT_PIPELINE_VERSION", "v0").strip() or "v0",

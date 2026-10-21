@@ -41,6 +41,7 @@ def due_one(monkeypatch):
 
     monkeypatch.setattr(scheduler.db, "list_due_pre_sla", due)
     monkeypatch.setattr(scheduler.db, "list_active_pre_sla", empty)
+    monkeypatch.setattr(scheduler.db, "list_due_reassurance_reminders", empty)
     monkeypatch.setattr(scheduler.db, "list_due_deletions", empty)
     monkeypatch.setattr(scheduler, "send_pre_sla_alert", alert)
     monkeypatch.setattr(scheduler, "delete_pending_topic", delete)

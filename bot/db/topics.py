@@ -278,6 +278,7 @@ async def clear_pre_sla(ticket_id: str) -> None:
         pre_sla_sent_at=None,
         pre_sla_message_id=None,
         reassurance_sent_at=None,
+        reassurance_reminded_at=None,
     )
 
 
@@ -322,6 +323,27 @@ async def list_active_pre_sla() -> list[TicketTopic]:
               AND pre_sla_message_id IS NOT NULL
             ORDER BY pre_sla_notify_at ASC
             """,
+        ) as cursor:
+            rows = await cursor.fetchall()
+    return [_row_to_topic(row) for row in rows]
+
+
+async def list_due_reassurance_reminders(sent_before: str) -> list[TicketTopic]:
+    """Автоответ ушёл раньше sent_before, а напоминания инженеру ещё не было."""
+    async with connect() as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT *
+            FROM ticket_topics
+            WHERE topic_state = 'active'
+              AND pre_sla_notify_at IS NOT NULL
+              AND reassurance_sent_at IS NOT NULL
+              AND reassurance_sent_at <= ?
+              AND reassurance_reminded_at IS NULL
+            ORDER BY reassurance_sent_at ASC
+            """,
+            (sent_before,),
         ) as cursor:
             rows = await cursor.fetchall()
     return [_row_to_topic(row) for row in rows]

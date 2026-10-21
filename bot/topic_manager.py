@@ -677,8 +677,11 @@ async def _handle_client_reply_locked(bot: Bot, payload: dict, ticket_id: str) -
     reply_at = parse_datetime(payload.get("last_post_date")) or utcnow()
     # Only start the SLA timer on the FIRST unanswered client message.
     # Subsequent client messages don't reset the deadline — only a staff
-    # reply resets it (handle_staff_reply clears pre_sla_notify_at).
-    timer_active = record.pre_sla_notify_at is not None and record.pre_sla_sent_at is None
+    # reply resets it (handle_staff_reply clears pre_sla_notify_at). That holds
+    # after the alert fired too, or the deadline drifts past HDE's (218382).
+    # The auto-reply counts as a staff answer in HDE, so after it the client's
+    # next message opens a new cycle.
+    timer_active = record.pre_sla_notify_at is not None and record.reassurance_sent_at is None
     logger.info(
         "PRESLA-DIAG client_reply ticket=%s notify_at=%r sent_at=%r timer_active=%s "
         "branch=%s reply_at=%s",
@@ -814,6 +817,7 @@ async def _handle_staff_reply_locked(bot: Bot, payload: dict, ticket_id: str) ->
             "pre_sla_sent_at": None,
             "pre_sla_message_id": None,
             "reassurance_sent_at": None,
+            "reassurance_reminded_at": None,
         }
         if should_clear else {}
     )
@@ -913,11 +917,8 @@ def _post_text_matches_reassurance(text: str) -> bool:
     и тикет выглядит отвеченным, хотя человек не отвечал.
     """
     import re
-    expected = " ".join(config.reassurance_text.split())
-    if not expected:
-        return False
     plain = " ".join(re.sub(r"<[^>]+>", " ", text or "").split())
-    return plain == expected
+    return bool(plain) and any(plain == " ".join(t.split()) for t in config.reassurance_texts)
 
 
 def _parse_hde_post_dt(date_created: str) -> Optional[datetime]:
@@ -1074,6 +1075,7 @@ from .topic_sla import (  # noqa: E402
     _schedule_pre_sla,
     _try_delete_pre_sla_message,
     send_pre_sla_alert,
+    send_reassurance_reminder,
     send_reassurance_to_client,
     update_pre_sla_alert,
 )

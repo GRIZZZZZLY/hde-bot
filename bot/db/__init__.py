@@ -54,6 +54,7 @@ from .topics import (
     list_active_topics,
     list_due_deletions,
     list_due_pre_sla,
+    list_due_reassurance_reminders,
     list_overnight_assigned,
     list_topics_by_state,
     list_topics_missing_summary,

@@ -21,6 +21,7 @@ from .topic_manager import (
     update_pre_sla_alert,
     _hde_staff_wrote_last,
     _try_delete_pre_sla_message,
+    send_reassurance_reminder,
     send_reassurance_to_client,
 )
 
@@ -882,6 +883,21 @@ async def _process_due_timers(bot: Bot) -> None:
             await send_reassurance_to_client(bot, record)
         except Exception as exc:
             logger.warning("Reassurance failed for ticket %s: %s", record.ticket_id, exc)
+
+    # После автоответа счётчика нет; если инженер молчит ещё срок ответа — одно напоминание.
+    reminder_cutoff = to_storage(utcnow() - timedelta(minutes=config.default_reply_sla_minutes))
+    for record in await db.list_due_reassurance_reminders(reminder_cutoff):
+        if not _at_work(record):
+            continue
+        if await _staff_replied(record):
+            await db.clear_pre_sla(record.ticket_id)
+            continue
+        if await _ticket_gone(record):
+            continue
+        try:
+            await send_reassurance_reminder(bot, record)
+        except TelegramAPIError as exc:
+            logger.error("Failed to send reassurance reminder for ticket %s: %s", record.ticket_id, exc)
 
     for record in await db.list_due_deletions(now_value):
         await delete_pending_topic(bot, record)

@@ -390,6 +390,35 @@ async def test_staff_reply_same_second_does_not_clear_pre_sla(initialized_db, mo
 
 
 @pytest.mark.asyncio
+async def test_client_reply_after_pre_sla_alert_keeps_deadline(initialized_db, monkeypatch):
+    """Regression (ticket 218382): the client wrote again after the pre-SLA alert
+    had fired. The bot restarted the timer from the new message, so the deadline
+    moved 5 minutes past HDE's and the reassurance to the client was never sent.
+    Only a staff reply may restart the timer."""
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
+    notify = "2026-10-21 10:55:24"
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Broken printer", priority="high", status="open",
+        owner_id="me", owner_name="Me",
+        hde_link="https://hde.example.com/tickets/1",
+        pre_sla_notify_at=notify,
+        last_client_reply_at="2026-10-21 10:51:24",
+        chat_id=config.group_chat_id,
+    )
+    await db_module.update_topic("TKT-1", topic_state="active")
+    await db_module.mark_pre_sla_sent("TKT-1", message_id=555)
+    bot = make_bot()
+
+    await handle_client_reply(bot, make_payload(last_post_date="2026-10-21 10:56:36"))
+
+    rec = await db_module.get_topic("TKT-1")
+    assert rec.pre_sla_notify_at == notify
+    assert rec.pre_sla_sent_at is not None
+    assert rec.last_client_reply_at == "2026-10-21 10:56:36"
+
+
+@pytest.mark.asyncio
 async def test_staff_reply_autoreply_does_not_clear_pre_sla(initialized_db, monkeypatch):
     """Automated staff_reply (PosifloraSupportBot / dispatcher echo) arrives
     newer than the client message but is NOT the operator. With HDE verify on,
@@ -568,15 +597,15 @@ async def test_staff_replied_ignores_own_autoreply(monkeypatch):
     monkeypatch.setattr(topic_manager.config, "hde_owner_id", "98")
     monkeypatch.setattr(topic_manager.config, "agent_staff_user_ids", ("98",))
     monkeypatch.setattr(
-        topic_manager.config, "reassurance_text",
-        "Я про вас не забыл, занимаюсь вашим вопросом",
+        topic_manager.config, "reassurance_texts",
+        ("Я про вас не забыл, занимаюсь вашим вопросом", "Сообщение получил, уже разбираюсь"),
     )
     topic_manager._STAFF_GROUP_CACHE.clear()
 
     since = utcnow() - timedelta(minutes=18)
     client = MagicMock()
     client.get_ticket_posts = AsyncMock(return_value=[
-        _hde_post(98, "Я про вас не забыл, занимаюсь вашим вопросом", utcnow()),
+        _hde_post(98, "<p>Сообщение получил,  уже разбираюсь</p>", utcnow()),
     ])
     client.get_user_group_type = AsyncMock()
 
@@ -1225,6 +1254,125 @@ async def test_reassurance_only_for_engineers_who_agreed(initialized_db, monkeyp
     await process_due_timers(make_bot())
 
     assert reassure.await_count == (1 if expect_sent else 0)
+
+
+async def _topic_after_reassurance(minutes_ago: float) -> None:
+    await db_module.upsert_topic(
+        "TKT-1", 999, unique_id="ABC-123", company_name="ACME",
+        ticket_name="Broken printer", priority="high", status="open",
+        owner_id="me", owner_name="Me",
+        hde_link="https://hde.example.com/tickets/1",
+        last_client_reply_at=to_storage(utcnow() - timedelta(minutes=minutes_ago + 5)),
+        pre_sla_notify_at=to_storage(utcnow() - timedelta(minutes=minutes_ago + 1)),
+        pre_sla_sent_at=to_storage(utcnow() - timedelta(minutes=minutes_ago + 1)),
+        chat_id=config.group_chat_id,
+    )
+    await db_module.update_topic(
+        "TKT-1", reassurance_sent_at=to_storage(utcnow() - timedelta(minutes=minutes_ago)),
+    )
+
+
+def _timers_at_work(monkeypatch):
+    import bot.work_schedule as work_schedule
+    monkeypatch.setattr(work_schedule, "is_work_time", lambda: True)
+    monkeypatch.setattr(work_schedule, "is_work_day", lambda: True)
+    monkeypatch.setattr(work_schedule, "was_yesterday_work_day", lambda: False)
+
+
+@pytest.mark.asyncio
+async def test_reassurance_removes_countdown(initialized_db, monkeypatch):
+    """For HDE the auto-reply is a staff answer, so the 🔥 countdown to the
+    'SLA' would lie from now on: it is deleted and stops updating (218382)."""
+    await db_module.upsert_topic(
+        "TKT-1", 999, owner_id="me", chat_id=config.group_chat_id,
+        pre_sla_notify_at=to_storage(utcnow() - timedelta(minutes=2)),
+        pre_sla_sent_at=to_storage(utcnow() - timedelta(minutes=1)),
+    )
+    await db_module.update_topic("TKT-1", pre_sla_message_id=555, topic_state="active")
+    hde = MagicMock()
+    hde.add_post = AsyncMock()
+    bot = make_bot()
+
+    with patch("bot.hde_api.HDEApiClient", return_value=hde):
+        await topic_manager.send_reassurance_to_client(bot, await db_module.get_topic("TKT-1"))
+
+    bot.delete_message.assert_awaited_once_with(chat_id=config.group_chat_id, message_id=555)
+    rec = await db_module.get_topic("TKT-1")
+    assert rec.reassurance_sent_at is not None
+    assert rec.reassurance_text == hde.add_post.await_args.args[1]
+    assert rec.reassurance_text in config.reassurance_texts
+    assert await db_module.list_active_pre_sla() == []
+
+
+def test_reassurance_text_never_repeats_in_a_row():
+    from bot.topic_sla import _pick_reassurance_text
+    for previous in config.reassurance_texts:
+        for _ in range(20):
+            assert _pick_reassurance_text(previous) != previous
+
+
+@pytest.mark.asyncio
+async def test_reminder_once_when_engineer_silent_after_reassurance(initialized_db, monkeypatch):
+    import bot.scheduler as scheduler
+    _timers_at_work(monkeypatch)
+    await _topic_after_reassurance(config.default_reply_sla_minutes + 1)
+    monkeypatch.setattr(scheduler, "_hde_staff_wrote_last", AsyncMock(return_value=False))
+    bot = make_bot()
+
+    await process_due_timers(bot)
+    await process_due_timers(bot)
+
+    bot.send_message.assert_awaited_once()
+    assert "всё ещё ждёт" in bot.send_message.await_args.kwargs["text"]
+    assert bot.send_message.await_args.kwargs.get("disable_notification") is not True
+
+
+@pytest.mark.asyncio
+async def test_no_reminder_before_sla_minutes_pass(initialized_db, monkeypatch):
+    import bot.scheduler as scheduler
+    _timers_at_work(monkeypatch)
+    await _topic_after_reassurance(config.default_reply_sla_minutes - 1)
+    monkeypatch.setattr(scheduler, "_hde_staff_wrote_last", AsyncMock(return_value=False))
+    bot = make_bot()
+
+    await process_due_timers(bot)
+
+    bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_reminder_when_engineer_replied_after_reassurance(initialized_db, monkeypatch):
+    import bot.scheduler as scheduler
+    _timers_at_work(monkeypatch)
+    await _topic_after_reassurance(config.default_reply_sla_minutes + 1)
+    monkeypatch.setattr(scheduler, "_hde_staff_wrote_last", AsyncMock(return_value=True))
+    bot = make_bot()
+
+    await process_due_timers(bot)
+
+    bot.send_message.assert_not_awaited()
+    rec = await db_module.get_topic("TKT-1")
+    assert rec.pre_sla_notify_at is None
+    assert rec.reassurance_sent_at is None
+
+
+@pytest.mark.asyncio
+async def test_client_reply_after_reassurance_starts_new_cycle(initialized_db, monkeypatch):
+    """HDE took the auto-reply as a staff answer, so the client's next message
+    opens a new SLA: alert, then possibly a new auto-reply, then a reminder."""
+    monkeypatch.setattr(topic_manager, "_is_work_time", lambda *a, **k: True)
+    await _topic_after_reassurance(3)
+    await db_module.update_topic("TKT-1", reassurance_reminded_at=to_storage(utcnow()))
+    old = await db_module.get_topic("TKT-1")
+    bot = make_bot()
+
+    await handle_client_reply(bot, make_payload(last_post_date=to_storage(utcnow())))
+
+    rec = await db_module.get_topic("TKT-1")
+    assert rec.pre_sla_notify_at != old.pre_sla_notify_at
+    assert rec.pre_sla_sent_at is None
+    assert rec.reassurance_sent_at is None
+    assert rec.reassurance_reminded_at is None
 
 
 def _verify_on(monkeypatch):

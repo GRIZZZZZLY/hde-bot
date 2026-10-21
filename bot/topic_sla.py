@@ -8,7 +8,8 @@ bot.topic_manager keep working.
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+import random
+from datetime import timedelta, timezone
 from typing import Optional
 
 from aiogram import Bot
@@ -18,6 +19,7 @@ from . import db
 from .formatter import (
     format_pre_sla_alert_general,
     format_pre_sla_alert_topic,
+    format_reassurance_reminder,
 )
 from .time_utils import parse_datetime, to_storage
 
@@ -72,6 +74,7 @@ async def _schedule_pre_sla(ticket_id: str, payload: dict, last_client_reply_at:
         # Флаг автоответа — на цикл ожидания, а не на тикет: без сброса второе
         # неотвеченное сообщение в том же тикете автоответа уже не получало.
         reassurance_sent_at=None,
+        reassurance_reminded_at=None,
     )
 
 
@@ -119,19 +122,38 @@ def _pre_sla_text(record: "db.TicketTopic", minutes_left: int) -> str:
     )
 
 
+def _pick_reassurance_text(previous: Optional[str]) -> str:
+    """Случайный вариант автоответа, но не тот, что ушёл в этом тикете прошлый раз."""
+    from . import topic_manager as _tm
+    texts = [t for t in _tm.config.reassurance_texts if t != previous]
+    return random.choice(texts or _tm.config.reassurance_texts)
+
+
 async def send_reassurance_to_client(bot: Bot, record: db.TicketTopic) -> None:
-    """Send reassurance post to client via HDE and notify topic. Idempotent via reassurance_sent_at."""
+    """Send reassurance post to client via HDE and notify topic. Idempotent via reassurance_sent_at.
+
+    For HDE the post is a staff answer, so the countdown to the SLA would lie from
+    here on: it is removed, and the scheduler nudges the engineer once later.
+    """
     from . import topic_manager as _tm
     from .hde_api import HDEApiClient, HDEApiError
+    text = _pick_reassurance_text(record.reassurance_text)
     try:
         from .operators import hde_auth_for_owner
         client = HDEApiClient(auth=hde_auth_for_owner(record.owner_id))
-        await client.add_post(record.ticket_id, _tm.config.reassurance_text)
+        await client.add_post(record.ticket_id, text)
     except HDEApiError as exc:
         logger.warning("Reassurance post failed for ticket %s: %s", record.ticket_id, exc)
         return  # don't mark sent — retry next tick
 
-    await _tm.db.update_topic(record.ticket_id, reassurance_sent_at=to_storage(_tm.utcnow()))
+    logger.info("Reassurance sent to client in ticket %s", record.ticket_id)
+    await _tm.db.update_topic(
+        record.ticket_id,
+        reassurance_sent_at=to_storage(_tm.utcnow()),
+        reassurance_text=text,
+        pre_sla_message_id=None,  # out of list_active_pre_sla: no more countdown
+    )
+    await _try_delete_pre_sla_message(bot, record)
 
     try:
         await bot.send_message(
@@ -139,13 +161,33 @@ async def send_reassurance_to_client(bot: Bot, record: db.TicketTopic) -> None:
             message_thread_id=record.topic_id,
             text=(
                 "🤖 <b>Автоответ клиенту отправлен</b>\n"
-                f"<i>{_tm.config.reassurance_text}</i>"
+                f"<i>{text}</i>"
             ),
             parse_mode="HTML",
             disable_notification=True,
         )
     except TelegramAPIError as exc:
         logger.warning("Failed to notify topic about reassurance for %s: %s", record.ticket_id, exc)
+
+
+async def send_reassurance_reminder(bot: Bot, record: db.TicketTopic) -> None:
+    """One loud nudge: the auto-reply went out and the engineer is still silent."""
+    from . import topic_manager as _tm
+    sent_at = parse_datetime(record.reassurance_sent_at)
+    minutes_since = int((_tm.utcnow() - sent_at).total_seconds() // 60)
+    await bot.send_message(
+        chat_id=record.chat_id,
+        message_thread_id=record.topic_id,
+        text=format_reassurance_reminder(
+            sent_at=sent_at.astimezone(timezone(timedelta(hours=3))).strftime("%H:%M"),
+            minutes_since=minutes_since,
+            ticket_name=record.ticket_name,
+            link=record.hde_link,
+        ),
+        parse_mode="HTML",
+        disable_web_page_preview=True,
+    )
+    await _tm.db.update_topic(record.ticket_id, reassurance_reminded_at=to_storage(_tm.utcnow()))
 
 
 async def send_pre_sla_alert(bot: Bot, record: db.TicketTopic) -> None:
