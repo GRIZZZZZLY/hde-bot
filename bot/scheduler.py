@@ -32,7 +32,6 @@ _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
 # Daily report schedule (MSK). Mon–Thu get the morning reminder; Thu also gets
 # an evening auto-run; Sun gets the weekly summary instead of a reminder.
 _REPORT_MORNING_HM = (8, 30)
-_REPORT_AUTORUN_HM = (9, 0)
 _THU_EVENING_HM = (19, 0)
 _WEEKLY_SUMMARY_HM = (8, 30)
 _TRIGGER_WINDOW_MIN = 5  # fire if current MSK time is within [target, target+window)
@@ -74,7 +73,7 @@ KNOWLEDGE_EXPIRY_DAYS = 180
 
 
 def mark_report_done_today() -> None:
-    """Mark today's report as done so the auto-run scheduler skips it.
+    """Mark today's report as done so the morning reminder skips it.
 
     Sets the in-memory guard only. DB persistence is the caller's
     responsibility — they know which report_date to stamp.
@@ -198,58 +197,10 @@ async def _maybe_send_report_button(bot: Bot) -> None:
     await bot.send_message(
         config.personal_chat_id,
         "⏰ <b>Напоминание:</b> пора сформировать ежедневный отчёт.\n\n"
-        "Нажмите кнопку или подождите — через 30 минут отчёт сформируется автоматически.",
+        "Нажмите кнопку — сам отчёт не сформируется.",
         reply_markup=kb,
         parse_mode="HTML",
     )
-
-
-async def _maybe_auto_run_report(bot: Bot) -> None:
-    """Mon–Thu 9:00 MSK: auto-run the previous work day's report if not sent."""
-    global _last_report_date
-    from .reporting.runner import is_report_configured, run_report
-    from .work_schedule import last_work_day
-    if not is_report_configured():
-        return
-    now_msk = _now_msk()
-    if not _hm_matches(now_msk, *_REPORT_AUTORUN_HM):
-        return
-    today = now_msk.strftime("%Y-%m-%d")
-    if _last_report_date == today:
-        return
-    last_wd = last_work_day()
-    # A vacation day has no closed tickets, and HDE omits zero-activity
-    # operators from the staff report — scraping it fails instead of returning 0.
-    from .work_schedule import is_vacation_day
-    if await is_vacation_day(last_wd):
-        logger.info("%s was a vacation day, skipping the report", last_wd)
-        await db.mark_report_sent(last_wd)  # nothing to fill — stop nagging
-        _last_report_date = today
-        await bot.send_message(
-            config.personal_chat_id,
-            f"🏖 <b>{last_wd.strftime('%d.%m.%Y')} — отпуск</b>, отчёт пропущен.",
-            parse_mode="HTML",
-        )
-        return
-    # Claim the date BEFORE running: the slow scrape+append happens inside
-    # run_report, so marking after it leaves a window where a second trigger
-    # (another instance / restart) also sees "not sent" and writes a duplicate.
-    if not await db.mark_report_sent(last_wd):
-        _last_report_date = today
-        return
-    _last_report_date = today
-    try:
-        result = await run_report(last_wd)
-    except Exception as exc:
-        await db.clear_report_sent(last_wd)  # nothing written — allow a retry
-        logger.exception("Daily report failed: %s", exc)
-        await bot.send_message(
-            config.personal_chat_id,
-            f"❌ <b>Ошибка при формировании отчёта:</b>\n<code>{exc}</code>",
-            parse_mode="HTML",
-        )
-        return
-    await bot.send_message(config.personal_chat_id, result, parse_mode="HTML")
 
 
 async def _maybe_thursday_evening_autorun(bot: Bot) -> None:
@@ -268,8 +219,9 @@ async def _maybe_thursday_evening_autorun(bot: Bot) -> None:
     today_key = today_date.strftime("%Y-%m-%d")
     if _thursday_evening_done == today_key:
         return
-    # Claim the date BEFORE running (see _maybe_auto_run_report): prevents a
-    # second trigger in the 19:00 window from appending a duplicate row.
+    # Claim the date BEFORE running: the slow scrape+append happens inside
+    # run_report, so marking after it leaves a window where a second trigger
+    # in the 19:00 window (another instance / restart) appends a duplicate row.
     if not await db.mark_report_sent(today_date):
         _thursday_evening_done = today_key
         return
@@ -683,8 +635,7 @@ async def process_scheduled_actions(bot: Bot) -> None:
     await _run_job("auto_refresh", _maybe_auto_refresh(bot))
 
     # Report schedule:
-    #   Mon–Thu 8:30 MSK  → reminder button for previous work day
-    #   Mon–Thu 9:00 MSK  → auto-run if button not pressed within 30 min
+    #   Mon–Thu 8:30 MSK  → reminder button for previous work day (no auto-run)
     #   Thu      19:00 MSK → auto-fill today's report (skip if already sent)
     #   Sun       8:30 MSK → weekly summary for previous work week
     # is_work_day() already returns False during vacation.
@@ -697,9 +648,7 @@ async def process_scheduled_actions(bot: Bot) -> None:
         weekday_msk = now_msk.weekday()
         if weekday_msk in (0, 1, 2, 3):  # Mon–Thu
             await _run_job("report_button", _maybe_send_report_button(bot))
-            # Прогоны отчёта — в фон: Playwright занимает минуты (см. _spawn_report)
-            if _hm_matches(now_msk, *_REPORT_AUTORUN_HM):
-                _spawn_report("report_autorun", _maybe_auto_run_report(bot))
+        # Прогоны отчёта — в фон: Playwright занимает минуты (см. _spawn_report)
         if weekday_msk == 3 and _hm_matches(now_msk, *_THU_EVENING_HM):
             _spawn_report("report_thursday", _maybe_thursday_evening_autorun(bot))
         if weekday_msk == 6 and _hm_matches(now_msk, *_WEEKLY_SUMMARY_HM):

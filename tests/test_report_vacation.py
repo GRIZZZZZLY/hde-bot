@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from bot import db, scheduler, work_schedule
+from bot import scheduler, work_schedule
 from bot.reporting import runner
 
 _MSK = work_schedule._MSK
@@ -78,59 +78,6 @@ async def test_vacation_survives_restart(initialized_db, monkeypatch):
 
     await work_schedule.restore_vacation()
     assert work_schedule.is_on_vacation() is True
-
-
-@pytest.mark.asyncio
-async def test_autorun_skips_a_vacation_day(initialized_db, monkeypatch):
-    """Mon 09:00 MSK right after vacation: Sunday was off — do not scrape HDE."""
-    monkeypatch.setattr(work_schedule, "_today_msk", lambda: date(2026, 8, 10))
-    until = datetime(2026, 8, 17, 9, 0, tzinfo=_MSK).astimezone(timezone.utc)
-    await work_schedule.enable_vacation(until)
-
-    mon_0900 = datetime(2026, 8, 17, 9, 0, tzinfo=_MSK)
-    monkeypatch.setattr(scheduler, "_now_msk", lambda: mon_0900)
-    monkeypatch.setattr(work_schedule, "last_work_day", lambda: date(2026, 8, 16))
-    monkeypatch.setattr(runner, "is_report_configured", lambda: True)
-    monkeypatch.setattr(scheduler, "_last_report_date", None)
-
-    calls = {"n": 0}
-
-    async def fake_run_report(report_date=None):
-        calls["n"] += 1
-        return "✅ ok"
-
-    monkeypatch.setattr(runner, "run_report", fake_run_report)
-
-    bot = DummyBot()
-    await scheduler._maybe_auto_run_report(bot)
-
-    assert calls["n"] == 0
-    assert len(bot.sent_messages) == 1
-    assert "отпуск" in bot.sent_messages[0][1].lower()
-    assert await db.is_report_sent(date(2026, 8, 16)) is True  # no later nagging
-
-
-@pytest.mark.asyncio
-async def test_autorun_still_runs_for_a_worked_day(initialized_db, monkeypatch):
-    """The vacation guard must not block a normal day."""
-    mon_0900 = datetime(2026, 8, 17, 9, 0, tzinfo=_MSK)
-    monkeypatch.setattr(scheduler, "_now_msk", lambda: mon_0900)
-    monkeypatch.setattr(work_schedule, "last_work_day", lambda: date(2026, 8, 16))
-    monkeypatch.setattr(runner, "is_report_configured", lambda: True)
-    monkeypatch.setattr(scheduler, "_last_report_date", None)
-
-    calls: list[date] = []
-
-    async def fake_run_report(report_date=None):
-        calls.append(report_date)
-        return "✅ ok"
-
-    monkeypatch.setattr(runner, "run_report", fake_run_report)
-
-    bot = DummyBot()
-    await scheduler._maybe_auto_run_report(bot)
-
-    assert calls == [date(2026, 8, 16)]
 
 
 @pytest.mark.asyncio

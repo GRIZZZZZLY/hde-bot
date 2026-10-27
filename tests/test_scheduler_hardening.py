@@ -184,13 +184,9 @@ def _only_report_schedule(monkeypatch, hour: int, minute: int = 0) -> list:
 
     ran: list[str] = []
 
-    async def _autorun(_bot):
-        ran.append("autorun")
-
     async def _thursday(_bot):
         ran.append("thursday")
 
-    monkeypatch.setattr(scheduler, "_maybe_auto_run_report", _autorun)
     monkeypatch.setattr(scheduler, "_maybe_thursday_evening_autorun", _thursday)
     return ran
 
@@ -215,10 +211,12 @@ async def test_thursday_evening_autofill_gets_the_report_slot(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_morning_autorun_still_gets_the_slot_at_nine(monkeypatch):
+async def test_no_morning_autorun_at_nine(monkeypatch):
+    """Утренний автозапуск отключён: в 9:00 отчёт сам не формируется."""
     ran = _only_report_schedule(monkeypatch, 9, 0)
     await _run_pass()
-    assert ran == ["autorun"]
+    assert ran == []
+    assert scheduler._report_task is None or scheduler._report_task.done()
 
 
 @pytest.mark.asyncio
