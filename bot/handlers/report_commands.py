@@ -1,12 +1,10 @@
-"""Report commands: /report, /weekly and report:* callbacks."""
+"""Report commands: /report and /weekly."""
 import logging
-from datetime import date, timedelta
+from datetime import date
 
-from aiogram import F, Router
+from aiogram import Router
 from aiogram.filters import Command, CommandObject
-from aiogram.types import CallbackQuery, Message
-
-from ..db import mark_report_sent
+from aiogram.types import Message
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -40,9 +38,6 @@ async def run_daily_report(target: Message, report_date: date | None) -> None:
     wait_msg = await target.answer("⏳ Отчёт генерируется, подождите...")
     try:
         result = await runner.run_report(day)
-        from ..scheduler import mark_report_done_today
-        mark_report_done_today()
-        await mark_report_sent(day)
     except Exception as exc:
         result = f"❌ <b>Ошибка:</b>\n<code>{exc}</code>"
     try:
@@ -117,49 +112,3 @@ async def cmd_weekly(message: Message, command: CommandObject) -> None:
             )
             return
     await run_weekly(message, today)
-
-
-@router.callback_query(F.data == "report:cancel")
-async def cb_report_cancel(callback: CallbackQuery) -> None:
-    """Inline button: dismiss the report reminder without running the report."""
-    await callback.answer("Отменено")
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception as exc:
-        logger.debug("report: reply markup cleanup failed: %s", exc)
-
-
-@router.callback_query(F.data == "report:run_yesterday")
-async def cb_report_yesterday(callback: CallbackQuery) -> None:
-    """Inline button: run yesterday's report from the personal chat prompt."""
-    from ..reporting.runner import run_report
-    from ..scheduler import mark_report_done_today
-
-    await callback.answer()
-    try:
-        await callback.message.edit_reply_markup(reply_markup=None)
-    except Exception as exc:
-        logger.debug("report: reply markup cleanup failed: %s", exc)
-
-    from ..work_schedule import was_yesterday_work_day
-    if not was_yesterday_work_day():
-        yesterday = date.today() - timedelta(days=1)
-        await callback.message.answer(
-            f"🏖 <b>Вчера ({yesterday.strftime('%d.%m.%Y')}) был выходной</b> — данных для отчёта нет.",
-            parse_mode="HTML",
-        )
-        return
-
-    wait_msg = await callback.message.answer("⏳ Отчёт генерируется, подождите...")
-    try:
-        result = await run_report()
-        mark_report_done_today()
-        yesterday = date.today() - timedelta(days=1)
-        await mark_report_sent(yesterday)
-    except Exception as exc:
-        result = f"❌ <b>Ошибка:</b>\n<code>{exc}</code>"
-    try:
-        await wait_msg.delete()
-    except Exception as exc:
-        logger.debug("report: wait message cleanup failed: %s", exc)
-    await callback.message.answer(result, parse_mode="HTML")

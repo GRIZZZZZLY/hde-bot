@@ -10,7 +10,6 @@ from typing import Optional
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from . import db, operators
 from .config import config
@@ -29,12 +28,6 @@ logger = logging.getLogger(__name__)
 
 _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
 
-# Daily report schedule (MSK). Mon–Thu get the morning reminder; Sun gets the
-# weekly summary instead of a reminder. Nothing fills the report automatically.
-_REPORT_MORNING_HM = (8, 30)
-_WEEKLY_SUMMARY_HM = (8, 30)
-_TRIGGER_WINDOW_MIN = 5  # fire if current MSK time is within [target, target+window)
-
 _last_digest_date: Optional[str] = None         # "YYYY-MM-DD" UTC date
 _last_value_report_date: Optional[str] = None   # daily AI-value report
 _last_general_flush_date: Optional[str] = None  # "YYYY-MM-DD" UTC date
@@ -47,9 +40,6 @@ _AUTO_REFRESH_INTERVAL_SEC = 30 * 60
 _last_auto_refresh_at: Optional[datetime] = None
 _auto_refresh_task: Optional[asyncio.Task] = None
 _last_db_backup_date: Optional[str] = None  # "YYYY-MM-DD" UTC — суточный снапшот базы
-_last_report_date: Optional[str] = None         # "YYYY-MM-DD" UTC date — set when report runs
-_report_button_sent: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when button is sent
-_weekly_summary_done: Optional[str] = None  # "YYYY-MM-DD" MSK date — Sunday summary flag
 _last_knowledge_expiry_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when weekly expiry runs
 _last_media_gc_hour: Optional[str] = None  # "YYYY-MM-DD HH" — set when hourly media GC runs
 _last_dialogue_backfill_date: Optional[str] = None  # "YYYY-MM-DD" MSK — nightly dialogue mining flag
@@ -61,23 +51,7 @@ _ALLOWED_UPDATES = ["message", "callback_query"]
 def _now_msk() -> datetime:
     return datetime.now(timezone.utc).astimezone(_MSK)
 
-
-def _hm_matches(now_msk: datetime, target_h: int, target_m: int, window_min: int = _TRIGGER_WINDOW_MIN) -> bool:
-    cur = now_msk.hour * 60 + now_msk.minute
-    tgt = target_h * 60 + target_m
-    return 0 <= (cur - tgt) < window_min
-
 KNOWLEDGE_EXPIRY_DAYS = 180
-
-
-def mark_report_done_today() -> None:
-    """Mark today's report as done so the morning reminder skips it.
-
-    Sets the in-memory guard only. DB persistence is the caller's
-    responsibility — they know which report_date to stamp.
-    """
-    global _last_report_date
-    _last_report_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 async def _maybe_send_digest(bot: Bot) -> None:
@@ -155,77 +129,6 @@ async def _maybe_reconcile_general(bot: Bot) -> None:
         await reconcile_with_hde(bot)
     except Exception as exc:
         logger.warning("Periodic General reconcile failed: %s", exc)
-
-
-async def _maybe_send_report_button(bot: Bot) -> None:
-    """Mon–Thu 8:30 MSK: send an inline button prompting for yesterday's report."""
-    global _report_button_sent
-    from .reporting.runner import is_report_configured
-    from .work_schedule import last_work_day
-    if not is_report_configured():
-        return
-    now_msk = _now_msk()
-    if not _hm_matches(now_msk, *_REPORT_MORNING_HM):
-        return
-    today = now_msk.strftime("%Y-%m-%d")
-    if _report_button_sent == today or _last_report_date == today:
-        return
-    last_wd = last_work_day()
-    if await db.is_report_sent(last_wd):
-        logger.info("Report for %s already sent, skipping button", last_wd)
-        _report_button_sent = today
-        return
-    from .work_schedule import is_vacation_day
-    if await is_vacation_day(last_wd):
-        logger.info("%s was a vacation day, skipping report button", last_wd)
-        _report_button_sent = today
-        return
-    _report_button_sent = today
-    last_wd_str = last_wd.strftime("%d.%m.%Y")
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(
-            text=f"📊 Сформировать отчёт за {last_wd_str}",
-            callback_data="report:run_yesterday",
-        ),
-        InlineKeyboardButton(
-            text="❌ Отмена",
-            callback_data="report:cancel",
-        ),
-    ]])
-    await bot.send_message(
-        config.personal_chat_id,
-        "⏰ <b>Напоминание:</b> пора сформировать ежедневный отчёт.\n\n"
-        "Нажмите кнопку — сам отчёт не сформируется.",
-        reply_markup=kb,
-        parse_mode="HTML",
-    )
-
-
-async def _maybe_weekly_summary(bot: Bot) -> None:
-    """Sun 8:30 MSK: send a summary of the previous work week (Sun–Thu)."""
-    global _weekly_summary_done
-    from .reporting.runner import is_report_configured, run_weekly_summary
-    if not is_report_configured():
-        return
-    now_msk = _now_msk()
-    if not _hm_matches(now_msk, *_WEEKLY_SUMMARY_HM):
-        return
-    today_date = now_msk.date()
-    today_key = today_date.strftime("%Y-%m-%d")
-    if _weekly_summary_done == today_key:
-        return
-    _weekly_summary_done = today_key
-    try:
-        result = await run_weekly_summary(today_date)
-        await bot.send_message(config.personal_chat_id, result, parse_mode="HTML")
-    except Exception as exc:
-        logger.exception("Weekly summary failed: %s", exc)
-        await bot.send_message(
-            config.personal_chat_id,
-            f"❌ <b>Ошибка при формировании недельной сводки:</b>\n<code>{exc}</code>",
-            parse_mode="HTML",
-        )
-
 
 
 def _resolved_before_cutoff(ticket: dict, now: datetime, days: int = 7) -> bool:
@@ -484,11 +387,6 @@ _REPORT_TIMEOUT_SECONDS = 600
 _NIGHTLY_BATCH_TIMEOUT_SECONDS = 1500
 _PAIR_GATE_DEADLINE_SECONDS = 1200
 
-# Ссылки на фоновые таски держим до завершения: без этого сборщик мусора может
-# забрать таск на полпути.
-_background_tasks: set[asyncio.Task] = set()
-_report_task: Optional[asyncio.Task] = None
-
 
 async def _run_job(name: str, coro, *, timeout: float | None = None) -> bool:
     """Джоб под таймаутом. Ни исключение, ни таймаут не роняют проход.
@@ -516,27 +414,6 @@ async def _run_job(name: str, coro, *, timeout: float | None = None) -> bool:
         if elapsed > min(timeout / 2, 10):
             logger.info("Scheduler job %s took %.1fs", name, elapsed)
     return False
-
-
-def _spawn_report(name: str, coro) -> bool:
-    """Отчёт уходит в ФОН и не задерживает проход.
-
-    Playwright открывает браузер и ходит по UI HDE — это минуты, а в том же
-    проходе стоят pre-SLA-будильники. Single-flight обязателен: два браузера на
-    один профиль конкурируют и падают оба, поэтому повторный запуск, пока
-    предыдущий жив, отбрасывается.
-    """
-    global _report_task
-    if _report_task is not None and not _report_task.done():
-        logger.info("Report job %s skipped: previous run still active", name)
-        coro.close()
-        return False
-    _report_task = asyncio.create_task(
-        _run_job(name, coro, timeout=_REPORT_TIMEOUT_SECONDS)
-    )
-    _background_tasks.add(_report_task)
-    _report_task.add_done_callback(_background_tasks.discard)
-    return True
 
 
 _INBOX_DEAD_ALERT_KEY = "inbox_dead_alerted"
@@ -593,23 +470,6 @@ async def process_scheduled_actions(bot: Bot) -> None:
     # empty owner_name). Cheap: 1 list call + delta-only edits every ~7 min.
     await _run_job("reconcile_general", _maybe_reconcile_general(bot))
     await _run_job("auto_refresh", _maybe_auto_refresh(bot))
-
-    # Report schedule:
-    #   Mon–Thu 8:30 MSK  → reminder button for previous work day (no auto-run)
-    #   Sun       8:30 MSK → weekly summary for previous work week
-    # is_work_day() already returns False during vacation.
-    # Окно проверяется ЗДЕСЬ, а не только внутри джоба: _spawn_report держит
-    # один слот на все отчёты, и джоб, спавнящийся каждый проход, занимает его
-    # ещё до собственной проверки времени. Свежесозданный таск не done(), так
-    # что следующий _spawn_report в том же проходе отбрасывался всегда.
-    if is_work_day():
-        now_msk = _now_msk()
-        weekday_msk = now_msk.weekday()
-        if weekday_msk in (0, 1, 2, 3):  # Mon–Thu
-            await _run_job("report_button", _maybe_send_report_button(bot))
-        # Сводка — в фон: Playwright занимает минуты (см. _spawn_report)
-        if weekday_msk == 6 and _hm_matches(now_msk, *_WEEKLY_SUMMARY_HM):
-            _spawn_report("weekly_summary", _maybe_weekly_summary(bot))
 
     # Hourly media cache GC — remove topic_media_cache rows older than 1h
     global _last_media_gc_hour

@@ -165,7 +165,6 @@ async def test_run_daily_report_passes_date(monkeypatch):
     monkeypatch.setattr(runner, "is_report_configured", lambda: True)
     run = AsyncMock(return_value="ok")
     monkeypatch.setattr(runner, "run_report", run)
-    monkeypatch.setattr(rc, "mark_report_sent", AsyncMock())
     monkeypatch.setattr(config, "work_days", (0, 1, 2, 3, 4))
     target = MagicMock()
     target.answer = AsyncMock(return_value=MagicMock(delete=AsyncMock()))
@@ -310,8 +309,8 @@ async def test_menu_in_group_has_no_reply_keyboard(initialized_db):
     assert msg.answer.await_count == 1
 
 
-async def test_run_daily_report_without_date_reports_the_day_it_marks(monkeypatch):
-    """Final review F1: on Monday the button must report Friday, not Sunday, and mark Friday."""
+async def test_run_daily_report_without_date_reports_the_last_work_day(monkeypatch):
+    """Final review F1: on Monday /report must report Friday, not Sunday."""
     import bot.handlers.report_commands as rc
     import bot.reporting.runner as runner
     import bot.work_schedule as ws
@@ -319,12 +318,9 @@ async def test_run_daily_report_without_date_reports_the_day_it_marks(monkeypatc
     monkeypatch.setattr(runner, "is_report_configured", lambda: True)
     run = AsyncMock(return_value="ok")
     monkeypatch.setattr(runner, "run_report", run)
-    mark = AsyncMock()
-    monkeypatch.setattr(rc, "mark_report_sent", mark)
     monkeypatch.setattr(config, "work_days", (0, 1, 2, 3, 4))
     monkeypatch.setattr(ws, "last_work_day", lambda: date(2026, 10, 9))
     target = MagicMock()
     target.answer = AsyncMock(return_value=MagicMock(delete=AsyncMock()))
     await rc.run_daily_report(target, None)
     run.assert_awaited_once_with(date(2026, 10, 9))
-    mark.assert_awaited_once_with(date(2026, 10, 9))

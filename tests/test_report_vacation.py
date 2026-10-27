@@ -12,18 +12,9 @@ from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
-from bot import scheduler, work_schedule
-from bot.reporting import runner
+from bot import work_schedule
 
 _MSK = work_schedule._MSK
-
-
-class DummyBot:
-    def __init__(self):
-        self.sent_messages: list[tuple] = []
-
-    async def send_message(self, chat_id, text, **kwargs):
-        self.sent_messages.append((chat_id, text, kwargs))
 
 
 @pytest.fixture(autouse=True)
@@ -102,23 +93,3 @@ async def test_vacation_command_persists_the_window(initialized_db, monkeypatch)
 
     assert work_schedule.is_on_vacation() is True
     assert await work_schedule.is_vacation_day(date(2026, 8, 10)) is True
-
-
-@pytest.mark.asyncio
-async def test_report_button_skips_a_vacation_day(initialized_db, monkeypatch):
-    """No "сформировать отчёт" button for a day that cannot have data."""
-    monkeypatch.setattr(work_schedule, "_today_msk", lambda: date(2026, 8, 10))
-    until = datetime(2026, 8, 17, 9, 0, tzinfo=_MSK).astimezone(timezone.utc)
-    await work_schedule.enable_vacation(until)
-
-    mon_0830 = datetime(2026, 8, 17, 8, 30, tzinfo=_MSK)
-    monkeypatch.setattr(scheduler, "_now_msk", lambda: mon_0830)
-    monkeypatch.setattr(work_schedule, "last_work_day", lambda: date(2026, 8, 16))
-    monkeypatch.setattr(runner, "is_report_configured", lambda: True)
-    monkeypatch.setattr(scheduler, "_report_button_sent", None)
-    monkeypatch.setattr(scheduler, "_last_report_date", None)
-
-    bot = DummyBot()
-    await scheduler._maybe_send_report_button(bot)
-
-    assert bot.sent_messages == []

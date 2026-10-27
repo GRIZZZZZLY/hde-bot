@@ -128,32 +128,6 @@ async def delete_pending_general(ticket_id: str) -> None:
         await db.commit()
 
 
-async def is_report_sent(report_date: "date") -> bool:
-    """Return True if the daily report was already sent for *report_date*."""
-    key = report_date.strftime("%Y-%m-%d")
-    async with connect() as db:
-        async with db.execute(
-            "SELECT 1 FROM report_runs WHERE report_date = ?", (key,)
-        ) as cursor:
-            return await cursor.fetchone() is not None
-
-
-async def mark_report_sent(report_date: "date") -> bool:
-    """Atomically claim *report_date* for the daily report.
-
-    Returns True if this caller claimed it (the row was inserted), False if it
-    was already claimed. Used as a claim-before-run guard so two triggers in the
-    same window (two bot instances, or a restart mid-run) never write twice.
-    """
-    key = report_date.strftime("%Y-%m-%d")
-    async with connect() as db:
-        cursor = await db.execute(
-            "INSERT OR IGNORE INTO report_runs (report_date) VALUES (?)", (key,)
-        )
-        await db.commit()
-        return cursor.rowcount > 0
-
-
 async def get_setting(key: str, default: str = "") -> str:
     """Return a value from bot_settings, or *default* if not set."""
     async with connect() as db:

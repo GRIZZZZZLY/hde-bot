@@ -1,4 +1,4 @@
-"""Проход планировщика: таймаут на джоб, отчёт в фон, алерт на dead-инбокс.
+"""Проход планировщика: таймаут на джоб, отчёт только вручную, алерт на dead-инбокс.
 
 Что здесь защищается по существу: один зависший await не должен останавливать
 весь проход. Watchdog от этого не спасает — он отдельный таск и продолжает
@@ -20,15 +20,6 @@ class _FakeBot:
 
     async def send_message(self, chat_id, text=None, **kw):
         self.sent.append(text if text is not None else kw.get("text", ""))
-
-
-@pytest.fixture(autouse=True)
-def reset_report_task():
-    scheduler._report_task = None
-    scheduler._background_tasks.clear()
-    yield
-    scheduler._report_task = None
-    scheduler._background_tasks.clear()
 
 
 # --- таймаут джоба ----------------------------------------------------------
@@ -103,70 +94,21 @@ async def test_hung_job_does_not_block_the_rest_of_the_pass(monkeypatch):
     assert reached == ["dead_alert"]  # хвост прохода отработал
 
 
-# --- отчёт в фон ------------------------------------------------------------
+# --- отчёт -----------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_spawn_report_does_not_block_caller():
-    started = asyncio.Event()
-    released = asyncio.Event()
-
-    async def slow_report():
-        started.set()
-        await released.wait()
-
-    assert scheduler._spawn_report("r", slow_report()) is True
-    await asyncio.sleep(0)          # даём таску стартовать
-    assert started.is_set()
-    assert not scheduler._report_task.done()   # вызывающий не ждал отчёт
-    released.set()
-    await scheduler._report_task
-
-
-@pytest.mark.asyncio
-async def test_second_report_skipped_while_first_alive():
-    """Два Playwright на один профиль конкурируют и падают оба — single-flight."""
-    released = asyncio.Event()
-    second_ran = []
-
-    async def first():
-        await released.wait()
-
-    async def second():  # pragma: no cover — не должен запуститься
-        second_ran.append(1)
-
-    assert scheduler._spawn_report("first", first()) is True
-    await asyncio.sleep(0)
-    assert scheduler._spawn_report("second", second()) is False
-    released.set()
-    await scheduler._report_task
-    assert second_ran == []
-
-
-@pytest.mark.asyncio
-async def test_report_allowed_again_after_previous_finished():
-    async def quick():
-        return None
-
-    assert scheduler._spawn_report("first", quick()) is True
-    await scheduler._report_task
-    assert scheduler._spawn_report("second", quick()) is True
-    await scheduler._report_task
-
-
-# --- расписание отчётов -----------------------------------------------------
-
-def _only_report_schedule(monkeypatch, hour: int, minute: int = 0) -> None:
-    """Проход, в котором работает только ветка расписания отчётов.
-
-    Время — четверг 03.09.2026, MSK.
-    """
+@pytest.mark.parametrize("day", [3, 6])  # чт 03.09.2026 и вс 06.09.2026
+async def test_scheduler_sends_nothing_about_the_report(monkeypatch, day):
+    """Ни кнопки-напоминания в 8:30 Пн–Чт, ни воскресной сводки: отчёт только вручную."""
+    import bot.reporting.runner as runner
     import bot.work_schedule as ws
+    monkeypatch.setattr(runner, "is_report_configured", lambda: True)
     monkeypatch.setattr(ws, "is_work_day", lambda: True)
     monkeypatch.setattr(ws, "is_work_time", lambda: False)
     monkeypatch.setattr(scheduler.config, "db_backup_dir", "")
     monkeypatch.setattr(
         scheduler, "_now_msk",
-        lambda: datetime(2026, 9, 3, hour, minute, tzinfo=scheduler._MSK),
+        lambda: datetime(2026, 9, day, 8, 30, tzinfo=scheduler._MSK),
     )
 
     async def noop(_bot=None):
@@ -175,24 +117,14 @@ def _only_report_schedule(monkeypatch, hour: int, minute: int = 0) -> None:
     for name in (
         "_maybe_flush_general", "_maybe_send_digest",
         "_maybe_send_daily_value_report", "_maybe_send_reconciliation_digest",
-        "_maybe_reconcile_general", "_maybe_send_report_button",
-        "_maybe_backfill_dialogue_pairs", "_maybe_reconcile_answers",
-        "_maybe_backup_db", "_maybe_alert_dead_inbox",
+        "_maybe_reconcile_general", "_maybe_backfill_dialogue_pairs",
+        "_maybe_reconcile_answers", "_maybe_backup_db", "_maybe_alert_dead_inbox",
     ):
         monkeypatch.setattr(scheduler, name, noop)
 
-
-async def _run_pass() -> None:
-    await asyncio.wait_for(scheduler.process_scheduled_actions(_FakeBot()), timeout=5)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("hour", [9, 15, 19])
-async def test_report_never_fills_itself_on_a_weekday(monkeypatch, hour):
-    """Автозаполнения нет: ни утром (9:00), ни в четверг вечером (19:00)."""
-    _only_report_schedule(monkeypatch, hour, 0)
-    await _run_pass()
-    assert scheduler._report_task is None
+    bot = _FakeBot()
+    await asyncio.wait_for(scheduler.process_scheduled_actions(bot), timeout=5)
+    assert bot.sent == []
 
 
 # --- алерт на dead-инбокс ---------------------------------------------------
