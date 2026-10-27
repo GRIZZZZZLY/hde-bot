@@ -154,16 +154,6 @@ async def mark_report_sent(report_date: "date") -> bool:
         return cursor.rowcount > 0
 
 
-async def clear_report_sent(report_date: "date") -> None:
-    """Release a claim made by mark_report_sent (e.g. when the run failed)."""
-    key = report_date.strftime("%Y-%m-%d")
-    async with connect() as db:
-        await db.execute(
-            "DELETE FROM report_runs WHERE report_date = ?", (key,)
-        )
-        await db.commit()
-
-
 async def get_setting(key: str, default: str = "") -> str:
     """Return a value from bot_settings, or *default* if not set."""
     async with connect() as db:

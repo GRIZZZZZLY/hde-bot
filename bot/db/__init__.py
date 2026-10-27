@@ -81,7 +81,6 @@ from .media import (
 )
 from .misc import (
     _ensure_pending_general_table,
-    clear_report_sent,
     count_general_messages,
     delete_general_message,
     delete_pending_general,

@@ -29,10 +29,9 @@ logger = logging.getLogger(__name__)
 
 _MSK = zoneinfo.ZoneInfo("Europe/Moscow")
 
-# Daily report schedule (MSK). Mon–Thu get the morning reminder; Thu also gets
-# an evening auto-run; Sun gets the weekly summary instead of a reminder.
+# Daily report schedule (MSK). Mon–Thu get the morning reminder; Sun gets the
+# weekly summary instead of a reminder. Nothing fills the report automatically.
 _REPORT_MORNING_HM = (8, 30)
-_THU_EVENING_HM = (19, 0)
 _WEEKLY_SUMMARY_HM = (8, 30)
 _TRIGGER_WINDOW_MIN = 5  # fire if current MSK time is within [target, target+window)
 
@@ -50,7 +49,6 @@ _auto_refresh_task: Optional[asyncio.Task] = None
 _last_db_backup_date: Optional[str] = None  # "YYYY-MM-DD" UTC — суточный снапшот базы
 _last_report_date: Optional[str] = None         # "YYYY-MM-DD" UTC date — set when report runs
 _report_button_sent: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when button is sent
-_thursday_evening_done: Optional[str] = None  # "YYYY-MM-DD" MSK date — Thu evening auto-run flag
 _weekly_summary_done: Optional[str] = None  # "YYYY-MM-DD" MSK date — Sunday summary flag
 _last_knowledge_expiry_date: Optional[str] = None  # "YYYY-MM-DD" UTC date — set when weekly expiry runs
 _last_media_gc_hour: Optional[str] = None  # "YYYY-MM-DD HH" — set when hourly media GC runs
@@ -201,44 +199,6 @@ async def _maybe_send_report_button(bot: Bot) -> None:
         reply_markup=kb,
         parse_mode="HTML",
     )
-
-
-async def _maybe_thursday_evening_autorun(bot: Bot) -> None:
-    """Thu 19:00 MSK: auto-fill today's (Thursday) report without a prompt.
-
-    Fri/Sat are days off — this avoids waiting until Sunday to close Thursday.
-    """
-    global _thursday_evening_done, _last_report_date
-    from .reporting.runner import is_report_configured, run_report
-    if not is_report_configured():
-        return
-    now_msk = _now_msk()
-    if not _hm_matches(now_msk, *_THU_EVENING_HM):
-        return
-    today_date = now_msk.date()
-    today_key = today_date.strftime("%Y-%m-%d")
-    if _thursday_evening_done == today_key:
-        return
-    # Claim the date BEFORE running: the slow scrape+append happens inside
-    # run_report, so marking after it leaves a window where a second trigger
-    # in the 19:00 window (another instance / restart) appends a duplicate row.
-    if not await db.mark_report_sent(today_date):
-        _thursday_evening_done = today_key
-        return
-    _thursday_evening_done = today_key
-    _last_report_date = today_key
-    try:
-        result = await run_report(today_date)
-    except Exception as exc:
-        await db.clear_report_sent(today_date)  # nothing written — allow a retry
-        logger.exception("Thursday evening report failed: %s", exc)
-        await bot.send_message(
-            config.personal_chat_id,
-            f"❌ <b>Ошибка при формировании отчёта:</b>\n<code>{exc}</code>",
-            parse_mode="HTML",
-        )
-        return
-    await bot.send_message(config.personal_chat_id, result, parse_mode="HTML")
 
 
 async def _maybe_weekly_summary(bot: Bot) -> None:
@@ -636,7 +596,6 @@ async def process_scheduled_actions(bot: Bot) -> None:
 
     # Report schedule:
     #   Mon–Thu 8:30 MSK  → reminder button for previous work day (no auto-run)
-    #   Thu      19:00 MSK → auto-fill today's report (skip if already sent)
     #   Sun       8:30 MSK → weekly summary for previous work week
     # is_work_day() already returns False during vacation.
     # Окно проверяется ЗДЕСЬ, а не только внутри джоба: _spawn_report держит
@@ -648,9 +607,7 @@ async def process_scheduled_actions(bot: Bot) -> None:
         weekday_msk = now_msk.weekday()
         if weekday_msk in (0, 1, 2, 3):  # Mon–Thu
             await _run_job("report_button", _maybe_send_report_button(bot))
-        # Прогоны отчёта — в фон: Playwright занимает минуты (см. _spawn_report)
-        if weekday_msk == 3 and _hm_matches(now_msk, *_THU_EVENING_HM):
-            _spawn_report("report_thursday", _maybe_thursday_evening_autorun(bot))
+        # Сводка — в фон: Playwright занимает минуты (см. _spawn_report)
         if weekday_msk == 6 and _hm_matches(now_msk, *_WEEKLY_SUMMARY_HM):
             _spawn_report("weekly_summary", _maybe_weekly_summary(bot))
 

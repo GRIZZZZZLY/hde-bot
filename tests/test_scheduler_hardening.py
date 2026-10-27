@@ -155,11 +155,10 @@ async def test_report_allowed_again_after_previous_finished():
 
 # --- расписание отчётов -----------------------------------------------------
 
-def _only_report_schedule(monkeypatch, hour: int, minute: int = 0) -> list:
+def _only_report_schedule(monkeypatch, hour: int, minute: int = 0) -> None:
     """Проход, в котором работает только ветка расписания отчётов.
 
-    Время — четверг 03.09.2026, MSK. Возвращает список, куда джобы отчёта
-    пишут своё имя, когда до них реально дошла очередь.
+    Время — четверг 03.09.2026, MSK.
     """
     import bot.work_schedule as ws
     monkeypatch.setattr(ws, "is_work_day", lambda: True)
@@ -182,49 +181,18 @@ def _only_report_schedule(monkeypatch, hour: int, minute: int = 0) -> list:
     ):
         monkeypatch.setattr(scheduler, name, noop)
 
-    ran: list[str] = []
-
-    async def _thursday(_bot):
-        ran.append("thursday")
-
-    monkeypatch.setattr(scheduler, "_maybe_thursday_evening_autorun", _thursday)
-    return ran
-
 
 async def _run_pass() -> None:
     await asyncio.wait_for(scheduler.process_scheduled_actions(_FakeBot()), timeout=5)
-    if scheduler._report_task is not None:
-        await scheduler._report_task
 
 
 @pytest.mark.asyncio
-async def test_thursday_evening_autofill_gets_the_report_slot(monkeypatch):
-    """19:00 в четверг — заливка за сегодня, а не отброс single-flight.
-
-    Утренний джоб спавнился каждый проход и забирал единственный слот; таск
-    создан, но ещё не выполнялся, поэтому done() у него False и четверговый
-    джоб отбрасывался ВСЕГДА. Гейт по времени должен стоять до спавна.
-    """
-    ran = _only_report_schedule(monkeypatch, 19, 0)
+@pytest.mark.parametrize("hour", [9, 15, 19])
+async def test_report_never_fills_itself_on_a_weekday(monkeypatch, hour):
+    """Автозаполнения нет: ни утром (9:00), ни в четверг вечером (19:00)."""
+    _only_report_schedule(monkeypatch, hour, 0)
     await _run_pass()
-    assert ran == ["thursday"]
-
-
-@pytest.mark.asyncio
-async def test_no_morning_autorun_at_nine(monkeypatch):
-    """Утренний автозапуск отключён: в 9:00 отчёт сам не формируется."""
-    ran = _only_report_schedule(monkeypatch, 9, 0)
-    await _run_pass()
-    assert ran == []
-    assert scheduler._report_task is None or scheduler._report_task.done()
-
-
-@pytest.mark.asyncio
-async def test_no_report_job_spawned_outside_its_window(monkeypatch):
-    """Вне окна отчёт не должен занимать слот: проход идёт каждые 30 с."""
-    ran = _only_report_schedule(monkeypatch, 15, 0)
-    await _run_pass()
-    assert ran == []
+    assert scheduler._report_task is None
 
 
 # --- алерт на dead-инбокс ---------------------------------------------------
